@@ -587,6 +587,7 @@ class BaseImporter:
             # if we're just resolving on name, include other names and family name
             name = spec["name"]
             name = re.sub(r"\s+", " ", name)
+            name = name.strip()
             spec = (
                 Q(name__iexact=name)
                 | Q(other_names__name__iexact=name)
