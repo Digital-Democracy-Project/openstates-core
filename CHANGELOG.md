@@ -1,5 +1,8 @@
 # Changelog
 
+## 6.25.3 - Jul 16, 2026
+* Fixes a resolve_person matching bug when scraper forgets to strip whitespace from person name
+
 ## 6.25.2 - Jun 3, 2026
 * Adds an --ignore-role-warnings flag to people lint CLI to reduce verbosity
 
