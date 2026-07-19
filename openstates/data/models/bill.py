@@ -244,6 +244,13 @@ class SearchableBill(models.Model):
         * this makes querying quite a bit more efficient (no need to deduplicate results)
 
     We'll also store error results, assuming that they're somewhat persistent.
+
+    Superseded by `BillVersionDocument` for permanent per-version archival (PLAN-bill-document-
+    provenance.md, Phase 1) — this model is a `OneToOneField(Bill)` and structurally can't hold
+    more than one retained version per bill, and its `version_link` FK cascades to delete this
+    row whenever the importer wipes/recreates `BillVersionLink` rows (i.e. on any amendment).
+    Kept as-is (still populated by the existing `sample`/`test`/`update` CLI commands) until the
+    new pipeline is validated on one jurisdiction and this is safe to retire.
     """
 
     bill = models.OneToOneField(
@@ -263,3 +270,61 @@ class SearchableBill(models.Model):
     class Meta:
         db_table = "opencivicdata_searchablebill"
         indexes = [GinIndex(name="search_index", fields=["search_vector"])]
+
+
+class BillVersionDocument(models.Model):
+    """
+    Permanent, per-version archive of a bill's original document and extracted text
+    (PLAN-bill-document-provenance.md, Phase 1).
+
+    Deliberately NOT a FK to `BillVersion`/`BillVersionLink` — those rows get deleted and
+    recreated with new primary keys every time a bill's version list changes at all (the
+    importer's default wipe-and-recreate behavior for any related collection not listed in
+    `merge_related`), so they aren't a stable identity to key archival data off of. Identified
+    instead by content: the bill (stable) plus `version_note` + `version_date` + `source_url`,
+    matching the in-run link-dedup logic scrapers already use (`scrape/base.py`'s
+    `_add_associated_link`). A single logical version (e.g. "Introduced") can have more than one
+    row here if the legislature publishes more than one file for it (e.g. a PDF and an HTML
+    copy) — that's expected, not a conflict.
+    """
+
+    bill = models.ForeignKey(
+        Bill, related_name="version_documents", on_delete=models.CASCADE
+    )
+    version_note = models.CharField(max_length=300)
+    version_date = models.CharField(max_length=10)  # YYYY[-MM[-DD]], matches BillVersion.date
+    source_url = models.URLField(max_length=2000)
+    media_type = models.CharField(max_length=100, blank=True)
+
+    raw_text = models.TextField(default="")
+    is_error = models.BooleanField(default=False)
+
+    sha256_hash = models.CharField(max_length=64, null=True, blank=True)
+    archive_location = models.CharField(
+        max_length=500,
+        null=True,
+        blank=True,
+        help_text="S3 URI once uploaded to Glacier Deep Archive (Phase 2). Null until archived.",
+    )
+    archived_at = models.DateTimeField(null=True, blank=True)
+
+    ocr_applied = models.BooleanField(default=False)
+    ocr_version = models.CharField(max_length=100, null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.version_note} ({self.version_date}) of {self.bill.identifier}"
+
+    class Meta:
+        db_table = "ddp_bill_version_document"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["bill", "version_note", "version_date", "source_url"],
+                name="unique_bill_version_document",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["bill", "version_note", "version_date"]),
+        ]

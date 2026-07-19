@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 import os
+import re
+import hashlib
 import typing
 import sys
 import csv
@@ -10,7 +12,7 @@ import scrapelib
 import time
 from pathlib import Path
 from django.contrib.postgres.search import SearchVector  # type: ignore
-from django.db import transaction  # type: ignore
+from django.db import transaction, IntegrityError  # type: ignore
 from django.db.models import Count  # type: ignore
 from openstates.utils.django import init_django
 from openstates.utils import jid_to_abbr, abbr_to_jid
@@ -196,6 +198,130 @@ def update_bill(bill: typing.Any) -> int:
         search_vector="",
     )
     return sb.id
+
+
+def _archive_path(bill: typing.Any, version_note: str, version_date: str, url: str, ext: str) -> str:
+    """
+    Build the permanent archive path for one bill version's document.
+
+    Keyed by version_date + a hash of the source url (not just version_note) so it matches
+    BillVersionDocument's own uniqueness key exactly — a single version_note alone isn't unique
+    within a bill (PLAN-bill-document-provenance.md, Phase 1: a version can have more than one
+    file, e.g. a PDF and an HTML copy of "Introduced", and a path keyed on version_note alone
+    would let one silently overwrite the other on disk).
+    """
+    from openstates import settings
+
+    abbr = jid_to_abbr(bill.legislative_session.jurisdiction_id)
+    session = bill.legislative_session.identifier
+    # bill.id is "ocd-bill/<uuid>" — strip the prefix so it's usable as a bare path segment.
+    bill_id = bill.id.split("/")[-1]
+    safe_note = re.sub(r"[^A-Za-z0-9_-]+", "_", version_note).strip("_") or "version"
+    url_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+    # version_date is often blank in real scraped data (confirmed against live VA bills) —
+    # omit it rather than leaving a stray leading separator in the filename.
+    date_part = f"{version_date}-" if version_date else ""
+    filename = f"{date_part}{safe_note}-{url_hash}.{ext}"
+    return os.path.join(settings.ARCHIVE_ROOT_DIR, "raw", abbr, session, bill_id, filename)
+
+
+def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
+    """
+    Fetch and permanently archive every not-yet-captured version+document of a bill
+    (PLAN-bill-document-provenance.md, Phase 1).
+
+    Unlike update_bill() (above), which only looks at a bill's single latest version, this
+    walks every version and every document link, and skips only the exact
+    (version_note, version_date, source_url) combination already archived — a natural key, not
+    the BillVersion/BillVersionLink row ids, which get deleted and recreated with new ids every
+    time a bill's version list changes at all (see the plan for why those ids aren't a stable
+    identity to check against).
+    """
+    from openstates.data.models import BillVersionDocument
+
+    counters = {
+        "fetched": 0,
+        "skipped": 0,
+        "fetch_errors": 0,
+        "extract_errors": 0,
+        "archived": 0,
+        "conflicts": 0,
+    }
+
+    for version in bill.versions.all():
+        for link in version.links.all():
+            already_archived = BillVersionDocument.objects.filter(
+                bill=bill,
+                version_note=version.note,
+                version_date=version.date,
+                source_url=link.url,
+            ).exists()
+            if already_archived:
+                counters["skipped"] += 1
+                continue
+
+            metadata: Metadata = {
+                "url": link.url,
+                "media_type": link.media_type,
+                "title": bill.title,
+                "jurisdiction_id": bill.legislative_session.jurisdiction_id,
+            }
+            func = get_extract_func(metadata)
+            if func == DoNotDownload:
+                continue
+
+            try:
+                data = scraper.request("GET", link.url, allow_redirects=True).content
+            except Exception as e:
+                click.secho(f"failed to fetch {link.url}: {e}", fg="yellow")
+                counters["fetch_errors"] += 1
+                continue
+
+            counters["fetched"] += 1
+            sha256_hash = hashlib.sha256(data).hexdigest()
+
+            ext = MIMETYPES.get(link.media_type, "bin")
+            path = _archive_path(bill, version.note, version.date, link.url, ext)
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "wb") as f:
+                    f.write(data)
+            except OSError as e:
+                click.secho(f"failed to persist {link.url} to {path}: {e}", fg="red")
+                continue
+
+            raw_text = ""
+            is_error = True
+            try:
+                raw_text = _cleanup(func(data, metadata))
+                is_error = not bool(raw_text)
+            except Exception as e:
+                click.secho(f"exception extracting {link.url}: {e}", fg="red")
+                counters["extract_errors"] += 1
+
+            try:
+                BillVersionDocument.objects.create(
+                    bill=bill,
+                    version_note=version.note,
+                    version_date=version.date,
+                    source_url=link.url,
+                    media_type=link.media_type,
+                    raw_text=raw_text,
+                    is_error=is_error,
+                    sha256_hash=sha256_hash,
+                )
+                counters["archived"] += 1
+            except IntegrityError:
+                # Should be rare-to-never — surface loudly rather than silently drop or crash
+                # the whole run (a concurrent scrape run for the same bill is the likeliest cause).
+                click.secho(
+                    f"WARNING natural-key conflict archiving {bill.identifier} "
+                    f"{version.note} ({version.date}) {link.url}",
+                    fg="red",
+                )
+                counters["conflicts"] += 1
+
+    return counters
 
 
 @click.group()
@@ -473,6 +599,66 @@ def update(
         ]
     )
     stats.close()
+
+
+@main.command(
+    help="permanently archive every not-yet-captured bill version + document "
+    "(PLAN-bill-document-provenance.md, Phase 1)"
+)
+@click.argument("state")
+@click.option("--session", default=None)
+@click.option("-n", default=None, help="limit number of bills processed, for testing")
+def archive(state: str, session: str = None, n: int = None) -> None:
+    init_django()
+    from openstates.data.models import Bill
+
+    if state == "all":
+        bills = Bill.objects.all()
+    elif session:
+        bills = Bill.objects.filter(
+            legislative_session__jurisdiction_id=abbr_to_jid(state),
+            legislative_session__identifier=session,
+        )
+    else:
+        bills = Bill.objects.filter(
+            legislative_session__jurisdiction_id=abbr_to_jid(state)
+        )
+
+    bills = bills.prefetch_related("versions__links")
+    if n:
+        bills = bills[: int(n)]
+
+    totals = {
+        "fetched": 0,
+        "skipped": 0,
+        "fetch_errors": 0,
+        "extract_errors": 0,
+        "archived": 0,
+        "conflicts": 0,
+    }
+    bill_count = 0
+    for bill in bills:
+        bill_count += 1
+        for key, value in archive_bill_versions(bill).items():
+            totals[key] += value
+
+    status_color = "green"
+    if totals["conflicts"]:
+        status_color = "red"
+    elif totals["fetch_errors"] or totals["extract_errors"]:
+        status_color = "yellow"
+
+    click.secho(
+        f"{state}: {bill_count} bills checked | "
+        f"fetched={totals['fetched']} skipped={totals['skipped']} "
+        f"archived={totals['archived']} fetch_errors={totals['fetch_errors']} "
+        f"extract_errors={totals['extract_errors']} conflicts={totals['conflicts']}",
+        fg=status_color,
+    )
+    if totals["conflicts"]:
+        # A conflict means our own uniqueness assumption was wrong somewhere — worth a
+        # non-zero exit so this surfaces as a failure in run-scrape.sh, not just a log line.
+        sys.exit(1)
 
 
 def reindex(ids_to_update: list[int]) -> None:
