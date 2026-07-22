@@ -311,6 +311,17 @@ class BillVersionDocument(models.Model):
     ocr_applied = models.BooleanField(default=False)
     ocr_version = models.CharField(max_length=100, null=True, blank=True)
 
+    diff_from_previous_version = models.TextField(
+        null=True,
+        blank=True,
+        help_text=(
+            "difflib.unified_diff() of this version's raw_text against the immediately-"
+            "preceding version's raw_text (added 2026-07-20). Null if no prior version exists "
+            "to diff against (first version ever archived, or a gap predating this pipeline "
+            "going live)."
+        ),
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

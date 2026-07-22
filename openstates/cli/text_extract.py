@@ -2,6 +2,7 @@
 import os
 import re
 import hashlib
+import difflib
 import typing
 import sys
 import csv
@@ -236,6 +237,16 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
     the BillVersion/BillVersionLink row ids, which get deleted and recreated with new ids every
     time a bill's version list changes at all (see the plan for why those ids aren't a stable
     identity to check against).
+
+    Also computes `diff_from_previous_version` (added 2026-07-20): as versions are walked in
+    order, `prior_text` tracks the most recently seen version's representative text (preferring
+    a PDF document over other media types when a version has more than one file — the same
+    PDF > HTML priority already used elsewhere in this plan for lineage-field caching), updated
+    once per version rather than once per document so that two files of the *same* version
+    (e.g. a PDF and an HTML copy) never get diffed against each other. Every newly-archived
+    document within a version is diffed against that same `prior_text` snapshot. Already-
+    archived (skipped) documents still feed `prior_text` so a partial re-run (e.g. only a new
+    amendment's version is unarchived) diffs correctly against previously-archived text.
     """
     from openstates.data.models import BillVersionDocument
 
@@ -248,16 +259,22 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
         "conflicts": 0,
     }
 
+    prior_text: typing.Optional[str] = None
+
     for version in bill.versions.all():
+        this_version_texts: dict[str, str] = {}
+
         for link in version.links.all():
-            already_archived = BillVersionDocument.objects.filter(
+            existing = BillVersionDocument.objects.filter(
                 bill=bill,
                 version_note=version.note,
                 version_date=version.date,
                 source_url=link.url,
-            ).exists()
-            if already_archived:
+            ).first()
+            if existing:
                 counters["skipped"] += 1
+                if not existing.is_error and existing.raw_text:
+                    this_version_texts[existing.media_type] = existing.raw_text
                 continue
 
             metadata: Metadata = {
@@ -299,6 +316,14 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                 click.secho(f"exception extracting {link.url}: {e}", fg="red")
                 counters["extract_errors"] += 1
 
+            diff_from_previous_version = None
+            if prior_text is not None and not is_error and raw_text:
+                diff_from_previous_version = "\n".join(
+                    difflib.unified_diff(
+                        prior_text.splitlines(), raw_text.splitlines(), lineterm=""
+                    )
+                )
+
             try:
                 BillVersionDocument.objects.create(
                     bill=bill,
@@ -309,8 +334,11 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                     raw_text=raw_text,
                     is_error=is_error,
                     sha256_hash=sha256_hash,
+                    diff_from_previous_version=diff_from_previous_version,
                 )
                 counters["archived"] += 1
+                if not is_error and raw_text:
+                    this_version_texts[link.media_type] = raw_text
             except IntegrityError:
                 # Should be rare-to-never — surface loudly rather than silently drop or crash
                 # the whole run (a concurrent scrape run for the same bill is the likeliest cause).
@@ -320,6 +348,11 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                     fg="red",
                 )
                 counters["conflicts"] += 1
+
+        if this_version_texts:
+            prior_text = this_version_texts.get("application/pdf") or next(
+                iter(this_version_texts.values())
+            )
 
     return counters
 
