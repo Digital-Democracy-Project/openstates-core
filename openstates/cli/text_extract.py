@@ -210,6 +210,13 @@ def _archive_path(bill: typing.Any, version_note: str, version_date: str, url: s
     within a bill (PLAN-bill-document-provenance.md, Phase 1: a version can have more than one
     file, e.g. a PDF and an HTML copy of "Introduced", and a path keyed on version_note alone
     would let one silently overwrite the other on disk).
+
+    Two path segments are for human browsability, not identity, added 2026-07-24: the top-level
+    "bills" segment (DDP-HOT is expected to hold other document types over time, not just bill
+    text) and the bill folder's "{identifier}--{uuid}" prefix (so `ls` reveals which bill you're
+    looking at). The actual identity/uniqueness still rests entirely on the bill's stable UUID and
+    the (version_note, version_date, url) key below — the identifier prefix is cosmetic and can
+    go stale (e.g. a rare mid-session renumbering) without affecting the skip-check or the DB.
     """
     from openstates import settings
 
@@ -217,13 +224,15 @@ def _archive_path(bill: typing.Any, version_note: str, version_date: str, url: s
     session = bill.legislative_session.identifier
     # bill.id is "ocd-bill/<uuid>" — strip the prefix so it's usable as a bare path segment.
     bill_id = bill.id.split("/")[-1]
+    safe_identifier = re.sub(r"[^A-Za-z0-9_-]+", "", bill.identifier) or "bill"
+    bill_dir = f"{safe_identifier}--{bill_id}"
     safe_note = re.sub(r"[^A-Za-z0-9_-]+", "_", version_note).strip("_") or "version"
     url_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
     # version_date is often blank in real scraped data (confirmed against live VA bills) —
     # omit it rather than leaving a stray leading separator in the filename.
     date_part = f"{version_date}-" if version_date else ""
     filename = f"{date_part}{safe_note}-{url_hash}.{ext}"
-    return os.path.join(settings.ARCHIVE_ROOT_DIR, "raw", abbr, session, bill_id, filename)
+    return os.path.join(settings.ARCHIVE_ROOT_DIR, "bills", "raw", abbr, session, bill_dir, filename)
 
 
 def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
