@@ -23,7 +23,7 @@ CACHE_DIR = os.environ.get("CACHE_DIR", os.path.join(os.getcwd(), "_cache"))
 SCRAPED_DATA_DIR = os.environ.get("SCRAPED_DATA_DIR", os.path.join(os.getcwd(), "_data"))
 
 # Permanent bill-document archive (PLAN-bill-document-provenance.md, Phase 1).
-# Points at the dedicated NVMe volume in production (e.g. /Volumes/DDP/raw); defaults to a
+# Points at the dedicated Thunderbolt volume in production (/Volumes/DDP-HOT/raw); defaults to a
 # local dev folder so this works before that volume exists/is mounted.
 ARCHIVE_ROOT_DIR = os.environ.get("ARCHIVE_ROOT_DIR", os.path.join(os.getcwd(), "_archive"))
 
