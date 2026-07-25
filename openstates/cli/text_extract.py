@@ -6,7 +6,9 @@ import difflib
 import typing
 import sys
 import csv
+import json
 import math
+import subprocess
 import warnings
 import click
 import scrapelib
@@ -15,6 +17,7 @@ from pathlib import Path
 from django.contrib.postgres.search import SearchVector  # type: ignore
 from django.db import transaction, IntegrityError  # type: ignore
 from django.db.models import Count  # type: ignore
+from django.utils import timezone  # type: ignore
 from openstates.utils.django import init_django
 from openstates.utils import jid_to_abbr, abbr_to_jid
 from openstates.fulltext import (
@@ -43,6 +46,12 @@ MIMETYPES = {
     "application/rtf": "rtf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
 }
+
+# Phase 2 (PLAN-bill-document-provenance.md): S3 Glacier Deep Archive upload + verify.
+# Always go through the sudo-gated proxy wrapper -- no raw AWS credentials or CLI exist on
+# this box by design (see ddp-infra/Production_S3_Wrappers.md).
+S3_BILL_ARCHIVE_WRAPPER = "/Users/agentsmith/bin/ddp-prod-s3-bill-archive"
+S3_BILL_ARCHIVE_BUCKET = "ddp-bill-archive"
 
 
 def _cleanup(text: str) -> str:
@@ -243,6 +252,87 @@ def _archive_path(bill: typing.Any, version_note: str, version_date: str, url: s
     )
 
 
+def _s3_object_key(archive_path: str) -> str:
+    """
+    Object key mirrors the local ARCHIVE_ROOT_DIR-relative path 1:1, so the S3 layout matches
+    the local archive's and both are equally browsable.
+    """
+    from openstates import settings
+
+    return os.path.relpath(archive_path, settings.ARCHIVE_ROOT_DIR)
+
+
+def _upload_and_verify(
+    path: str, object_key: str, local_md5: str
+) -> typing.Optional[str]:
+    """
+    Upload one archived document to S3 Glacier Deep Archive and verify the upload via ETag
+    (PLAN-bill-document-provenance.md, Phase 2 -- verification mechanism revised 2026-07-25).
+
+    The bill-archive proxy (`ddp-prod-s3-bill-archive`, sudo-gated -- see
+    ddp-infra/Production_S3_Wrappers.md) uploads directly to DEEP_ARCHIVE with no normal-class
+    staging step, and has no download command at all: a real Deep Archive object needs a ~12hr
+    restore request before it's readable, so "upload, read back, recompute hash" (the original
+    Phase 2 design) is structurally unavailable here, not just slow. Instead: for a single-part
+    upload, S3 guarantees ETag is the plain hex MD5 of exactly the bytes it received and stored
+    -- a real, independent, server-computed check, just a weaker one than a full read-after-write.
+    A multipart-style ETag (a "-N" suffix -- a hash of hashes, not a plain MD5) can't be compared
+    this way at all and is treated the same as a verification failure, not silently accepted.
+
+    Open assumption, not yet independently confirmed (see plan's Risk Register): that the
+    proxy's `put-stream` always performs a single-part PutObject regardless of file size. Bill
+    documents (PDFs/HTML) are expected to stay well under any multipart threshold.
+
+    Returns the s3:// URI on a verified match; None on any upload failure, ETag mismatch, or a
+    multipart ETag -- the caller leaves `archive_location`/`archived_at` unset in every None
+    case, so an unverified upload is never recorded as archived.
+    """
+    try:
+        subprocess.run(
+            [S3_BILL_ARCHIVE_WRAPPER, "put", path, object_key],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        click.secho(f"S3 upload failed for {object_key}: {e.stderr.strip()}", fg="red")
+        return None
+    except OSError as e:
+        click.secho(f"S3 upload failed for {object_key}: {e}", fg="red")
+        return None
+
+    try:
+        info_proc = subprocess.run(
+            [S3_BILL_ARCHIVE_WRAPPER, "info", object_key],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        info = json.loads(info_proc.stdout)
+    except (subprocess.CalledProcessError, json.JSONDecodeError, OSError) as e:
+        click.secho(f"S3 verify failed for {object_key}: {e}", fg="red")
+        return None
+
+    etag = info.get("ETag", "").strip('"')
+    if not etag:
+        click.secho(f"S3 verify failed for {object_key}: no ETag in info response", fg="red")
+        return None
+    if "-" in etag:
+        click.secho(
+            f"S3 upload for {object_key} used multipart (ETag={etag}); cannot verify via "
+            "ETag-as-MD5, treating as unverified",
+            fg="yellow",
+        )
+        return None
+    if etag != local_md5:
+        click.secho(
+            f"S3 ETag mismatch for {object_key}: local md5={local_md5} etag={etag}", fg="red"
+        )
+        return None
+
+    return f"s3://{S3_BILL_ARCHIVE_BUCKET}/{object_key}"
+
+
 def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
     """
     Fetch and permanently archive every not-yet-captured version+document of a bill
@@ -274,6 +364,8 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
         "extract_errors": 0,
         "archived": 0,
         "conflicts": 0,
+        "s3_verified": 0,
+        "s3_unverified": 0,
     }
 
     prior_text: typing.Optional[str] = None
@@ -313,6 +405,7 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
 
             counters["fetched"] += 1
             sha256_hash = hashlib.sha256(data).hexdigest()
+            local_md5 = hashlib.md5(data).hexdigest()
 
             ext = MIMETYPES.get(link.media_type, "bin")
             path = _archive_path(bill, version.note, version.date, link.url, ext)
@@ -323,6 +416,14 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
             except OSError as e:
                 click.secho(f"failed to persist {link.url} to {path}: {e}", fg="red")
                 continue
+
+            object_key = _s3_object_key(path)
+            archive_location = _upload_and_verify(path, object_key, local_md5)
+            archived_at = timezone.now() if archive_location else None
+            if archive_location:
+                counters["s3_verified"] += 1
+            else:
+                counters["s3_unverified"] += 1
 
             raw_text = ""
             is_error = True
@@ -352,6 +453,8 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                     is_error=is_error,
                     sha256_hash=sha256_hash,
                     diff_from_previous_version=diff_from_previous_version,
+                    archive_location=archive_location,
+                    archived_at=archived_at,
                 )
                 counters["archived"] += 1
                 if not is_error and raw_text:
@@ -685,6 +788,8 @@ def archive(state: str, session: str = None, n: int = None) -> None:
         "extract_errors": 0,
         "archived": 0,
         "conflicts": 0,
+        "s3_verified": 0,
+        "s3_unverified": 0,
     }
     bill_count = 0
     for bill in bills:
@@ -695,14 +800,15 @@ def archive(state: str, session: str = None, n: int = None) -> None:
     status_color = "green"
     if totals["conflicts"]:
         status_color = "red"
-    elif totals["fetch_errors"] or totals["extract_errors"]:
+    elif totals["fetch_errors"] or totals["extract_errors"] or totals["s3_unverified"]:
         status_color = "yellow"
 
     click.secho(
         f"{state}: {bill_count} bills checked | "
         f"fetched={totals['fetched']} skipped={totals['skipped']} "
         f"archived={totals['archived']} fetch_errors={totals['fetch_errors']} "
-        f"extract_errors={totals['extract_errors']} conflicts={totals['conflicts']}",
+        f"extract_errors={totals['extract_errors']} conflicts={totals['conflicts']} "
+        f"s3_verified={totals['s3_verified']} s3_unverified={totals['s3_unverified']}",
         fg=status_color,
     )
     if totals["conflicts"]:
