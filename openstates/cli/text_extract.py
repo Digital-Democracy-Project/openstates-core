@@ -32,6 +32,11 @@ stats = Instrumentation()
 # disable SSL validation and ignore warnings
 scraper = scrapelib.Scraper(verify=False)
 scraper.user_agent = "Mozilla"
+# Match FL's own scraper's resilience settings (scrapers/fl/bills.py) instead of scrapelib's
+# bare defaults (0 retries) -- this scraper hits the same flaky state legislature sites FL's
+# scraper does, so it should retry the same way rather than giving up on the first failure.
+scraper.retry_attempts = 5
+scraper.retry_wait_seconds = 5
 warnings.filterwarnings("ignore", module="urllib3")
 
 
