@@ -583,27 +583,22 @@ class BaseImporter:
             org_classification = spec["chamber"]
             del spec["chamber"]
 
-        if list(spec.keys()) == ["name"]:
-            # if we're just resolving on name, include other names and family name
-            name = spec["name"]
-            name = re.sub(r"\s+", " ", name)
-            name = name.strip()
-            spec = (
-                Q(name__iexact=name)
-                | Q(other_names__name__iexact=name)
-                | Q(family_name__iexact=name)
-            )
-        else:
-            spec = Q(**spec)
+        # a stable per-person identifier (e.g. bioguide, lis_id) takes priority over
+        # name matching when the scraper had one on hand -- house/senate roll calls
+        # disambiguate same-surname members in ways that don't `iexact`-match our
+        # stored name/other_names/family_name (e.g. "Garcia (CA)", "Frankel, Lois"),
+        # so falling back to name-only matching for those would wrongly resolve to
+        # no one even though the person is unambiguous by identifier
+        identifier = spec.pop("id", None)
 
-        spec &= Q(
+        common_spec = Q(
             memberships__organization__jurisdiction_id=self.jurisdiction_id,
         )
 
         if org_classification:
-            spec &= Q(memberships__organization__classification=org_classification)
+            common_spec &= Q(memberships__organization__classification=org_classification)
         else:
-            spec &= Q(
+            common_spec &= Q(
                 memberships__organization__classification__in=(
                     "upper",
                     "lower",
@@ -617,34 +612,70 @@ class BaseImporter:
         # if we know when the session started, ensure they are either in office still or
         #   that their end date was after the start of the session
         if start_date:
-            spec &= Q(memberships__end_date="") | Q(
+            common_spec &= Q(memberships__end_date="") | Q(
                 memberships__end_date__gt=start_date
             )
         # if we know when the session ended, ensure that they didn't start after it ended
         if end_date:
-            spec &= Q(memberships__start_date="") | Q(
+            common_spec &= Q(memberships__start_date="") | Q(
                 memberships__start_date__lt=end_date
             )
 
-        query_result = Person.objects.filter(spec).values("id", "current_role")
-        result_set = set([p["id"] for p in query_result])
-        errmsg = None
-        if len(result_set) == 1:
-            self.person_cache[cache_key] = result_set.pop()
-        elif not result_set:
-            errmsg = "no people returned for spec"
-        else:
-            # If there are multiple rows returned see we can get the active legislator.
-            ids = set([p["id"] for p in query_result if p["current_role"] is not None])
-            if len(ids) == 1:
-                self.person_cache[cache_key] = ids.pop()
+        result_id, errmsg = None, None
+
+        if identifier:
+            query_result = Person.objects.filter(
+                Q(identifiers__identifier=identifier) & common_spec
+            ).values("id", "current_role")
+            result_set = set([p["id"] for p in query_result])
+            if len(result_set) == 1:
+                result_id = result_set.pop()
+            elif len(result_set) > 1:
+                ids = set(
+                    [p["id"] for p in query_result if p["current_role"] is not None]
+                )
+                if len(ids) == 1:
+                    result_id = ids.pop()
+            # no match (or still ambiguous) on identifier -- fall through to name
+            # matching below rather than erroring, since name is always present too
+
+        if result_id is None:
+            if list(spec.keys()) == ["name"]:
+                # if we're just resolving on name, include other names and family name
+                name = spec["name"]
+                name = re.sub(r"\s+", " ", name)
+                name = name.strip()
+                name_spec = (
+                    Q(name__iexact=name)
+                    | Q(other_names__name__iexact=name)
+                    | Q(family_name__iexact=name)
+                )
             else:
-                errmsg = "multiple people returned for spec"
+                name_spec = Q(**spec)
+
+            query_result = Person.objects.filter(
+                name_spec & common_spec
+            ).values("id", "current_role")
+            result_set = set([p["id"] for p in query_result])
+            if len(result_set) == 1:
+                result_id = result_set.pop()
+            elif not result_set:
+                errmsg = "no people returned for spec"
+            else:
+                # If there are multiple rows returned see we can get the active legislator.
+                ids = set(
+                    [p["id"] for p in query_result if p["current_role"] is not None]
+                )
+                if len(ids) == 1:
+                    result_id = ids.pop()
+                else:
+                    errmsg = "multiple people returned for spec"
 
         # either raise or log error
         if errmsg:
             self.error(errmsg)
-            self.person_cache[cache_key] = None
+
+        self.person_cache[cache_key] = result_id
 
         # return the newly-cached object
         return self.person_cache[cache_key]
