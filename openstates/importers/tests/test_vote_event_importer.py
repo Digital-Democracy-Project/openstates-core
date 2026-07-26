@@ -4,6 +4,7 @@ from openstates.importers import VoteEventImporter, BillImporter
 from openstates.data.models import (
     Jurisdiction,
     Person,
+    PersonIdentifier,
     Organization,
     Division,
     VoteEvent,
@@ -76,6 +77,87 @@ def test_full_vote_event():
         else:
             assert v.option == "no"
             assert v.voter == Person.objects.get(name="Adam Smith")
+
+
+@pytest.mark.django_db
+def test_vote_event_voter_resolved_by_identifier_when_name_ambiguous():
+    # Two members share a surname disambiguated only by the scraper's raw
+    # sort-field name ("Garcia (CA)"/"Garcia (TX)"), which won't `iexact`-match
+    # either person's stored name/other_names/family_name. Resolution should
+    # still succeed via the bioguide-style identifier the scraper had on hand.
+    create_jurisdiction()
+    bill = ScrapeBill("HB 1", "1900", "Axe & Tack Tax Act", chamber="lower")
+    vote_event = ScrapeVoteEvent(
+        legislative_session="1900",
+        motion_text="passage",
+        start_date="1900-04-01",
+        classification="passage:bill",
+        result="pass",
+        bill_chamber="lower",
+        bill="HB 1",
+        chamber="lower",
+    )
+    vote_event.set_count("yes", 20)
+    vote_event.yes("Garcia (CA)", id="G000598")
+    vote_event.no("Garcia (TX)", id="G000587")
+
+    person_ca = Person.objects.create(name="Robert Garcia")
+    person_tx = Person.objects.create(name="Sylvia Garcia")
+    PersonIdentifier.objects.create(
+        person=person_ca, scheme="bioguide", identifier="G000598"
+    )
+    PersonIdentifier.objects.create(
+        person=person_tx, scheme="bioguide", identifier="G000587"
+    )
+    for person in (person_ca, person_tx):
+        person.memberships.create(
+            organization=Organization.objects.get(classification="lower")
+        )
+
+    bi = BillImporter("jid")
+    bi.import_data([bill.as_dict()])
+    VoteEventImporter("jid", bi).import_data([vote_event.as_dict()])
+
+    ve = VoteEvent.objects.get()
+    votes = {v.voter_name: v for v in ve.votes.all()}
+    assert votes["Garcia (CA)"].voter == person_ca
+    assert votes["Garcia (CA)"].option == "yes"
+    assert votes["Garcia (TX)"].voter == person_tx
+    assert votes["Garcia (TX)"].option == "no"
+
+
+@pytest.mark.django_db
+def test_vote_event_voter_identifier_miss_falls_back_to_name():
+    # If the identifier doesn't match anyone in our DB (e.g. not yet loaded),
+    # resolution should still fall back to the existing name-matching behavior
+    # rather than leaving voter unresolved.
+    create_jurisdiction()
+    bill = ScrapeBill("HB 1", "1900", "Axe & Tack Tax Act", chamber="lower")
+    vote_event = ScrapeVoteEvent(
+        legislative_session="1900",
+        motion_text="passage",
+        start_date="1900-04-01",
+        classification="passage:bill",
+        result="pass",
+        bill_chamber="lower",
+        bill="HB 1",
+        chamber="lower",
+    )
+    vote_event.set_count("yes", 20)
+    vote_event.yes("John Smith", id="Z999999")
+
+    person = Person.objects.create(name="John Smith")
+    person.memberships.create(
+        organization=Organization.objects.get(classification="lower")
+    )
+
+    bi = BillImporter("jid")
+    bi.import_data([bill.as_dict()])
+    VoteEventImporter("jid", bi).import_data([vote_event.as_dict()])
+
+    ve = VoteEvent.objects.get()
+    v = ve.votes.get()
+    assert v.voter == person
 
 
 @pytest.mark.django_db

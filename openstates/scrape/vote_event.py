@@ -74,21 +74,27 @@ class VoteEvent(BaseModel, SourceMixin):
             self.bill = _make_pseudo_id(**kwargs)
             self.bill_identifier = bill_or_identifier
 
-    def vote(self, option, voter, *, note=""):
+    def vote(self, option, voter, *, note="", id=None):
+        pseudo_id_kwargs = {"name": voter}
+        if id:
+            # a stable per-person identifier (e.g. bioguide, lis_id) the scraper
+            # already has on hand, so resolve_person() can match on it directly
+            # instead of relying solely on fragile name-string matching
+            pseudo_id_kwargs["id"] = id
         self.votes.append(
             {
                 "option": option,
                 "voter_name": voter,
-                "voter_id": _make_pseudo_id(name=voter),
+                "voter_id": _make_pseudo_id(**pseudo_id_kwargs),
                 "note": note,
             }
         )
 
     def yes(self, name, *, id=None, note=""):
-        return self.vote("yes", name, note=note)
+        return self.vote("yes", name, id=id, note=note)
 
     def no(self, name, *, id=None, note=""):
-        return self.vote("no", name, note=note)
+        return self.vote("no", name, id=id, note=note)
 
     def set_count(self, option, value):
         for co in self.counts:
