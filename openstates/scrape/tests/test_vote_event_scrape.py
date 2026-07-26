@@ -34,6 +34,20 @@ def test_simple_vote_event():
     assert "we get here"
 
 
+def test_vote_event_voter_identifier():
+    ve = toy_vote_event()
+    ve.yes("Garcia (CA)", id="G000598")
+    ve.no("Paul")
+    ve.vote("abstain", "Thom", id="T000123")
+
+    assert get_pseudo_id(ve.votes[0]["voter_id"]) == {
+        "name": "Garcia (CA)",
+        "id": "G000598",
+    }
+    assert get_pseudo_id(ve.votes[1]["voter_id"]) == {"name": "Paul"}
+    assert get_pseudo_id(ve.votes[2]["voter_id"]) == {"name": "Thom", "id": "T000123"}
+
+
 def test_vote_event_org_obj():
     o = Organization("something", classification="committee")
     ve = VoteEvent(
