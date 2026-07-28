@@ -58,6 +58,38 @@ MIMETYPES = {
 S3_BILL_ARCHIVE_WRAPPER = "/Users/agentsmith/bin/ddp-prod-s3-bill-archive"
 S3_BILL_ARCHIVE_BUCKET = "ddp-bill-archive"
 
+# Found 2026-07-28: legislature.mi.gov started serving a CAPTCHA/rate-limit challenge page
+# (HTTP 200, "Validation request" title) in place of every requested document mid-run. Nothing
+# about that response looks wrong at the transport layer, so it was archived and S3-uploaded as
+# if it were the real bill text -- 236 documents, silently. These two checks catch that class of
+# bug: a binary media_type whose actual bytes don't match that format's own magic number at all,
+# or any response containing a known vendor challenge-page fingerprint. Not exhaustive by
+# design -- this catches "the site is lying about what it sent us", not every possible malformed
+# document.
+_BINARY_MAGIC_BYTES = {
+    "application/pdf": (b"%PDF-",),
+    "application/msword": (b"\xd0\xcf\x11\xe0",),
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (b"PK\x03\x04",),
+}
+_BLOCK_PAGE_MARKERS = (
+    b"user validation required",
+    b"captcha_resp",
+    b"pardon the interruption",
+    b"request rejected",
+    b"checking your browser before accessing",
+)
+
+
+def _block_page_reason(data: bytes, media_type: str) -> typing.Optional[str]:
+    magics = _BINARY_MAGIC_BYTES.get(media_type)
+    if magics and not any(data.startswith(m) for m in magics):
+        return f"expected {media_type} magic bytes, got {data[:16]!r} instead"
+    sniff = data[:2048].lower()
+    for marker in _BLOCK_PAGE_MARKERS:
+        if marker in sniff:
+            return f"content matches known block-page marker {marker!r}"
+    return None
+
 
 def _cleanup(text: str) -> str:
     # strip nulls
@@ -366,6 +398,7 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
         "fetched": 0,
         "skipped": 0,
         "fetch_errors": 0,
+        "blocked": 0,
         "extract_errors": 0,
         "archived": 0,
         "conflicts": 0,
@@ -406,6 +439,12 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
             except Exception as e:
                 click.secho(f"failed to fetch {link.url}: {e}", fg="yellow")
                 counters["fetch_errors"] += 1
+                continue
+
+            block_reason = _block_page_reason(data, link.media_type)
+            if block_reason:
+                click.secho(f"blocked response for {link.url}: {block_reason}", fg="red")
+                counters["blocked"] += 1
                 continue
 
             counters["fetched"] += 1
@@ -790,6 +829,7 @@ def archive(state: str, session: str = None, n: int = None) -> None:
         "fetched": 0,
         "skipped": 0,
         "fetch_errors": 0,
+        "blocked": 0,
         "extract_errors": 0,
         "archived": 0,
         "conflicts": 0,
@@ -805,13 +845,14 @@ def archive(state: str, session: str = None, n: int = None) -> None:
     status_color = "green"
     if totals["conflicts"]:
         status_color = "red"
-    elif totals["fetch_errors"] or totals["extract_errors"] or totals["s3_unverified"]:
+    elif totals["fetch_errors"] or totals["blocked"] or totals["extract_errors"] or totals["s3_unverified"]:
         status_color = "yellow"
 
     click.secho(
         f"{state}: {bill_count} bills checked | "
         f"fetched={totals['fetched']} skipped={totals['skipped']} "
         f"archived={totals['archived']} fetch_errors={totals['fetch_errors']} "
+        f"blocked={totals['blocked']} "
         f"extract_errors={totals['extract_errors']} conflicts={totals['conflicts']} "
         f"s3_verified={totals['s3_verified']} s3_unverified={totals['s3_unverified']}",
         fg=status_color,
