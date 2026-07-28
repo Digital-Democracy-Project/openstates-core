@@ -39,6 +39,41 @@ scraper.retry_attempts = 5
 scraper.retry_wait_seconds = 5
 warnings.filterwarnings("ignore", module="urllib3")
 
+# Found 2026-07-28: the bare "Mozilla" user_agent above got legislature.mi.gov's WAF to block
+# every document request on this module's very first-ever MI run, while scrapers/mi/bills.py's
+# own scrape (a real Firefox UA) has never once been blocked there across all available
+# scraper.log history. This table reuses each jurisdiction's own already-working browser UA
+# (copied from that jurisdiction's scrapers/<state>/bills.py -- keep in sync if it changes)
+# instead of this module's one generic default. Only User-Agent, not a jurisdiction's full
+# headers dict: some jurisdictions' headers are unrelated API auth (e.g. va's WebAPIKey/
+# Content-Type for its authenticated LIS metadata API), not browser impersonation, and would be
+# actively wrong to send on a plain document-file GET.
+JURISDICTION_USER_AGENTS = {
+    "mi": "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/118.0",
+    "az": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36",
+}
+# Fallback for every jurisdiction with no state-specific entry above (currently: fl, ut, va, wa)
+# -- one of FL's own rotation pool (scrapers/fl/utils.py's get_random_user_agent()), which that
+# scraper already relies on to get past an actively hostile WAF, so it's a safer default than
+# this module's previous bare "Mozilla" regardless of jurisdiction.
+_DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) Version/14.1.1 Safari/605.1.15"
+)
+
+
+class SiteBlockedError(Exception):
+    """
+    Raised once a jurisdiction's fetches have looked like _BLOCK_PAGE_MARKERS/magic-byte
+    mismatches too many times in a row (see _block_page_reason). Stops that jurisdiction's run
+    rather than continuing to send doomed requests to a site that's actively blocking us --
+    burning through the rest of a jurisdiction's bills wouldn't recover anything and likely only
+    deepens whatever reputation/rate signal triggered the block in the first place.
+    """
+
+
+CONSECUTIVE_BLOCK_LIMIT = 3
+
 
 def get_raw_dir() -> Path:
     return Path(__file__).parent / ".." / "fulltext" / "raw"
@@ -370,7 +405,9 @@ def _upload_and_verify(
     return f"s3://{S3_BILL_ARCHIVE_BUCKET}/{object_key}"
 
 
-def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
+def archive_bill_versions(
+    bill: typing.Any, block_state: typing.Optional[dict] = None
+) -> dict[str, int]:
     """
     Fetch and permanently archive every not-yet-captured version+document of a bill
     (PLAN-bill-document-provenance.md, Phase 1).
@@ -394,6 +431,9 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
     """
     from openstates.data.models import BillVersionDocument
 
+    if block_state is None:
+        block_state = {"consecutive": 0}
+
     counters = {
         "fetched": 0,
         "skipped": 0,
@@ -404,6 +444,11 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
         "conflicts": 0,
         "s3_verified": 0,
         "s3_unverified": 0,
+    }
+
+    jurisdiction_abbr = jid_to_abbr(bill.legislative_session.jurisdiction_id)
+    request_headers = {
+        "User-Agent": JURISDICTION_USER_AGENTS.get(jurisdiction_abbr, _DEFAULT_USER_AGENT)
     }
 
     prior_text: typing.Optional[str] = None
@@ -435,7 +480,9 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                 continue
 
             try:
-                data = scraper.request("GET", link.url, allow_redirects=True).content
+                data = scraper.request(
+                    "GET", link.url, allow_redirects=True, headers=request_headers
+                ).content
             except Exception as e:
                 click.secho(f"failed to fetch {link.url}: {e}", fg="yellow")
                 counters["fetch_errors"] += 1
@@ -445,8 +492,18 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
             if block_reason:
                 click.secho(f"blocked response for {link.url}: {block_reason}", fg="red")
                 counters["blocked"] += 1
+                block_state["consecutive"] += 1
+                if block_state["consecutive"] >= CONSECUTIVE_BLOCK_LIMIT:
+                    exc = SiteBlockedError(
+                        f"{CONSECUTIVE_BLOCK_LIMIT} consecutive blocked responses for "
+                        f"{jurisdiction_abbr} -- aborting rather than continuing to hammer a "
+                        f"site that's blocking us (last: {link.url}, {block_reason})"
+                    )
+                    exc.partial_counters = counters
+                    raise exc
                 continue
 
+            block_state["consecutive"] = 0
             counters["fetched"] += 1
             sha256_hash = hashlib.sha256(data).hexdigest()
             local_md5 = hashlib.md5(data).hexdigest()
@@ -837,13 +894,27 @@ def archive(state: str, session: str = None, n: int = None) -> None:
         "s3_unverified": 0,
     }
     bill_count = 0
+    block_state = {"consecutive": 0}
+    aborted_reason = None
     for bill in bills:
         bill_count += 1
-        for key, value in archive_bill_versions(bill).items():
+        try:
+            bill_counters = archive_bill_versions(bill, block_state)
+        except SiteBlockedError as e:
+            for key, value in e.partial_counters.items():
+                totals[key] += value
+            aborted_reason = str(e)
+            # "SiteBlockedError: ..." (not a wrapping "ABORTING ..." message) so run-scrape.sh's
+            # archive_if_enabled() -- which greps output for a line matching
+            # `^ClassName(Error|Exception): ` to build the CAMS failure report -- picks this up
+            # as a real, specific error_type instead of falling back to generic "ArchiveFailure".
+            click.secho(f"SiteBlockedError: {aborted_reason}", fg="red")
+            break
+        for key, value in bill_counters.items():
             totals[key] += value
 
     status_color = "green"
-    if totals["conflicts"]:
+    if totals["conflicts"] or aborted_reason:
         status_color = "red"
     elif totals["fetch_errors"] or totals["blocked"] or totals["extract_errors"] or totals["s3_unverified"]:
         status_color = "yellow"
@@ -857,6 +928,10 @@ def archive(state: str, session: str = None, n: int = None) -> None:
         f"s3_verified={totals['s3_verified']} s3_unverified={totals['s3_unverified']}",
         fg=status_color,
     )
+    if aborted_reason:
+        # Same non-zero-exit contract as the conflicts case below -- surfaces as a failure in
+        # run-scrape.sh rather than a log line only a human reading logs/scraper.log would see.
+        sys.exit(1)
     if totals["conflicts"]:
         # A conflict means our own uniqueness assumption was wrong somewhere — worth a
         # non-zero exit so this surfaces as a failure in run-scrape.sh, not just a log line.
