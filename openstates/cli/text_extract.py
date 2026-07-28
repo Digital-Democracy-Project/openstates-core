@@ -3,6 +3,8 @@ import os
 import re
 import hashlib
 import difflib
+import functools
+import importlib
 import typing
 import sys
 import csv
@@ -42,24 +44,35 @@ warnings.filterwarnings("ignore", module="urllib3")
 # Found 2026-07-28: the bare "Mozilla" user_agent above got legislature.mi.gov's WAF to block
 # every document request on this module's very first-ever MI run, while scrapers/mi/bills.py's
 # own scrape (a real Firefox UA) has never once been blocked there across all available
-# scraper.log history. This table reuses each jurisdiction's own already-working browser UA
-# (copied from that jurisdiction's scrapers/<state>/bills.py -- keep in sync if it changes)
-# instead of this module's one generic default. Only User-Agent, not a jurisdiction's full
-# headers dict: some jurisdictions' headers are unrelated API auth (e.g. va's WebAPIKey/
-# Content-Type for its authenticated LIS metadata API), not browser impersonation, and would be
-# actively wrong to send on a plain document-file GET.
-JURISDICTION_USER_AGENTS = {
-    "mi": "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/118.0",
-    "az": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36",
-}
-# Fallback for every jurisdiction with no state-specific entry above (currently: fl, ut, va, wa)
-# -- one of FL's own rotation pool (scrapers/fl/utils.py's get_random_user_agent()), which that
-# scraper already relies on to get past an actively hostile WAF, so it's a safer default than
-# this module's previous bare "Mozilla" regardless of jurisdiction.
+# scraper.log history. Fallback for every jurisdiction with no USER_AGENT of its own (see
+# _jurisdiction_user_agent below) -- one of FL's own rotation pool (scrapers/fl/utils.py's
+# get_random_user_agent()), which that scraper already relies on to get past an actively
+# hostile WAF, so it's a safer default than this module's previous bare "Mozilla" regardless
+# of jurisdiction.
 _DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
     "(KHTML, like Gecko) Version/14.1.1 Safari/605.1.15"
 )
+
+
+@functools.lru_cache(maxsize=None)
+def _jurisdiction_user_agent(abbr: str) -> str:
+    """
+    Reads a jurisdiction's own already-working scraper module (scrapers/<abbr>/bills.py) for
+    its USER_AGENT constant, rather than keeping a second, hand-copied value here that can
+    silently drift out of sync with the real one if it's ever changed there. Most jurisdictions
+    don't define a USER_AGENT constant at all -- that's expected, not an error, since most
+    haven't needed one (see fl/va, which set headers for unrelated reasons: FL rotates UAs
+    dynamically per-request rather than a static one, and VA's "headers" are auth for its
+    authenticated LIS API, not browser impersonation) -- any failure here just falls back to
+    _DEFAULT_USER_AGENT. Cached since it's looked up once per bill and the answer never changes
+    within a run.
+    """
+    try:
+        module = importlib.import_module(f"{abbr}.bills")
+        return module.USER_AGENT
+    except (ImportError, AttributeError):
+        return _DEFAULT_USER_AGENT
 
 
 class SiteBlockedError(Exception):
@@ -447,9 +460,7 @@ def archive_bill_versions(
     }
 
     jurisdiction_abbr = jid_to_abbr(bill.legislative_session.jurisdiction_id)
-    request_headers = {
-        "User-Agent": JURISDICTION_USER_AGENTS.get(jurisdiction_abbr, _DEFAULT_USER_AGENT)
-    }
+    request_headers = {"User-Agent": _jurisdiction_user_agent(jurisdiction_abbr)}
 
     prior_text: typing.Optional[str] = None
 
