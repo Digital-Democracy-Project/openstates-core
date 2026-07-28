@@ -27,6 +27,7 @@ from .bill import (
     BillActionRelatedEntity,
     BillAction,
     SearchableBill,
+    BillVersionDocument,
 )
 from .vote import VoteEvent, VoteCount, PersonVote, VoteSource
 from .event import (

@@ -1,17 +1,23 @@
 #!/usr/bin/env python
 import os
+import re
+import hashlib
+import difflib
 import typing
 import sys
 import csv
+import json
 import math
+import subprocess
 import warnings
 import click
 import scrapelib
 import time
 from pathlib import Path
 from django.contrib.postgres.search import SearchVector  # type: ignore
-from django.db import transaction  # type: ignore
+from django.db import transaction, IntegrityError  # type: ignore
 from django.db.models import Count  # type: ignore
+from django.utils import timezone  # type: ignore
 from openstates.utils.django import init_django
 from openstates.utils import jid_to_abbr, abbr_to_jid
 from openstates.fulltext import (
@@ -26,6 +32,11 @@ stats = Instrumentation()
 # disable SSL validation and ignore warnings
 scraper = scrapelib.Scraper(verify=False)
 scraper.user_agent = "Mozilla"
+# Match FL's own scraper's resilience settings (scrapers/fl/bills.py) instead of scrapelib's
+# bare defaults (0 retries) -- this scraper hits the same flaky state legislature sites FL's
+# scraper does, so it should retry the same way rather than giving up on the first failure.
+scraper.retry_attempts = 5
+scraper.retry_wait_seconds = 5
 warnings.filterwarnings("ignore", module="urllib3")
 
 
@@ -40,6 +51,44 @@ MIMETYPES = {
     "application/rtf": "rtf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
 }
+
+# Phase 2 (PLAN-bill-document-provenance.md): S3 Glacier Deep Archive upload + verify.
+# Always go through the sudo-gated proxy wrapper -- no raw AWS credentials or CLI exist on
+# this box by design (see ddp-infra/Production_S3_Wrappers.md).
+S3_BILL_ARCHIVE_WRAPPER = "/Users/agentsmith/bin/ddp-prod-s3-bill-archive"
+S3_BILL_ARCHIVE_BUCKET = "ddp-bill-archive"
+
+# Found 2026-07-28: legislature.mi.gov started serving a CAPTCHA/rate-limit challenge page
+# (HTTP 200, "Validation request" title) in place of every requested document mid-run. Nothing
+# about that response looks wrong at the transport layer, so it was archived and S3-uploaded as
+# if it were the real bill text -- 236 documents, silently. These two checks catch that class of
+# bug: a binary media_type whose actual bytes don't match that format's own magic number at all,
+# or any response containing a known vendor challenge-page fingerprint. Not exhaustive by
+# design -- this catches "the site is lying about what it sent us", not every possible malformed
+# document.
+_BINARY_MAGIC_BYTES = {
+    "application/pdf": (b"%PDF-",),
+    "application/msword": (b"\xd0\xcf\x11\xe0",),
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (b"PK\x03\x04",),
+}
+_BLOCK_PAGE_MARKERS = (
+    b"user validation required",
+    b"captcha_resp",
+    b"pardon the interruption",
+    b"request rejected",
+    b"checking your browser before accessing",
+)
+
+
+def _block_page_reason(data: bytes, media_type: str) -> typing.Optional[str]:
+    magics = _BINARY_MAGIC_BYTES.get(media_type)
+    if magics and not any(data.startswith(m) for m in magics):
+        return f"expected {media_type} magic bytes, got {data[:16]!r} instead"
+    sniff = data[:2048].lower()
+    for marker in _BLOCK_PAGE_MARKERS:
+        if marker in sniff:
+            return f"content matches known block-page marker {marker!r}"
+    return None
 
 
 def _cleanup(text: str) -> str:
@@ -196,6 +245,280 @@ def update_bill(bill: typing.Any) -> int:
         search_vector="",
     )
     return sb.id
+
+
+def _archive_path(bill: typing.Any, version_note: str, version_date: str, url: str, ext: str) -> str:
+    """
+    Build the permanent archive path for one bill version's document.
+
+    Keyed by version_date + a hash of the source url (not just version_note) so it matches
+    BillVersionDocument's own uniqueness key exactly — a single version_note alone isn't unique
+    within a bill (PLAN-bill-document-provenance.md, Phase 1: a version can have more than one
+    file, e.g. a PDF and an HTML copy of "Introduced", and a path keyed on version_note alone
+    would let one silently overwrite the other on disk).
+
+    Three path segments are for human browsability, not identity, added 2026-07-24: the top-level
+    "bills" segment (DDP-HOT is expected to hold other document types over time, not just bill
+    text), a "{chamber}" segment (found via real DDP-HOT data: without it, USA's House and Senate
+    bills -- scraped as two entirely separate runs -- were being jumbled into one flat "119"
+    folder, with chamber visible only implicitly via the HR/S-style identifier prefix; applied to
+    every jurisdiction for consistency, not just USA, even though state identifiers already hint
+    at chamber), and the bill folder's "{identifier}--{uuid}" prefix (so `ls` reveals which bill
+    you're looking at). The actual identity/uniqueness still rests entirely on the bill's stable
+    UUID and the (version_note, version_date, url) key below — chamber and identifier are cosmetic
+    and can go stale (a rare chamber switch or mid-session renumbering) without affecting the
+    skip-check or the DB.
+    """
+    from openstates import settings
+
+    abbr = jid_to_abbr(bill.legislative_session.jurisdiction_id)
+    session = bill.legislative_session.identifier
+    # bill.id is "ocd-bill/<uuid>" — strip the prefix so it's usable as a bare path segment.
+    bill_id = bill.id.split("/")[-1]
+    chamber = (bill.from_organization.classification or "").strip() or "unknown"
+    safe_identifier = re.sub(r"[^A-Za-z0-9_-]+", "", bill.identifier) or "bill"
+    bill_dir = f"{safe_identifier}--{bill_id}"
+    safe_note = re.sub(r"[^A-Za-z0-9_-]+", "_", version_note).strip("_") or "version"
+    url_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+    # version_date is often blank in real scraped data (confirmed against live VA bills) —
+    # omit it rather than leaving a stray leading separator in the filename.
+    date_part = f"{version_date}-" if version_date else ""
+    filename = f"{date_part}{safe_note}-{url_hash}.{ext}"
+    return os.path.join(
+        settings.ARCHIVE_ROOT_DIR, "bills", "raw", abbr, session, chamber, bill_dir, filename
+    )
+
+
+def _s3_object_key(archive_path: str) -> str:
+    """
+    Object key mirrors the local ARCHIVE_ROOT_DIR-relative path 1:1, so the S3 layout matches
+    the local archive's and both are equally browsable.
+    """
+    from openstates import settings
+
+    return os.path.relpath(archive_path, settings.ARCHIVE_ROOT_DIR)
+
+
+def _upload_and_verify(
+    path: str, object_key: str, local_md5: str
+) -> typing.Optional[str]:
+    """
+    Upload one archived document to S3 Glacier Deep Archive and verify the upload via ETag
+    (PLAN-bill-document-provenance.md, Phase 2 -- verification mechanism revised 2026-07-25).
+
+    The bill-archive proxy (`ddp-prod-s3-bill-archive`, sudo-gated -- see
+    ddp-infra/Production_S3_Wrappers.md) uploads directly to DEEP_ARCHIVE with no normal-class
+    staging step, and has no download command at all: a real Deep Archive object needs a ~12hr
+    restore request before it's readable, so "upload, read back, recompute hash" (the original
+    Phase 2 design) is structurally unavailable here, not just slow. Instead: for a single-part
+    upload, S3 guarantees ETag is the plain hex MD5 of exactly the bytes it received and stored
+    -- a real, independent, server-computed check, just a weaker one than a full read-after-write.
+    A multipart-style ETag (a "-N" suffix -- a hash of hashes, not a plain MD5) can't be compared
+    this way at all and is treated the same as a verification failure, not silently accepted.
+
+    Open assumption, not yet independently confirmed (see plan's Risk Register): that the
+    proxy's `put-stream` always performs a single-part PutObject regardless of file size. Bill
+    documents (PDFs/HTML) are expected to stay well under any multipart threshold.
+
+    Returns the s3:// URI on a verified match; None on any upload failure, ETag mismatch, or a
+    multipart ETag -- the caller leaves `archive_location`/`archived_at` unset in every None
+    case, so an unverified upload is never recorded as archived.
+    """
+    try:
+        subprocess.run(
+            [S3_BILL_ARCHIVE_WRAPPER, "put", path, object_key],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        click.secho(f"S3 upload failed for {object_key}: {e.stderr.strip()}", fg="red")
+        return None
+    except OSError as e:
+        click.secho(f"S3 upload failed for {object_key}: {e}", fg="red")
+        return None
+
+    try:
+        info_proc = subprocess.run(
+            [S3_BILL_ARCHIVE_WRAPPER, "info", object_key],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        info = json.loads(info_proc.stdout)
+    except (subprocess.CalledProcessError, json.JSONDecodeError, OSError) as e:
+        click.secho(f"S3 verify failed for {object_key}: {e}", fg="red")
+        return None
+
+    etag = info.get("ETag", "").strip('"')
+    if not etag:
+        click.secho(f"S3 verify failed for {object_key}: no ETag in info response", fg="red")
+        return None
+    if "-" in etag:
+        click.secho(
+            f"S3 upload for {object_key} used multipart (ETag={etag}); cannot verify via "
+            "ETag-as-MD5, treating as unverified",
+            fg="yellow",
+        )
+        return None
+    if etag != local_md5:
+        click.secho(
+            f"S3 ETag mismatch for {object_key}: local md5={local_md5} etag={etag}", fg="red"
+        )
+        return None
+
+    return f"s3://{S3_BILL_ARCHIVE_BUCKET}/{object_key}"
+
+
+def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
+    """
+    Fetch and permanently archive every not-yet-captured version+document of a bill
+    (PLAN-bill-document-provenance.md, Phase 1).
+
+    Unlike update_bill() (above), which only looks at a bill's single latest version, this
+    walks every version and every document link, and skips only the exact
+    (version_note, version_date, source_url) combination already archived — a natural key, not
+    the BillVersion/BillVersionLink row ids, which get deleted and recreated with new ids every
+    time a bill's version list changes at all (see the plan for why those ids aren't a stable
+    identity to check against).
+
+    Also computes `diff_from_previous_version` (added 2026-07-20): as versions are walked in
+    order, `prior_text` tracks the most recently seen version's representative text (preferring
+    a PDF document over other media types when a version has more than one file — the same
+    PDF > HTML priority already used elsewhere in this plan for lineage-field caching), updated
+    once per version rather than once per document so that two files of the *same* version
+    (e.g. a PDF and an HTML copy) never get diffed against each other. Every newly-archived
+    document within a version is diffed against that same `prior_text` snapshot. Already-
+    archived (skipped) documents still feed `prior_text` so a partial re-run (e.g. only a new
+    amendment's version is unarchived) diffs correctly against previously-archived text.
+    """
+    from openstates.data.models import BillVersionDocument
+
+    counters = {
+        "fetched": 0,
+        "skipped": 0,
+        "fetch_errors": 0,
+        "blocked": 0,
+        "extract_errors": 0,
+        "archived": 0,
+        "conflicts": 0,
+        "s3_verified": 0,
+        "s3_unverified": 0,
+    }
+
+    prior_text: typing.Optional[str] = None
+
+    for version in bill.versions.all():
+        this_version_texts: dict[str, str] = {}
+
+        for link in version.links.all():
+            existing = BillVersionDocument.objects.filter(
+                bill=bill,
+                version_note=version.note,
+                version_date=version.date,
+                source_url=link.url,
+            ).first()
+            if existing:
+                counters["skipped"] += 1
+                if not existing.is_error and existing.raw_text:
+                    this_version_texts[existing.media_type] = existing.raw_text
+                continue
+
+            metadata: Metadata = {
+                "url": link.url,
+                "media_type": link.media_type,
+                "title": bill.title,
+                "jurisdiction_id": bill.legislative_session.jurisdiction_id,
+            }
+            func = get_extract_func(metadata)
+            if func == DoNotDownload:
+                continue
+
+            try:
+                data = scraper.request("GET", link.url, allow_redirects=True).content
+            except Exception as e:
+                click.secho(f"failed to fetch {link.url}: {e}", fg="yellow")
+                counters["fetch_errors"] += 1
+                continue
+
+            block_reason = _block_page_reason(data, link.media_type)
+            if block_reason:
+                click.secho(f"blocked response for {link.url}: {block_reason}", fg="red")
+                counters["blocked"] += 1
+                continue
+
+            counters["fetched"] += 1
+            sha256_hash = hashlib.sha256(data).hexdigest()
+            local_md5 = hashlib.md5(data).hexdigest()
+
+            ext = MIMETYPES.get(link.media_type, "bin")
+            path = _archive_path(bill, version.note, version.date, link.url, ext)
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "wb") as f:
+                    f.write(data)
+            except OSError as e:
+                click.secho(f"failed to persist {link.url} to {path}: {e}", fg="red")
+                continue
+
+            object_key = _s3_object_key(path)
+            archive_location = _upload_and_verify(path, object_key, local_md5)
+            archived_at = timezone.now() if archive_location else None
+            if archive_location:
+                counters["s3_verified"] += 1
+            else:
+                counters["s3_unverified"] += 1
+
+            raw_text = ""
+            is_error = True
+            try:
+                raw_text = _cleanup(func(data, metadata))
+                is_error = not bool(raw_text)
+            except Exception as e:
+                click.secho(f"exception extracting {link.url}: {e}", fg="red")
+                counters["extract_errors"] += 1
+
+            diff_from_previous_version = None
+            if prior_text is not None and not is_error and raw_text:
+                diff_from_previous_version = "\n".join(
+                    difflib.unified_diff(
+                        prior_text.splitlines(), raw_text.splitlines(), lineterm=""
+                    )
+                )
+
+            try:
+                BillVersionDocument.objects.create(
+                    bill=bill,
+                    version_note=version.note,
+                    version_date=version.date,
+                    source_url=link.url,
+                    media_type=link.media_type,
+                    raw_text=raw_text,
+                    is_error=is_error,
+                    sha256_hash=sha256_hash,
+                    diff_from_previous_version=diff_from_previous_version,
+                    archive_location=archive_location,
+                    archived_at=archived_at,
+                )
+                counters["archived"] += 1
+                if not is_error and raw_text:
+                    this_version_texts[link.media_type] = raw_text
+            except IntegrityError:
+                # Should be rare-to-never — surface loudly rather than silently drop or crash
+                # the whole run (a concurrent scrape run for the same bill is the likeliest cause).
+                click.secho(
+                    f"WARNING natural-key conflict archiving {bill.identifier} "
+                    f"{version.note} ({version.date}) {link.url}",
+                    fg="red",
+                )
+                counters["conflicts"] += 1
+
+        if this_version_texts:
+            prior_text = this_version_texts.get("application/pdf") or next(
+                iter(this_version_texts.values())
+            )
+
+    return counters
 
 
 @click.group()
@@ -473,6 +796,71 @@ def update(
         ]
     )
     stats.close()
+
+
+@main.command(
+    help="permanently archive every not-yet-captured bill version + document "
+    "(PLAN-bill-document-provenance.md, Phase 1)"
+)
+@click.argument("state")
+@click.option("--session", default=None)
+@click.option("-n", default=None, help="limit number of bills processed, for testing")
+def archive(state: str, session: str = None, n: int = None) -> None:
+    init_django()
+    from openstates.data.models import Bill
+
+    if state == "all":
+        bills = Bill.objects.all()
+    elif session:
+        bills = Bill.objects.filter(
+            legislative_session__jurisdiction_id=abbr_to_jid(state),
+            legislative_session__identifier=session,
+        )
+    else:
+        bills = Bill.objects.filter(
+            legislative_session__jurisdiction_id=abbr_to_jid(state)
+        )
+
+    bills = bills.prefetch_related("versions__links")
+    if n:
+        bills = bills[: int(n)]
+
+    totals = {
+        "fetched": 0,
+        "skipped": 0,
+        "fetch_errors": 0,
+        "blocked": 0,
+        "extract_errors": 0,
+        "archived": 0,
+        "conflicts": 0,
+        "s3_verified": 0,
+        "s3_unverified": 0,
+    }
+    bill_count = 0
+    for bill in bills:
+        bill_count += 1
+        for key, value in archive_bill_versions(bill).items():
+            totals[key] += value
+
+    status_color = "green"
+    if totals["conflicts"]:
+        status_color = "red"
+    elif totals["fetch_errors"] or totals["blocked"] or totals["extract_errors"] or totals["s3_unverified"]:
+        status_color = "yellow"
+
+    click.secho(
+        f"{state}: {bill_count} bills checked | "
+        f"fetched={totals['fetched']} skipped={totals['skipped']} "
+        f"archived={totals['archived']} fetch_errors={totals['fetch_errors']} "
+        f"blocked={totals['blocked']} "
+        f"extract_errors={totals['extract_errors']} conflicts={totals['conflicts']} "
+        f"s3_verified={totals['s3_verified']} s3_unverified={totals['s3_unverified']}",
+        fg=status_color,
+    )
+    if totals["conflicts"]:
+        # A conflict means our own uniqueness assumption was wrong somewhere — worth a
+        # non-zero exit so this surfaces as a failure in run-scrape.sh, not just a log line.
+        sys.exit(1)
 
 
 def reindex(ids_to_update: list[int]) -> None:
