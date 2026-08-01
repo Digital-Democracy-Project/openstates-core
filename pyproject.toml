@@ -40,6 +40,7 @@ influxdb-client = "^1.37.0"
 pytz = "^2024.1"
 google-cloud-storage = "^2.18.0"
 gitpython = "^3.1.44"
+playwright = "^1.60.0"
 pytest = "^6.2.5"
 
 [tool.poetry.dev-dependencies]

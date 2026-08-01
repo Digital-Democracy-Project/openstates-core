@@ -11,9 +11,11 @@ import math
 import subprocess
 import warnings
 import click
+import requests
 import scrapelib
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 from django.contrib.postgres.search import SearchVector  # type: ignore
 from django.db import transaction, IntegrityError  # type: ignore
 from django.db.models import Count  # type: ignore
@@ -27,6 +29,12 @@ from openstates.fulltext import (
     Metadata,
 )
 from ..utils.instrument import Instrumentation
+from ..utils.cookie_provider import (
+    BLOCK_PAGE_MARKERS as _BLOCK_PAGE_MARKERS,
+    WafBlockDetected,
+    content_matches_block_markers,
+)
+from ..utils.mi_cookies import MI_COOKIE_PROVIDER
 
 stats = Instrumentation()
 # disable SSL validation and ignore warnings
@@ -71,13 +79,9 @@ _BINARY_MAGIC_BYTES = {
     "application/msword": (b"\xd0\xcf\x11\xe0",),
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (b"PK\x03\x04",),
 }
-_BLOCK_PAGE_MARKERS = (
-    b"user validation required",
-    b"captcha_resp",
-    b"pardon the interruption",
-    b"request rejected",
-    b"checking your browser before accessing",
-)
+# _BLOCK_PAGE_MARKERS itself now lives in openstates.utils.cookie_provider (OPEN-19) so
+# scrapers and this archiver share one block-detection heuristic instead of each keeping
+# its own copy that can drift out of sync.
 
 
 def _block_page_reason(data: bytes, media_type: str) -> typing.Optional[str]:
@@ -89,6 +93,34 @@ def _block_page_reason(data: bytes, media_type: str) -> typing.Optional[str]:
         if marker in sniff:
             return f"content matches known block-page marker {marker!r}"
     return None
+
+
+def _fetch_bytes(url: str) -> bytes:
+    """
+    GET url via the module-level `scraper` and return its content.
+
+    Only legislature.mi.gov (OPEN-19) is wired to the cached WAF cookies -- every other
+    jurisdiction's fetch is completely unchanged. Deliberately scoped to this function
+    (used by archive_bill_versions(), the path run-archive.sh actually calls) and not the
+    older download()/update_bill() paths used by the separate `sample`/`update` commands --
+    out of scope for this ticket, not an oversight.
+    """
+    if "legislature.mi.gov" in urlparse(url).netloc:
+
+        def do_request(cookies: dict) -> requests.Response:
+            try:
+                resp = scraper.request("GET", url, allow_redirects=True, cookies=cookies)
+            except requests.exceptions.ConnectionError as e:
+                raise WafBlockDetected(str(e)) from e
+            if content_matches_block_markers(resp.content):
+                raise WafBlockDetected(
+                    "response matched known WAF block-page heuristic"
+                )
+            return resp
+
+        return MI_COOKIE_PROVIDER.fetch_with_retry(do_request).content
+
+    return scraper.request("GET", url, allow_redirects=True).content
 
 
 def _cleanup(text: str) -> str:
@@ -435,7 +467,14 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                 continue
 
             try:
-                data = scraper.request("GET", link.url, allow_redirects=True).content
+                data = _fetch_bytes(link.url)
+            except WafBlockDetected as e:
+                click.secho(
+                    f"blocked (WAF) fetching {link.url} even after cookie re-warm: {e}",
+                    fg="red",
+                )
+                counters["blocked"] += 1
+                continue
             except Exception as e:
                 click.secho(f"failed to fetch {link.url}: {e}", fg="yellow")
                 counters["fetch_errors"] += 1
