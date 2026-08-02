@@ -7,6 +7,7 @@ from openstates.utils.cookie_provider import (
     CookieProvider,
     WafBlockDetected,
     content_matches_block_markers,
+    content_matches_fake_404_block,
 )
 
 
@@ -149,3 +150,15 @@ def test_content_matches_block_markers():
     assert content_matches_block_markers(b"Request Rejected")
     assert not content_matches_block_markers(b"<html>real bill content</html>")
     assert not content_matches_block_markers(b"")
+
+
+def test_content_matches_fake_404_block():
+    assert content_matches_fake_404_block(
+        b"<html><body>The specified URL cannot be found.</body></html>"
+    )
+    # case-insensitive, like content_matches_block_markers
+    assert content_matches_fake_404_block(b"THE SPECIFIED URL CANNOT BE FOUND")
+    assert not content_matches_fake_404_block(
+        b"<html>Senate Bill 1141 of 2026 - Michigan Legislature</html>"
+    )
+    assert not content_matches_fake_404_block(b"")
