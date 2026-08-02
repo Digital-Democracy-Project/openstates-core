@@ -15,6 +15,7 @@ from .common import (
     ExtractorFunc,
 )
 from .de import handle_delaware
+from .va import handle_virginia_html
 
 
 class DoNotDownload:
@@ -117,7 +118,10 @@ CONVERSION_FUNCTIONS = {
     "ri": {"application/pdf": extract_sometimes_numbered_pdf},
     # aggressive, but the Washington & Texas HTML are both basically bare
     "tx": {"text/html": extractor_for_element_by_xpath("//html")},
-    "va": {"text/html": extractor_for_element_by_id("mainC")},
+    "va": {
+        "text/html": handle_virginia_html,
+        "application/pdf": extract_line_numbered_pdf,
+    },
     "vt": {"application/pdf": extract_sometimes_numbered_pdf},
     "wa": {"text/html": extractor_for_element_by_xpath("//html")},
     "wi": {
