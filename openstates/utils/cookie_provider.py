@@ -50,6 +50,23 @@ def content_matches_block_markers(data: bytes) -> bool:
     return any(marker in sniff for marker in BLOCK_PAGE_MARKERS)
 
 
+# legislature.mi.gov's WAF can also block a request behind a genuine HTTP 404 status, serving
+# its own site-styled "The specified URL cannot be found" error page instead of the real
+# content (OPEN-18) -- unlike BLOCK_PAGE_MARKERS above, this isn't a 200-status challenge page,
+# so it's only meaningful to check from inside a 404/HTTPError handler, not on every response.
+# Kept as its own marker set/function rather than folded into BLOCK_PAGE_MARKERS for that reason.
+FAKE_404_BLOCK_MARKERS = (b"the specified url cannot be found",)
+
+
+def content_matches_fake_404_block(data: bytes) -> bool:
+    """True if `data` looks like legislature.mi.gov's generic 'URL cannot be found' error page
+    -- a WAF block served with a genuine 404 status, not a real dead link (OPEN-18)."""
+    if not data:
+        return False
+    sniff = data[:2048].lower()
+    return any(marker in sniff for marker in FAKE_404_BLOCK_MARKERS)
+
+
 # A Playwright cookie with no real expiry (session cookie, `expires` missing or <= 0) is
 # cached for this long before being treated as stale -- long enough to avoid re-warming on
 # every single invocation, short enough that a genuinely session-scoped cookie doesn't get
