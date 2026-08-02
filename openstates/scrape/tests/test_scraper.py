@@ -1,4 +1,6 @@
 import pytest
+import requests
+import scrapelib
 from unittest import mock
 from openstates.scrape import Bill, State, EmptyScrape
 from openstates.scrape.base import Scraper, ScrapeError, BaseBillScraper
@@ -166,3 +168,79 @@ def test_whitespace_is_stripped():
     assert b.sources[0]["url"] == "https://example.com/"
     # subject got sorted by pre_save
     assert b.subject == ["one", "three", "two"]
+
+
+def make_http_error(status_code=500, url="http://example.com"):
+    resp = requests.models.Response()
+    resp.status_code = status_code
+    resp.url = url
+    resp._content = b"error"
+    return scrapelib.HTTPError(resp)
+
+
+def test_retry_on_connection_error_retries_http_error_by_default():
+    """Regression guard (OPEN-21): a Scraper that hasn't opted any exception types out
+    of retry_on_connection_error's own retry keeps today's broad behavior -- since
+    scrapelib.HTTPError inherits requests.exceptions.RequestException, it's retried like
+    any other connection-style failure unless a caller (like MI) explicitly excludes it.
+    """
+    s = Scraper(juris, "/tmp/")
+    attempts = {"n": 0}
+
+    def flaky():
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise make_http_error()
+        return "ok"
+
+    with mock.patch("openstates.scrape.base.time.sleep"):
+        result = s.retry_on_connection_error(
+            flaky, max_retries=3, initial_backoff=0.01, max_backoff=0.01
+        )
+
+    assert result == "ok"
+    assert attempts["n"] == 3
+
+
+def test_retry_on_connection_error_excluded_exception_propagates_immediately():
+    """OPEN-21: a Scraper that opts scrapelib.HTTPError out via
+    _resilience_retry_excluded_exceptions gets zero retries/sleep for it -- the exception
+    propagates on the very first attempt instead of being retried max_retries times."""
+    s = Scraper(juris, "/tmp/")
+    s._resilience_retry_excluded_exceptions = (scrapelib.HTTPError,)
+    attempts = {"n": 0}
+
+    def always_raises():
+        attempts["n"] += 1
+        raise make_http_error()
+
+    with mock.patch("openstates.scrape.base.time.sleep") as sleep_mock:
+        with pytest.raises(scrapelib.HTTPError):
+            s.retry_on_connection_error(
+                always_raises, max_retries=3, initial_backoff=10, max_backoff=120
+            )
+
+    assert attempts["n"] == 1
+    sleep_mock.assert_not_called()
+
+
+def test_retry_on_connection_error_exclusion_is_scoped_to_named_types():
+    """The exclusion tuple only opts out the named exception types -- other
+    connection-style errors (e.g. Timeout) are still retried as before."""
+    s = Scraper(juris, "/tmp/")
+    s._resilience_retry_excluded_exceptions = (scrapelib.HTTPError,)
+    attempts = {"n": 0}
+
+    def flaky_timeout():
+        attempts["n"] += 1
+        if attempts["n"] < 2:
+            raise requests.exceptions.Timeout("timed out")
+        return "ok"
+
+    with mock.patch("openstates.scrape.base.time.sleep"):
+        result = s.retry_on_connection_error(
+            flaky_timeout, max_retries=3, initial_backoff=0.01, max_backoff=0.01
+        )
+
+    assert result == "ok"
+    assert attempts["n"] == 2

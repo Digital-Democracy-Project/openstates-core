@@ -136,6 +136,11 @@ class Scraper(scrapelib.Scraper):
         self._reset_interval = 600  # Reset connection pool every 10 minutes
         self._random_delay_on_failure_min = 5
         self._random_delay_on_failure_max = 15
+        # http resilience: exception types that a caller's own request-level retry/WAF
+        # detection already handles and that retry_on_connection_error should NOT also
+        # retry (OPEN-21). Empty by default so existing/future http_resilience_mode
+        # consumers keep today's broad retry behavior unless they explicitly opt out.
+        self._resilience_retry_excluded_exceptions = ()
 
         # output
         self.output_file_path = None
@@ -449,6 +454,13 @@ class Scraper(scrapelib.Scraper):
                 requests.exceptions.Timeout,
                 requests.exceptions.RequestException,
             ) as e:
+                if isinstance(e, self._resilience_retry_excluded_exceptions):
+                    # Caller has opted this exception type out of this layer's own
+                    # retry (OPEN-21) -- e.g. because its own request-level wrapper
+                    # already retries it. Propagate immediately: no retry count
+                    # consumed, no backoff sleep.
+                    raise
+
                 retries += 1
                 if retries > max_retries:
                     self.logger.error(
