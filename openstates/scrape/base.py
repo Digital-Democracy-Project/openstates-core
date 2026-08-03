@@ -98,6 +98,18 @@ def get_random_user_agent():
 class Scraper(scrapelib.Scraper):
     """Base class for all scrapers"""
 
+    # http_resilience_mode's own get_random_user_agent() rotation opt-out (OPEN-23). Default
+    # True keeps every existing/future http_resilience_mode consumer's rotation behavior
+    # unchanged -- mirrors _resilience_retry_excluded_exceptions' OPEN-21 precedent of an
+    # opt-out attribute rather than a behavior change to the platform default. A subclass
+    # (e.g. MI's MIResilientScraperMixin) that needs a consistent, cookie-matched User-Agent
+    # instead sets this False as a CLASS attribute of its own (not inside its __init__) --
+    # __init__'s own rotation call below fires during super().__init__() itself, before a
+    # subclass's post-super() __init__ body would get a chance to override an instance
+    # attribute, so only a class-level override (resolved via MRO from the moment the
+    # instance exists) actually takes effect here.
+    _resilience_user_agent_rotation_enabled = True
+
     def __init__(
         self,
         jurisdiction,
@@ -178,7 +190,8 @@ class Scraper(scrapelib.Scraper):
             self.scrape_output_handler = handler.Handler(self)
 
         if self.http_resilience_mode:
-            self.headers["User-Agent"] = get_random_user_agent()
+            if self._resilience_user_agent_rotation_enabled:
+                self.headers["User-Agent"] = get_random_user_agent()
             self._create_fresh_session()
 
     def push_to_queue(self):
@@ -382,8 +395,9 @@ class Scraper(scrapelib.Scraper):
                 time.sleep(self._circuit_breaker_timeout)
                 self._consecutive_failures = 0
 
-                # Rotate user agent after circuit breaker timeout
-                self.headers["User-Agent"] = get_random_user_agent()
+                # Rotate user agent after circuit breaker timeout (opt-out: OPEN-23)
+                if self._resilience_user_agent_rotation_enabled:
+                    self.headers["User-Agent"] = get_random_user_agent()
 
             response = self.retry_on_connection_error(
                 request_func,
@@ -407,8 +421,9 @@ class Scraper(scrapelib.Scraper):
                     self._random_delay_on_failure_min, self._random_delay_on_failure_max
                 )
 
-                # Rotate user agent after connection error
-                self.headers["User-Agent"] = get_random_user_agent()
+                # Rotate user agent after connection error (opt-out: OPEN-23)
+                if self._resilience_user_agent_rotation_enabled:
+                    self.headers["User-Agent"] = get_random_user_agent()
             else:
                 raise e
 
@@ -503,11 +518,18 @@ class Scraper(scrapelib.Scraper):
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
 
-        self.headers["User-Agent"] = get_random_user_agent()
-
-        self.logger.info(
-            f"Created fresh session with user agent: {self.headers['User-Agent']}"
-        )
+        if self._resilience_user_agent_rotation_enabled:
+            self.headers["User-Agent"] = get_random_user_agent()
+            self.logger.info(
+                f"Created fresh session with user agent: {self.headers['User-Agent']}"
+            )
+        else:
+            # OPEN-23: rotation opted out (e.g. MI) -- keep whatever consistent,
+            # cookie-matched User-Agent the caller has already set instead of picking a
+            # new random one.
+            self.logger.info(
+                "Created fresh session (user agent rotation disabled for this scraper)"
+            )
 
         return self.session
 
