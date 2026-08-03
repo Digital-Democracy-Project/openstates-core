@@ -3,6 +3,7 @@ import requests
 import scrapelib
 from unittest import mock
 from openstates.scrape import Bill, State, EmptyScrape
+from openstates.scrape import base
 from openstates.scrape.base import Scraper, ScrapeError, BaseBillScraper
 
 
@@ -244,3 +245,48 @@ def test_retry_on_connection_error_exclusion_is_scoped_to_named_types():
 
     assert result == "ok"
     assert attempts["n"] == 2
+
+
+def test_resilience_user_agent_rotation_enabled_defaults_true():
+    """Regression guard (OPEN-23): a Scraper that hasn't opted out keeps today's
+    get_random_user_agent() rotation behavior -- MI's opt-out is scoped to MI alone."""
+    s = Scraper(juris, "/tmp/", http_resilience_mode=True)
+    assert s._resilience_user_agent_rotation_enabled is True
+
+
+def test_user_agent_rotation_fires_normally_for_a_scraper_without_the_opt_out(monkeypatch):
+    """OPEN-23: get_random_user_agent() rotation must still fire at all of its call sites
+    (construction, and _create_fresh_session's periodic reset) for any http_resilience_mode
+    consumer that hasn't set _resilience_user_agent_rotation_enabled = False -- confirming
+    this ticket's MI-scoped opt-out didn't change the platform-wide default."""
+    sentinel = "Mozilla/5.0 (Rotated Sentinel)"
+    monkeypatch.setattr(base, "get_random_user_agent", lambda: sentinel)
+
+    s = Scraper(juris, "/tmp/", http_resilience_mode=True)
+    assert s.headers["User-Agent"] == sentinel  # rotated at construction
+
+    s.headers["User-Agent"] = "something-else"
+    s._create_fresh_session()
+    assert s.headers["User-Agent"] == sentinel  # rotated again on fresh session
+
+
+def test_user_agent_rotation_opt_out_is_respected_at_construction(monkeypatch):
+    """A subclass opting out via a CLASS attribute (the pattern MI's own
+    MIResilientScraperMixin uses, per base.py's own comment on this attribute) must have
+    that honored even at the base class's own __init__-time rotation call -- not just at
+    later, request-time call sites. An instance attribute set inside a subclass's __init__
+    would NOT catch this specific call site, since it fires during super().__init__()
+    itself, before the subclass's own post-super() __init__ body runs."""
+    sentinel = "Mozilla/5.0 (Rotated Sentinel)"
+    monkeypatch.setattr(base, "get_random_user_agent", lambda: sentinel)
+
+    class OptedOutScraper(Scraper):
+        _resilience_user_agent_rotation_enabled = False
+
+    s = OptedOutScraper(juris, "/tmp/", http_resilience_mode=True)
+
+    assert s._resilience_user_agent_rotation_enabled is False
+    assert s.headers.get("User-Agent") != sentinel
+
+    s._create_fresh_session()
+    assert s.headers.get("User-Agent") != sentinel

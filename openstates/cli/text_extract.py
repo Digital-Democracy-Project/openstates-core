@@ -107,9 +107,19 @@ def _fetch_bytes(url: str) -> bytes:
     """
     if "legislature.mi.gov" in urlparse(url).netloc:
 
-        def do_request(cookies: dict) -> requests.Response:
+        def do_request(cookies: dict, user_agent: str) -> requests.Response:
             try:
-                resp = scraper.request("GET", url, allow_redirects=True, cookies=cookies)
+                # OPEN-23: attach the real User-Agent MI_COOKIE_PROVIDER captured
+                # alongside these same cookies -- this archiver previously sent no
+                # MI-specific User-Agent at all, the same cookie/identity mismatch bug
+                # fixed in scrapers/mi/bills.py and events.py.
+                resp = scraper.request(
+                    "GET",
+                    url,
+                    allow_redirects=True,
+                    cookies=cookies,
+                    headers={"User-Agent": user_agent},
+                )
             except requests.exceptions.ConnectionError as e:
                 raise WafBlockDetected(str(e)) from e
             if content_matches_block_markers(resp.content):
