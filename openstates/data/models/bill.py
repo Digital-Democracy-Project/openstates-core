@@ -292,7 +292,9 @@ class BillVersionDocument(models.Model):
         Bill, related_name="version_documents", on_delete=models.CASCADE
     )
     version_note = models.CharField(max_length=300)
-    version_date = models.CharField(max_length=10)  # YYYY[-MM[-DD]], matches BillVersion.date
+    version_date = models.CharField(
+        max_length=10
+    )  # YYYY[-MM[-DD]], matches BillVersion.date
     source_url = models.URLField(max_length=2000)
     media_type = models.CharField(max_length=100, blank=True)
 
@@ -318,7 +320,11 @@ class BillVersionDocument(models.Model):
             "difflib.unified_diff() of this version's raw_text against the immediately-"
             "preceding version's raw_text (added 2026-07-20). Null if no prior version exists "
             "to diff against (first version ever archived, or a gap predating this pipeline "
-            "going live)."
+            "going live), or if that preceding version's position in the lineage couldn't be "
+            "determined with confidence (OPEN-34 -- see archive_bill_versions()'s "
+            "_version_sort_key()/_STAGE_UNKNOWN in openstates/cli/text_extract.py). 'Previous' "
+            "is defined by that content-based ordering, never by bill.versions.all()'s own "
+            "(unreliable) row order."
         ),
     )
 
