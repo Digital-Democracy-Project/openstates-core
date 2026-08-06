@@ -77,7 +77,9 @@ S3_BILL_ARCHIVE_BUCKET = "ddp-bill-archive"
 _BINARY_MAGIC_BYTES = {
     "application/pdf": (b"%PDF-",),
     "application/msword": (b"\xd0\xcf\x11\xe0",),
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (b"PK\x03\x04",),
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (
+        b"PK\x03\x04",
+    ),
 }
 # _BLOCK_PAGE_MARKERS itself now lives in openstates.utils.cookie_provider (OPEN-19) so
 # scrapers and this archiver share one block-detection heuristic instead of each keeping
@@ -289,7 +291,9 @@ def update_bill(bill: typing.Any) -> int:
     return sb.id
 
 
-def _archive_path(bill: typing.Any, version_note: str, version_date: str, url: str, ext: str) -> str:
+def _archive_path(
+    bill: typing.Any, version_note: str, version_date: str, url: str, ext: str
+) -> str:
     """
     Build the permanent archive path for one bill version's document.
 
@@ -327,7 +331,14 @@ def _archive_path(bill: typing.Any, version_note: str, version_date: str, url: s
     date_part = f"{version_date}-" if version_date else ""
     filename = f"{date_part}{safe_note}-{url_hash}.{ext}"
     return os.path.join(
-        settings.ARCHIVE_ROOT_DIR, "bills", "raw", abbr, session, chamber, bill_dir, filename
+        settings.ARCHIVE_ROOT_DIR,
+        "bills",
+        "raw",
+        abbr,
+        session,
+        chamber,
+        bill_dir,
+        filename,
     )
 
 
@@ -394,7 +405,9 @@ def _upload_and_verify(
 
     etag = info.get("ETag", "").strip('"')
     if not etag:
-        click.secho(f"S3 verify failed for {object_key}: no ETag in info response", fg="red")
+        click.secho(
+            f"S3 verify failed for {object_key}: no ETag in info response", fg="red"
+        )
         return None
     if "-" in etag:
         click.secho(
@@ -405,11 +418,207 @@ def _upload_and_verify(
         return None
     if etag != local_md5:
         click.secho(
-            f"S3 ETag mismatch for {object_key}: local md5={local_md5} etag={etag}", fg="red"
+            f"S3 ETag mismatch for {object_key}: local md5={local_md5} etag={etag}",
+            fg="red",
         )
         return None
 
     return f"s3://{S3_BILL_ARCHIVE_BUCKET}/{object_key}"
+
+
+# OPEN-34: archive_bill_versions() used to walk bill.versions.all() with no explicit
+# ordering and trust that walk order for diff_from_previous_version's "prior_text" lineage.
+# BillVersion has no Meta.ordering and no timestamp column, and BillVersion.date is blank
+# 100% of the time for every state jurisdiction audited (FL/MI/AZ/UT/WA/VA -- confirmed
+# against real archived data, not just "frequently" blank as originally suspected); only US
+# federal populates it (~99.4%). So the walk order was whatever Postgres happened to return
+# for an unordered SELECT, which in practice tracks DB insertion order -- confirmed real and
+# inconsistent across jurisdictions via a ~10-12-bill-per-jurisdiction sample:
+#   - FL: forward in 9/12 sampled bills, but "Filed" (the introduced stage) was NOT first in
+#     3/12 (e.g. real bills "SB 1668", "SB 1220") -- forward is the majority pattern, not a
+#     guarantee.
+#   - MI: forward ONLY for Resolutions and for the rare Bill with no Substitute version. Any
+#     Bill with a Substitute gets that Substitute inserted BEFORE "House/Senate Introduced
+#     Bill" in walk order (8/12 sampled bills) -- the ticket's original single clean example
+#     (HB 4420) had no substitutes and wasn't representative of the common case.
+#   - AZ: forward in 11/12 sampled bills; one real exception where a floor-amendment-style
+#     version landed first.
+#   - VA: backward -- already confirmed at real scale by OPEN-33 (604 affected rows, full
+#     audit), not re-derived here.
+#   - UT: does NOT fit a simple reversal at all. "Enrolled" appears at wildly inconsistent
+#     positions across real bills (immediately after Introduced, mid-sequence, or followed by
+#     more Substitutes) -- closer to WA's non-binary case than to a clean "backward" state.
+#   - US (federal): backward in 10/12 sampled bills, but BillVersion.date is reliably
+#     populated (~99.4%) -- a real date-based fix, not a workaround, fully covers US.
+#   - WA: root-caused, not left ambiguous. scrapers/wa/bills.py's _load_versions() fetches
+#     one page per bill_type ("Bills", "Resolutions", ..., "Passed Legislature" -- in that
+#     dict order), so "X Passed Legislature" documents are structurally always walked last
+#     (a deterministic code-order effect, not scrambled DB rows or interleaved re-scrapes).
+#     Within the "Bills" page, WA's own site lists "Engrossed <N> Substitute" before the
+#     plain "<N> Substitute" it amends, and the bare introduced "Bill" near the end instead
+#     of first -- deterministic, just not chronological.
+#
+# A static per-jurisdiction "reverse" flag (Option A in the ticket) is therefore not
+# supportable by this data -- no jurisdiction sampled is 100% one direction, and MI/UT/WA
+# aren't even binary. The fix below never trusts DB walk order at all: it ranks each version
+# by (1) BillVersion.date when it's actually populated and parses as a date -- covers US
+# federal outright and any future jurisdiction that starts populating it -- and otherwise (2)
+# a content-based stage rank built directly from the real version_note vocabulary above.
+# A version whose note matches neither is never guessed into a position: it's excluded from
+# the diff lineage entirely (see _UNKNOWN_STAGE below) rather than risking a backward diff,
+# per the ticket's own framing that a wrong-direction diff is worse than a missing one.
+_STAGE_INTRODUCED = 0
+_STAGE_AMENDMENT = 1
+_STAGE_CHAMBER_PASSAGE = 2
+_STAGE_FINAL_PASSAGE = 3
+_STAGE_ENACTED = 4
+_STAGE_UNKNOWN = 99  # excluded from diff lineage entirely -- see _version_sort_key()
+
+_ORDINAL_WORDS = {
+    "first": 1,
+    "second": 2,
+    "third": 3,
+    "fourth": 4,
+    "fifth": 5,
+    "sixth": 6,
+    "seventh": 7,
+    "eighth": 8,
+    "ninth": 9,
+    "tenth": 10,
+}
+
+_DATE_RE = re.compile(r"\A\d{4}(-\d{2}(-\d{2})?)?\Z")
+
+
+def _extract_ordinal(note: str) -> float:
+    """
+    Best-effort numeric ordinal embedded in a version_note, used to rank same-stage numbered
+    variants against each other (MI's "Substitute (S-2)", UT's "Substitute #3", WA's "Second
+    Substitute", FL's "c2"/"e2"). 0.0 if no ordinal is found -- the unnumbered/first-of-its-
+    kind case (FL's "c1", WA's plain "Substitute Bill" with no ordinal word).
+
+    MI's "(S-1)"/(H-2)" parenthesized number is checked first and takes priority over a
+    trailing "- N" suffix on the same note (a second file for that *same* substitute stage,
+    e.g. "Substitute (S-1) - 2" -- a minor tiebreak, not a different amendment stage; folded
+    in as a small fraction so it sorts immediately after "Substitute (S-1)" rather than being
+    conflated with "Substitute (S-2)").
+    """
+    lowered = note.lower()
+
+    paren = re.search(r"\([sh]-(\d+)\)", lowered)
+    if paren:
+        base = float(paren.group(1))
+        tail = re.search(r"\)\s*-\s*(\d+)\s*\Z", lowered)
+        return base + (int(tail.group(1)) / 100.0 if tail else 0.0)
+
+    for word, value in _ORDINAL_WORDS.items():
+        if word in lowered:
+            return float(value)
+
+    m = (
+        re.search(r"#\s*(\d+)\b", note)
+        or re.search(r"\b[a-z](\d+)\b", lowered)
+        or re.search(r"(\d+)\s*\Z", note)
+    )
+    if m:
+        return float(m.group(1))
+    return 0.0
+
+
+def _note_stage(note: str) -> tuple:
+    """
+    Classify a version_note into (stage, ordinal) using the content-based stage table built
+    from the OPEN-34 audit (see the comment above archive_bill_versions()). Never looks at
+    DB order or position -- purely a function of the note text itself, so it's stable no
+    matter what order versions are walked in or what row order Postgres happens to return.
+    """
+    lowered = note.lower()
+
+    if re.search(
+        r"public act|public law|\bchapter|passed legislature|concurred", lowered
+    ):
+        return (_STAGE_ENACTED, _extract_ordinal(note))
+
+    # Final-passage sub-stages, most-final-first, checked in this specific order since a
+    # note can match more than one (e.g. VA's "Governor's Veto Explanation" contains neither
+    # "reenroll" nor plain "enroll"). Sub-ranks encode the real chronology confirmed against
+    # VA's own examples (OPEN-33/the ticket): Enrolled -> Governor Substitute -> Reenrolled ->
+    # Governor's Veto Explanation. Note: "enroll" (no leading \b) deliberately matches
+    # "Reenrolled" too ("re" + "enrolled" has no word boundary between them for \benroll to
+    # anchor on) -- the explicit "reenroll" check above it takes priority so the two don't
+    # collide.
+    if "veto" in lowered:
+        return (_STAGE_FINAL_PASSAGE, 3.0)
+    if "reenroll" in lowered:
+        return (_STAGE_FINAL_PASSAGE, 2.0)
+    if "governor" in lowered:
+        return (_STAGE_FINAL_PASSAGE, 1.0)
+    if "enroll" in lowered or re.search(r"\ber\b", lowered):
+        return (_STAGE_FINAL_PASSAGE, 0.0)
+
+    if re.match(r"(senate|house)\s*-", lowered):
+        # AZ floor/committee-action notes that leak into version_note -- observed after
+        # engrossment in every real sample checked (a floor amendment applies to the
+        # already-engrossed bill), so rank just after plain chamber-passage. Checked before
+        # the generic "engross" test below since these notes sometimes *reference* an
+        # engrossed version by name (e.g. "ref Senate Engrossed House Bill") without
+        # themselves being one -- a leading "senate -"/"house -" is the more specific,
+        # reliable signal for this AZ-specific note shape.
+        return (_STAGE_CHAMBER_PASSAGE, 0.5)
+
+    if re.search(r"\be\d+\b", lowered) and not re.search(
+        r"substitute|committee", lowered
+    ):
+        # FL's own engrossed shorthand ("e1", "e2") -- distinct token pattern from the
+        # "engross" word check below but the same chamber-passage stage.
+        return (_STAGE_CHAMBER_PASSAGE, _extract_ordinal(note))
+
+    if "engross" in lowered and not re.search(r"substitute|committee", lowered):
+        # AZ-style whole-bill floor engrossment ("Senate Engrossed Version") -- a later,
+        # chamber-passage-level stage, distinct from WA's per-substitute "Engrossed <N>
+        # Substitute Bill" handled below.
+        return (_STAGE_CHAMBER_PASSAGE, _extract_ordinal(note))
+
+    if re.search(r"conference|\breport|\breferr|placed on calendar|as passed", lowered):
+        return (_STAGE_CHAMBER_PASSAGE, _extract_ordinal(note) + 0.25)
+
+    if re.search(r"substitute|amend|comparison|\bc\d+\b", lowered):
+        if "engross" in lowered:
+            # WA's "Engrossed <N> Substitute Bill" amends that specific substitute number --
+            # ranks immediately after it, not after every substitute regardless of number.
+            return (_STAGE_AMENDMENT, _extract_ordinal(note) + 0.5)
+        return (_STAGE_AMENDMENT, _extract_ordinal(note))
+
+    if re.search(r"introduced|\bfiled\b|\bpb\b|original|^bill$", lowered):
+        return (_STAGE_INTRODUCED, _extract_ordinal(note))
+
+    return (_STAGE_UNKNOWN, 0.0)
+
+
+def _version_sort_key(note: str, date: typing.Optional[str]) -> tuple:
+    """
+    Rank a single version (by its note + date) for chronological ordering, without ever
+    trusting the order it was returned from the DB in. See the OPEN-34 comment above
+    archive_bill_versions() for the audit this encodes.
+
+    Returns (stage, date-or-empty, ordinal). The macro stage always comes from the note (see
+    _note_stage()) -- a real, parseable date is used only as a same-stage tiebreaker, not as
+    an override of the note-based stage. This matters for jurisdictions that could have a mix
+    of dated and undated versions on the same bill (US federal is ~99.4% dated, not 100%):
+    letting a date win globally would make any dated version sort before every undated one
+    regardless of true chronology. Confirmed via audit: 0% of state-jurisdiction versions
+    (FL/MI/AZ/UT/WA/VA) have a date at all, so this tiebreaker is inert for them and they rely
+    entirely on the note-based stage; US federal's real dates resolve same-stage ordering
+    (e.g. "Reported to Senate" vs. "Engrossed in Senate") more precisely than the ordinal
+    heuristic alone would.
+
+    A note matching none of the known patterns returns stage _STAGE_UNKNOWN -- the caller
+    excludes those versions from the diff lineage entirely rather than guessing a position for
+    them (see archive_bill_versions()).
+    """
+    stage, ordinal = _note_stage(note)
+    has_date = bool(date) and bool(_DATE_RE.match(date))
+    return (stage, date if has_date else "", ordinal)
 
 
 def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
@@ -424,15 +633,20 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
     time a bill's version list changes at all (see the plan for why those ids aren't a stable
     identity to check against).
 
-    Also computes `diff_from_previous_version` (added 2026-07-20): as versions are walked in
-    order, `prior_text` tracks the most recently seen version's representative text (preferring
-    a PDF document over other media types when a version has more than one file — the same
-    PDF > HTML priority already used elsewhere in this plan for lineage-field caching), updated
-    once per version rather than once per document so that two files of the *same* version
-    (e.g. a PDF and an HTML copy) never get diffed against each other. Every newly-archived
-    document within a version is diffed against that same `prior_text` snapshot. Already-
-    archived (skipped) documents still feed `prior_text` so a partial re-run (e.g. only a new
-    amendment's version is unarchived) diffs correctly against previously-archived text.
+    Also computes `diff_from_previous_version` (added 2026-07-20): versions are walked in
+    `_version_sort_key()` order (OPEN-34 — bill.versions.all() has no reliable order of its
+    own; see the comment above that function for the audit behind this), and `prior_text`
+    tracks the most recently seen version's representative text (preferring a PDF document
+    over other media types when a version has more than one file — the same PDF > HTML
+    priority already used elsewhere in this plan for lineage-field caching), updated once per
+    version rather than once per document so that two files of the *same* version (e.g. a PDF
+    and an HTML copy) never get diffed against each other. Every newly-archived document
+    within a version is diffed against that same `prior_text` snapshot. Already-archived
+    (skipped) documents still feed `prior_text` so a partial re-run (e.g. only a new
+    amendment's version is unarchived) diffs correctly against previously-archived text. A
+    version whose note doesn't match any known stage (_STAGE_UNKNOWN) never updates or reads
+    `prior_text` at all — its documents always get `diff_from_previous_version=None` rather
+    than risk placing an unrecognized version at the wrong point in the lineage.
     """
     from openstates.data.models import BillVersionDocument
 
@@ -450,7 +664,11 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
 
     prior_text: typing.Optional[str] = None
 
-    for version in bill.versions.all():
+    ordered_versions = sorted(
+        bill.versions.all(), key=lambda v: _version_sort_key(v.note, v.date)
+    )
+    for version in ordered_versions:
+        is_unknown_position = _note_stage(version.note)[0] == _STAGE_UNKNOWN
         this_version_texts: dict[str, str] = {}
 
         for link in version.links.all():
@@ -492,7 +710,9 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
 
             block_reason = _block_page_reason(data, link.media_type)
             if block_reason:
-                click.secho(f"blocked response for {link.url}: {block_reason}", fg="red")
+                click.secho(
+                    f"blocked response for {link.url}: {block_reason}", fg="red"
+                )
                 counters["blocked"] += 1
                 continue
 
@@ -528,7 +748,12 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                 counters["extract_errors"] += 1
 
             diff_from_previous_version = None
-            if prior_text is not None and not is_error and raw_text:
+            if (
+                prior_text is not None
+                and not is_error
+                and raw_text
+                and not is_unknown_position
+            ):
                 diff_from_previous_version = "\n".join(
                     difflib.unified_diff(
                         prior_text.splitlines(), raw_text.splitlines(), lineterm=""
@@ -562,7 +787,7 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                 )
                 counters["conflicts"] += 1
 
-        if this_version_texts:
+        if this_version_texts and not is_unknown_position:
             prior_text = this_version_texts.get("application/pdf") or next(
                 iter(this_version_texts.values())
             )
@@ -894,7 +1119,12 @@ def archive(state: str, session: str = None, n: int = None) -> None:
     status_color = "green"
     if totals["conflicts"]:
         status_color = "red"
-    elif totals["fetch_errors"] or totals["blocked"] or totals["extract_errors"] or totals["s3_unverified"]:
+    elif (
+        totals["fetch_errors"]
+        or totals["blocked"]
+        or totals["extract_errors"]
+        or totals["s3_unverified"]
+    ):
         status_color = "yellow"
 
     click.secho(
@@ -910,6 +1140,120 @@ def archive(state: str, session: str = None, n: int = None) -> None:
         # A conflict means our own uniqueness assumption was wrong somewhere — worth a
         # non-zero exit so this surfaces as a failure in run-scrape.sh, not just a log line.
         sys.exit(1)
+
+
+def recompute_bill_diff_order(bill: typing.Any) -> dict[str, list]:
+    """
+    Recompute `diff_from_previous_version` for one bill's already-archived
+    `BillVersionDocument` rows using `_version_sort_key()` ordering (OPEN-34), entirely from
+    already-stored `raw_text` — no re-fetching, no re-extraction, same "reprocess in place"
+    approach OPEN-33 used for its VA backfill. `BillVersionDocument` has no FK to
+    `BillVersion` by design (see its docstring), so rows are grouped by their own
+    `(version_note, version_date)` natural key rather than joined to any live `BillVersion`.
+
+    Returns {"unchanged": [doc, ...], "changed": [(doc, new_diff_or_None), ...]} — "changed"
+    covers both correcting a wrong diff and nulling out a version whose note doesn't match any
+    known stage (_STAGE_UNKNOWN), mirroring archive_bill_versions()'s own skip-diffing behavior
+    for those. Callers decide whether to persist "changed" (see `recompute_diff_order` CLI
+    command's --dry-run/--commit).
+    """
+    from openstates.data.models import BillVersionDocument
+
+    docs = list(BillVersionDocument.objects.filter(bill=bill).order_by("id"))
+    groups: dict[tuple, list] = {}
+    for doc in docs:
+        groups.setdefault((doc.version_note, doc.version_date), []).append(doc)
+
+    ordered_keys = sorted(groups.keys(), key=lambda k: _version_sort_key(k[0], k[1]))
+
+    unchanged = []
+    changed = []
+    prior_text: typing.Optional[str] = None
+    for note, date in ordered_keys:
+        is_unknown_position = _note_stage(note)[0] == _STAGE_UNKNOWN
+        group_texts: dict[str, str] = {}
+        for doc in groups[(note, date)]:
+            new_diff = None
+            if (
+                prior_text is not None
+                and not doc.is_error
+                and doc.raw_text
+                and not is_unknown_position
+            ):
+                new_diff = "\n".join(
+                    difflib.unified_diff(
+                        prior_text.splitlines(), doc.raw_text.splitlines(), lineterm=""
+                    )
+                )
+            if new_diff != doc.diff_from_previous_version:
+                changed.append((doc, new_diff))
+            else:
+                unchanged.append(doc)
+            if not doc.is_error and doc.raw_text:
+                group_texts[doc.media_type] = doc.raw_text
+        if group_texts and not is_unknown_position:
+            prior_text = group_texts.get("application/pdf") or next(
+                iter(group_texts.values())
+            )
+
+    return {"unchanged": unchanged, "changed": changed}
+
+
+@main.command(
+    help="recompute diff_from_previous_version for already-archived bill versions using the "
+    "OPEN-34 ordering fix, instead of trusting original archive-time walk order (AC4)"
+)
+@click.argument("state")
+@click.option("--session", default=None)
+@click.option(
+    "--commit/--dry-run",
+    default=False,
+    help="apply corrections to the DB; default is a dry run that only reports counts",
+)
+def recompute_diff_order(state: str, session: str = None, commit: bool = False) -> None:
+    init_django()
+    from openstates.data.models import Bill
+
+    if state == "all":
+        bills = Bill.objects.all()
+    elif session:
+        bills = Bill.objects.filter(
+            legislative_session__jurisdiction_id=abbr_to_jid(state),
+            legislative_session__identifier=session,
+        )
+    else:
+        bills = Bill.objects.filter(
+            legislative_session__jurisdiction_id=abbr_to_jid(state)
+        )
+
+    # Only bills with at least one archived document are worth walking -- matches this
+    # command's job (correcting already-archived data), not archive()'s (fetching new data).
+    bills = bills.filter(version_documents__isnull=False).distinct()
+
+    total_unchanged = 0
+    total_corrected = 0
+    total_nulled = 0
+    bill_count = 0
+
+    for bill in bills:
+        bill_count += 1
+        result = recompute_bill_diff_order(bill)
+        total_unchanged += len(result["unchanged"])
+        for doc, new_diff in result["changed"]:
+            if new_diff is None:
+                total_nulled += 1
+            else:
+                total_corrected += 1
+            if commit:
+                doc.diff_from_previous_version = new_diff
+                doc.save(update_fields=["diff_from_previous_version"])
+
+    mode = "COMMITTED" if commit else "DRY RUN"
+    click.secho(
+        f"{state}: [{mode}] {bill_count} bills checked | "
+        f"unchanged={total_unchanged} corrected={total_corrected} nulled={total_nulled}",
+        fg="green" if commit else "yellow",
+    )
 
 
 def reindex(ids_to_update: list[int]) -> None:
