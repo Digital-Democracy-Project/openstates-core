@@ -14,6 +14,8 @@ from openstates.cli.text_extract import (
     _STAGE_UNKNOWN,
     archive_bill_versions,
     recompute_bill_diff_order,
+    _reextract_document,
+    S3_BILL_ARCHIVE_BUCKET,
 )
 
 
@@ -557,3 +559,195 @@ class TestRecomputeDiffOrder:
         # archive_location/archived_at/sha256_hash/raw_text/is_error must be untouched
         assert enrolled.raw_text == "Original text. Amended."
         assert enrolled.is_error is False
+
+
+class TestUtahXmlExtractor:
+    """
+    OPEN-49: Utah's bill XML export declares `encoding="UTF-16"` in its own prolog, but the
+    real bytes are plain UTF-8/ASCII (confirmed directly against real bills, 2026-08-09: no
+    UTF-16 byte-order-mark, every byte in the prolog itself is single-byte ASCII). libxml2
+    honors the declared encoding and fails almost immediately on real content as a result.
+    """
+
+    def test_extracts_real_text_despite_mismatched_encoding_declaration(self):
+        from openstates.fulltext.ut import handle_utah_xml
+
+        # A minimal but structurally real fixture: the same UTF-16-labeled-but-UTF-8-bytes
+        # mismatch, spread across several of Utah's real nested elements.
+        xml = (
+            b'<?xml version="1.0" encoding="UTF-16"?>\n'
+            b'<leg billnum="HB0001">'
+            b'<tbox><st>Test Bill Amendments</st>'
+            b'<sponsorhead>Chief Sponsor: Jane Doe</sponsorhead></tbox>'
+            b'<body><p>This bill modifies provisions of the state code.</p></body>'
+            b"</leg>"
+        )
+        text = handle_utah_xml(
+            xml, {"url": "", "media_type": "text/xml", "title": "", "jurisdiction_id": ""}
+        )
+        assert "Test Bill Amendments" in text
+        assert "Chief Sponsor: Jane Doe" in text
+        assert "This bill modifies provisions of the state code." in text
+        # Tag names/attributes themselves must not leak into the extracted text.
+        assert "billnum" not in text
+        assert "<p>" not in text
+
+    def test_raises_on_genuinely_unparseable_data(self):
+        from openstates.fulltext.ut import handle_utah_xml
+
+        with pytest.raises(Exception):
+            handle_utah_xml(
+                b"this is not xml at all, not even close",
+                {"url": "", "media_type": "text/xml", "title": "", "jurisdiction_id": ""},
+            )
+
+
+@pytest.mark.django_db
+class TestReextractDocument:
+    """
+    OPEN-49: generalizes OPEN-33's VA backfill approach (reprocess an already-archived
+    document's raw bytes straight off disk, no re-fetching, no S3) into a reusable command
+    instead of a one-off script, so the next jurisdiction that needs a missing-extractor
+    backfill doesn't require hand-rolling this again.
+    """
+
+    def _make_doc(self, bill, tmp_path, monkeypatch, *, media_type, filename, content):
+        monkeypatch.setattr("openstates.settings.ARCHIVE_ROOT_DIR", str(tmp_path))
+        rel_path = f"bills/raw/ak/2026/lower/HB1--x/{filename}"
+        full_path = tmp_path / rel_path
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_bytes(content)
+        return BillVersionDocument.objects.create(
+            bill=bill,
+            version_note="Introduced",
+            version_date="",
+            source_url=f"https://example.test/{filename}",
+            media_type=media_type,
+            raw_text="",
+            is_error=True,
+            archive_location=f"s3://{S3_BILL_ARCHIVE_BUCKET}/{rel_path}",
+        )
+
+    def test_no_archive_location_is_not_attempted(self):
+        bill = _make_bill()
+        doc = BillVersionDocument.objects.create(
+            bill=bill,
+            version_note="Introduced",
+            version_date="",
+            source_url="https://example.test/missing.pdf",
+            media_type="application/pdf",
+            raw_text="",
+            is_error=True,
+            archive_location=None,
+        )
+        result = _reextract_document(doc)
+        assert result["attempted"] is False
+        assert "no archive_location" in result["reason"]
+
+    def test_missing_local_file_is_not_attempted(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("openstates.settings.ARCHIVE_ROOT_DIR", str(tmp_path))
+        bill = _make_bill()
+        doc = BillVersionDocument.objects.create(
+            bill=bill,
+            version_note="Introduced",
+            version_date="",
+            source_url="https://example.test/gone.pdf",
+            media_type="application/pdf",
+            raw_text="",
+            is_error=True,
+            archive_location=f"s3://{S3_BILL_ARCHIVE_BUCKET}/bills/raw/ak/nope.pdf",
+        )
+        result = _reextract_document(doc)
+        assert result["attempted"] is False
+        assert "local file missing" in result["reason"]
+
+    def test_successful_reextraction_reports_fixed(self, tmp_path, monkeypatch):
+        # Use a real registered jurisdiction (mi, text/html mapped in CONVERSION_FUNCTIONS)
+        # so this test exercises the real registry, not a synthetic mapping.
+        bill = _make_bill(jid="ocd-jurisdiction/country:us/state:mi/government")
+        doc = self._make_doc(
+            bill,
+            tmp_path,
+            monkeypatch,
+            media_type="text/html",
+            filename="bill.html",
+            content=b'<html><body><div class="WordSection1">Real bill text here.</div></body></html>',
+        )
+
+        result = _reextract_document(doc)
+        assert result["attempted"] is True
+        assert result["new_is_error"] is False
+        assert "Real bill text here." in result["new_raw_text"]
+
+    def test_extraction_failure_reports_still_error(self, tmp_path, monkeypatch):
+        bill = _make_bill(jid="ocd-jurisdiction/country:us/state:mi/government")
+        # A text/html file with none of the expected WordSection1 element -- the real MI
+        # extractor will find nothing and raise, matching a genuine still-broken document.
+        doc = self._make_doc(
+            bill,
+            tmp_path,
+            monkeypatch,
+            media_type="text/html",
+            filename="bad.html",
+            content=b"<html><body>no matching element here</body></html>",
+        )
+
+        result = _reextract_document(doc)
+        assert result["attempted"] is True
+        assert result["new_is_error"] is True
+
+    def test_commit_writes_raw_text_and_is_error_only(self, tmp_path, monkeypatch):
+        from openstates.cli.text_extract import reextract
+        from click.testing import CliRunner
+
+        bill = _make_bill(jid="ocd-jurisdiction/country:us/state:mi/government")
+        doc = self._make_doc(
+            bill,
+            tmp_path,
+            monkeypatch,
+            media_type="text/html",
+            filename="bill.html",
+            content=b'<html><body><div class="WordSection1">Committed text.</div></body></html>',
+        )
+        original_location = doc.archive_location
+
+        with mock.patch("openstates.cli.text_extract.init_django"), mock.patch(
+            "openstates.cli.text_extract.abbr_to_jid",
+            return_value=bill.legislative_session.jurisdiction_id,
+        ):
+            runner = CliRunner()
+            result = runner.invoke(reextract, ["mi", "--commit"])
+        assert result.exit_code == 0, result.output
+
+        doc.refresh_from_db()
+        assert doc.is_error is False
+        assert "Committed text." in doc.raw_text
+        # Only raw_text/is_error should move -- everything else stays exactly as archived.
+        assert doc.archive_location == original_location
+
+    def test_dry_run_does_not_write(self, tmp_path, monkeypatch):
+        from openstates.cli.text_extract import reextract
+        from click.testing import CliRunner
+
+        bill = _make_bill(jid="ocd-jurisdiction/country:us/state:mi/government")
+        doc = self._make_doc(
+            bill,
+            tmp_path,
+            monkeypatch,
+            media_type="text/html",
+            filename="bill.html",
+            content=b'<html><body><div class="WordSection1">Should not be saved.</div></body></html>',
+        )
+
+        with mock.patch("openstates.cli.text_extract.init_django"), mock.patch(
+            "openstates.cli.text_extract.abbr_to_jid",
+            return_value=bill.legislative_session.jurisdiction_id,
+        ):
+            runner = CliRunner()
+            result = runner.invoke(reextract, ["mi"])  # default is --dry-run
+        assert result.exit_code == 0, result.output
+        assert "now_fixed=1" in result.output
+
+        doc.refresh_from_db()
+        assert doc.is_error is True  # untouched
+        assert doc.raw_text == ""  # untouched

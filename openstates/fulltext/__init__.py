@@ -16,6 +16,7 @@ from .common import (
 )
 from .de import handle_delaware
 from .va import handle_virginia_html
+from .ut import handle_utah_xml
 
 
 class DoNotDownload:
@@ -73,7 +74,19 @@ CONVERSION_FUNCTIONS = {
         "application/rtf": DoNotDownload,
         "application/pdf": DoNotDownload,
     },
-    "mi": {"text/html": extractor_for_element_by_xpath('.//*[@class="WordSection1"]')},
+    "mi": {
+        "text/html": extractor_for_element_by_xpath('.//*[@class="WordSection1"]'),
+        # Found 2026-08-09 (OPEN-49): no application/pdf entry ever existed here, upstream
+        # or in this fork -- every MI PDF (7,000+) silently extracted as empty/is_error=True.
+        # Most MI PDF stages (Introduced, Substitute, etc.) print line numbers on body text,
+        # matching extract_line_numbered_pdf's shape elsewhere (AL/FL/MA/MD/etc.) -- but the
+        # enacted "Public Act" stage does NOT use that numbering convention at all, and
+        # extract_line_numbered_pdf (which keeps ONLY numbered lines) silently returns empty
+        # for it. extract_sometimes_numbered_pdf handles both: verified directly against a
+        # real Public Act PDF (previously empty, now extracts correctly) and a real numbered
+        # Introduced PDF (unchanged, still extracts correctly).
+        "application/pdf": extract_sometimes_numbered_pdf,
+    },
     "mo": {"application/pdf": extract_line_numbered_pdf},
     "mn": {"text/html": extractor_for_element_by_id("document")},
     "ms": {
@@ -105,7 +118,14 @@ CONVERSION_FUNCTIONS = {
     "sc": {"text/html": extract_from_p_tags_html},
     "sd": {"text/html": extractor_for_elements_by_class("fullContent")},
     "tn": {"application/pdf": extract_simple_pdf},
-    "ut": {"application/pdf": extract_line_numbered_pdf},
+    "ut": {
+        "application/pdf": extract_line_numbered_pdf,
+        # Found 2026-08-09 (OPEN-49): no text/xml entry ever existed here, upstream or in
+        # this fork -- every UT bill served as XML (3,000+) silently extracted as
+        # empty/is_error=True. See fulltext/ut.py for the actual defect (a mismatched
+        # encoding declaration in Utah's own export, not a missing-content problem).
+        "text/xml": handle_utah_xml,
+    },
     "pr": {
         "application/msword": textract_extractor(extension="doc"),
         DOCX_MIMETYPE: textract_extractor(extension="docx"),
@@ -123,7 +143,14 @@ CONVERSION_FUNCTIONS = {
         "application/pdf": extract_line_numbered_pdf,
     },
     "vt": {"application/pdf": extract_sometimes_numbered_pdf},
-    "wa": {"text/html": extractor_for_element_by_xpath("//html")},
+    "wa": {
+        "text/html": extractor_for_element_by_xpath("//html"),
+        # Found 2026-08-09 (OPEN-49): no application/pdf entry ever existed here, upstream
+        # or in this fork -- every WA PDF (5,800+) silently extracted as empty/is_error=True.
+        # Verified directly against real WA bills: same printed-line-number PDF shape already
+        # handled by extract_line_numbered_pdf for AL/FL/MA/MD/etc.
+        "application/pdf": extract_line_numbered_pdf,
+    },
     "wi": {
         "application/pdf": extract_sometimes_numbered_pdf,
         "text/html": DoNotDownload,

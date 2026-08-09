@@ -1256,6 +1256,121 @@ def recompute_diff_order(state: str, session: str = None, commit: bool = False) 
     )
 
 
+def _reextract_document(doc: typing.Any) -> dict[str, typing.Any]:
+    """
+    Re-run text extraction for one already-archived `BillVersionDocument`, reading its raw
+    bytes directly from the local archive copy on `/Volumes/DDP-HOT` -- no re-fetching from
+    the live site, no S3 involvement. Same "reprocess in place" approach OPEN-33 used for its
+    VA backfill, generalized here (OPEN-49) so it isn't a one-off script per jurisdiction.
+
+    Returns a dict with keys: "attempted" (bool -- False means the local file couldn't be
+    found, so the row wasn't touched at all), "new_raw_text", "new_is_error", "reason" (set on
+    any non-fatal skip/failure, for the dry-run report).
+    """
+    from openstates import settings
+
+    if not doc.archive_location:
+        return {"attempted": False, "reason": "no archive_location on row"}
+
+    # archive_location is an s3:// URI; _s3_object_key() made it a 1:1 mirror of the local
+    # ARCHIVE_ROOT_DIR-relative path, so reversing that is just stripping the bucket prefix.
+    prefix = f"s3://{S3_BILL_ARCHIVE_BUCKET}/"
+    if not doc.archive_location.startswith(prefix):
+        return {
+            "attempted": False,
+            "reason": f"unrecognized archive_location shape: {doc.archive_location}",
+        }
+    rel_path = doc.archive_location[len(prefix) :]
+    local_path = os.path.join(settings.ARCHIVE_ROOT_DIR, rel_path)
+    if not os.path.exists(local_path):
+        return {"attempted": False, "reason": f"local file missing: {local_path}"}
+
+    with open(local_path, "rb") as f:
+        data = f.read()
+
+    metadata: Metadata = {
+        "url": doc.source_url,
+        "media_type": doc.media_type,
+        "title": doc.bill.title,
+        "jurisdiction_id": doc.bill.legislative_session.jurisdiction_id,
+    }
+    func = get_extract_func(metadata)
+    if func == DoNotDownload:
+        return {"attempted": True, "reason": "DoNotDownload for this media type"}
+
+    try:
+        new_raw_text = _cleanup(func(data, metadata))
+        new_is_error = not bool(new_raw_text)
+    except Exception as e:
+        return {
+            "attempted": True,
+            "new_raw_text": "",
+            "new_is_error": True,
+            "reason": f"extraction raised: {e}",
+        }
+    return {
+        "attempted": True,
+        "new_raw_text": new_raw_text,
+        "new_is_error": new_is_error,
+        "reason": None,
+    }
+
+
+@main.command(
+    help="re-run text extraction for already-archived (but errored) bill documents, "
+    "reading the already-downloaded raw file off disk -- no re-fetching, no S3 (OPEN-49)"
+)
+@click.argument("state")
+@click.option("--session", default=None)
+@click.option(
+    "--commit/--dry-run",
+    default=False,
+    help="apply corrections to the DB; default is a dry run that only reports counts",
+)
+def reextract(state: str, session: str = None, commit: bool = False) -> None:
+    init_django()
+    from openstates.data.models import BillVersionDocument
+
+    docs = BillVersionDocument.objects.filter(
+        bill__legislative_session__jurisdiction_id=abbr_to_jid(state), is_error=True
+    )
+    if session:
+        docs = docs.filter(bill__legislative_session__identifier=session)
+    docs = docs.select_related("bill", "bill__legislative_session")
+
+    now_fixed = 0
+    still_error = 0
+    skipped = 0
+    skip_reasons: dict[str, int] = {}
+    doc_count = 0
+
+    for doc in docs:
+        doc_count += 1
+        result = _reextract_document(doc)
+        if not result["attempted"]:
+            skipped += 1
+            skip_reasons[result["reason"]] = skip_reasons.get(result["reason"], 0) + 1
+            continue
+        if result.get("new_is_error"):
+            still_error += 1
+        else:
+            now_fixed += 1
+        if commit:
+            doc.raw_text = result.get("new_raw_text", "")
+            doc.is_error = result.get("new_is_error", True)
+            doc.save(update_fields=["raw_text", "is_error", "updated_at"])
+
+    mode = "COMMITTED" if commit else "DRY RUN"
+    click.secho(
+        f"{state}: [{mode}] {doc_count} errored docs checked | "
+        f"now_fixed={now_fixed} still_error={still_error} skipped={skipped}",
+        fg="green" if commit else "yellow",
+    )
+    if skip_reasons:
+        for reason, count in sorted(skip_reasons.items(), key=lambda kv: -kv[1])[:10]:
+            click.secho(f"  skipped ({count}x): {reason}", fg="yellow")
+
+
 def reindex(ids_to_update: list[int]) -> None:
     from openstates.data.models import SearchableBill
 
