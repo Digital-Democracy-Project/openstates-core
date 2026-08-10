@@ -32,7 +32,19 @@ CONVERSION_FUNCTIONS = {
     "ak": {"text/html": extractor_for_element_by_id("draftOverlay")},
     "az": {
         "text/html": extractor_for_elements_by_class("WordSection2"),
-        "application/pdf": DoNotDownload,
+        # Found 2026-08-10: DoNotDownload here (since before this fork existed) skipped
+        # every AZ PDF unconditionally -- fine when a version also has an HTML copy (the
+        # common case), but silently zero-archived text for the ~1,160 versions (mostly
+        # committee-amendment stages) that exist ONLY as PDF, with no HTML counterpart at
+        # all. Verified live against a real never-archived PDF (introduced-bill text):
+        # plain fetch, no WAF/bot-block response, and extract_sometimes_numbered_pdf
+        # produces clean text -- same numbered-line shape as AL/FL/MA/MD. Some
+        # committee-stage PDFs are scanned/image-only (no text layer at all, confirmed via
+        # pdffonts/pdfimages on a real sample) and will still archive with
+        # raw_text="" -> is_error=True; that's an honest signal (OCR is future work, see
+        # `dc`'s textract_extractor precedent), not a regression -- the raw PDF itself is
+        # now preserved either way, which DoNotDownload never did.
+        "application/pdf": extract_sometimes_numbered_pdf,
     },
     "ar": {"application/pdf": extract_sometimes_numbered_pdf},
     "ca": {
