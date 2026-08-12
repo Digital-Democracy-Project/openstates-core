@@ -561,6 +561,78 @@ class TestRecomputeDiffOrder:
         assert enrolled.is_error is False
 
 
+@pytest.mark.django_db
+class TestPriorTextPrefersXmlOverPdf:
+    """
+    Found 2026-08-12 alongside enabling US XML extraction: prior_text (the text the *next*
+    version gets diffed against) used to hardcode `this_version_texts.get("application/pdf")`
+    first, unconditionally, for every jurisdiction. US and UT are the only jurisdictions where
+    a version can have both a real (non-DoNotDownload) PDF and XML link today, so this only
+    changes behavior for those two -- XML has no page-break/line-wrap artifacts, making it a
+    cleaner diffing source than PDF's line-numbered extraction.
+    """
+
+    def test_next_versions_diff_is_computed_against_xml_not_pdf(self):
+        bill = _make_bill()
+        introduced = bill.versions.create(note="Introduced", date="")
+        enrolled = bill.versions.create(note="Enrolled", date="")
+
+        # Deliberately give "Introduced" both links with *different* extracted text -- the
+        # XML text is clean, the PDF text carries a fake line-number-style prefix noise on
+        # the same content, mirroring a real line-numbered PDF extraction -- so the test can
+        # tell which one prior_text actually carried forward.
+        introduced.links.create(
+            url="https://example.test/introduced.xml", media_type="text/xml"
+        )
+        introduced.links.create(
+            url="https://example.test/introduced.pdf", media_type="application/pdf"
+        )
+        enrolled.links.create(
+            url="https://example.test/enrolled.pdf", media_type="application/pdf"
+        )
+
+        texts_by_url = {
+            "https://example.test/introduced.xml": "Section 1. Text.",
+            "https://example.test/introduced.pdf": "1 Section 1. Text.",
+            "https://example.test/enrolled.pdf": "Section 1. Text.\nSection 2. Added.",
+        }
+
+        def fake_fetch_bytes(url):
+            return texts_by_url[url].encode("utf-8")
+
+        def fake_extract_func(metadata):
+            return lambda data, meta: data.decode("utf-8")
+
+        with mock.patch(
+            "openstates.cli.text_extract._fetch_bytes", side_effect=fake_fetch_bytes
+        ), mock.patch(
+            "openstates.cli.text_extract.get_extract_func",
+            side_effect=fake_extract_func,
+        ), mock.patch(
+            "openstates.cli.text_extract._upload_and_verify", return_value=None
+        ), mock.patch(
+            "openstates.cli.text_extract._block_page_reason", return_value=None
+        ), mock.patch(
+            "os.makedirs"
+        ), mock.patch(
+            "builtins.open", mock.mock_open()
+        ):
+            archive_bill_versions(bill)
+
+        enrolled_pdf_doc = BillVersionDocument.objects.get(
+            bill=bill, version_note="Enrolled", media_type="application/pdf"
+        )
+        diff = enrolled_pdf_doc.diff_from_previous_version
+        # With XML preferred, "Section 1. Text." is unchanged between versions -- the diff
+        # should show only the real addition, not a spurious first-line change.
+        assert "+Section 2. Added." in diff
+        assert "-Section 1. Text." not in diff
+        assert "+Section 1. Text." not in diff
+        # If PDF had won instead, prior_text would have been "1 Section 1. Text." (the noisy
+        # prefixed line), which would show up as a spurious removed line here.
+        assert "1 Section 1. Text." not in diff
+
+
 class TestUtahXmlExtractor:
     """
     OPEN-49: Utah's bill XML export declares `encoding="UTF-16"` in its own prolog, but the
