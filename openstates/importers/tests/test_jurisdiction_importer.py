@@ -1,7 +1,18 @@
 import pytest
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from openstates.scrape import State
 from openstates.importers import JurisdictionImporter
 from openstates.data.models import Jurisdiction, Division, LegislativeSession
+
+
+def _session_update_count(captured):
+    return sum(
+        1
+        for q in captured.captured_queries
+        if q["sql"].lstrip().upper().startswith("UPDATE")
+        and "opencivicdata_legislativesession" in q["sql"]
+    )
 
 
 class NewJersey(State):
@@ -71,3 +82,30 @@ def test_jurisdiction_merge_related():
     ji.import_item(tj.as_dict())
     assert LegislativeSession.objects.count() == 3
     assert LegislativeSession.objects.get(identifier="2016").name == "updated"
+
+
+@pytest.mark.django_db
+def test_jurisdiction_unchanged_sessions_issue_no_updates():
+    Division.objects.create(id="ocd-division/country:us/state:nj", name="NJ")
+    ji = JurisdictionImporter("jurisdiction-id")
+    tj = NewJersey()
+    tj.legislative_sessions = [
+        {"identifier": "2015", "name": "2015 Regular Session"},
+        {"identifier": "2016", "name": "2016 Regular Session"},
+    ]
+
+    ji.import_item(tj.as_dict())
+    assert LegislativeSession.objects.count() == 2
+
+    with CaptureQueriesContext(connection) as captured:
+        ji.import_item(tj.as_dict())
+    assert _session_update_count(captured) == 0
+
+    tj.legislative_sessions[0]["name"] = "2015 Special Session"
+    with CaptureQueriesContext(connection) as captured:
+        ji.import_item(tj.as_dict())
+    assert _session_update_count(captured) == 1
+    assert (
+        LegislativeSession.objects.get(identifier="2015").name
+        == "2015 Special Session"
+    )
