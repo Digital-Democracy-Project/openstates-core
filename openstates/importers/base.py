@@ -473,10 +473,14 @@ class BaseImporter:
                     if not dbitem:
                         new_items.append(item)
                     else:
-                        # update dbitem
+                        changed_fields = []
                         for fname, val in item.items():
-                            setattr(dbitem, fname, val)
-                        dbitem.save()
+                            if getattr(dbitem, fname) != val:
+                                setattr(dbitem, fname, val)
+                                changed_fields.append(fname)
+                        if changed_fields:
+                            dbitem.save(update_fields=changed_fields)
+                            updated = True
 
                 # import anything that made it to new_items in the usual fashion
                 self._create_related(obj, {field: new_items}, subfield_dict)
