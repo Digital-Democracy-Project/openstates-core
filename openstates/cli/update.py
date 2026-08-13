@@ -306,12 +306,17 @@ def do_import(juris: State, args: argparse.Namespace) -> dict[str, typing.Any]:
             latest_bill_update=datetime.datetime.utcnow()
         )
 
+    # 8/12/26: generating session report is generating a lot of SQL load
+    # because we scrape a lot, and this runs some expensive queries
+    # we also are not using this data at this time.
+    # SO: temporarily just disabling session report generation for now
+    # TODO: if we want this back, move it to a daily cron job instead of every scrape
     # compile info on all sessions that were updated in this run
-    seen_sessions = set()
-    seen_sessions.update(bill_importer.get_seen_sessions())
-    seen_sessions.update(vote_event_importer.get_seen_sessions())
-    for session in seen_sessions:
-        generate_session_report(session)
+    # seen_sessions = set()
+    # seen_sessions.update(bill_importer.get_seen_sessions())
+    # seen_sessions.update(vote_event_importer.get_seen_sessions())
+    # for session in seen_sessions:
+    #     generate_session_report(session)
 
     return report
 

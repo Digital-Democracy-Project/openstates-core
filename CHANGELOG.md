@@ -1,5 +1,8 @@
 # Changelog
 
+## 6.25.5 - Aug 12, 2026
+* Disable session report generation to reduce database load
+
 ## 6.25.4 - Aug 12, 2026
 * Adds indices to opencivicdata_bill on latest_action_date and updated_at to improve sort query
   performance
