@@ -22,7 +22,7 @@ from ..exceptions import CommandError
 from ..scrape import JurisdictionScraper, State
 from ..utils.django import init_django
 from ..utils.instrument import Instrumentation
-from .reports import generate_session_report, print_report, save_report
+from .reports import print_report, save_report
 
 logger = logging.getLogger("openstates")
 stats = Instrumentation()
