@@ -15,6 +15,7 @@ from openstates.cli.text_extract import (
     archive_bill_versions,
     recompute_bill_diff_order,
     _reextract_document,
+    _clean_virginia_text,
     S3_BILL_ARCHIVE_BUCKET,
 )
 
@@ -286,12 +287,13 @@ class TestNoteStageUnknownFallback:
         assert result[-1] == "Some Never-Before-Seen Document Type"
 
 
-def _make_bill(jid="ocd-jurisdiction/country:us/state:ak/government"):
+def _make_bill(jid="ocd-jurisdiction/country:us/state:ak/government", jurisdiction_name="Test"):
     Division.objects.get_or_create(
         id="ocd-division/country:us", defaults={"name": "USA"}
     )
     j, _ = Jurisdiction.objects.get_or_create(
-        id=jid, defaults={"division_id": "ocd-division/country:us", "name": "Test"}
+        id=jid,
+        defaults={"division_id": "ocd-division/country:us", "name": jurisdiction_name},
     )
     org, _ = Organization.objects.get_or_create(
         jurisdiction=j, name="House", classification="lower"
@@ -304,6 +306,14 @@ def _make_bill(jid="ocd-jurisdiction/country:us/state:ak/government"):
         from_organization=org,
     )
     return bill
+
+
+def _make_va_bill():
+    # OPEN-9: a bill whose jurisdiction.name is the real "Virginia" archive_bill_versions()
+    # gates on, distinct from _make_bill()'s generic "Test" jurisdiction used everywhere else.
+    return _make_bill(
+        jid="ocd-jurisdiction/country:us/state:va/government", jurisdiction_name="Virginia"
+    )
 
 
 @pytest.mark.django_db
@@ -823,3 +833,302 @@ class TestReextractDocument:
         doc.refresh_from_db()
         assert doc.is_error is True  # untouched
         assert doc.raw_text == ""  # untouched
+
+
+class TestCleanVirginiaTextPatterns:
+    """
+    OPEN-9 AC7: one test per real pattern in _VA_LINE_PATTERNS/_VA_TRAILING_WATERMARK/
+    _LEADING_LINE_NUMBER, each using a fixture string captured verbatim (or near-verbatim)
+    from real archived Virginia bills (HB1244, SB622, SJ58, SB542, HB1 -- confirmed directly
+    against the real production archive while implementing this ticket).
+    """
+
+    def test_strips_decorative_border_rule(self):
+        text = "Real content line.\n+\nMore real content."
+        assert _clean_virginia_text(text) == "Real content line.\nMore real content."
+
+    def test_strips_decorative_em_dash_divider_line(self):
+        # AC6 refinement: found reading a real raw diff (HB1011) -- a decorative divider line
+        # of 5 em-dashes separating a bill's summary/patron block from its body, confirmed
+        # real across 8,404 archived VA rows.
+        text = "Real content line.\n—————\nMore real content."
+        assert _clean_virginia_text(text) == "Real content line.\nMore real content."
+
+    def test_strips_generation_timestamp_footer(self):
+        text = "Real content line.\n1/20/26 11:44\nMore real content."
+        assert _clean_virginia_text(text) == "Real content line.\nMore real content."
+
+    def test_strips_session_line_with_and_without_year(self):
+        # real: "2026 SESSION" (HTML) and bare "SESSION" (PDF -- the leading year lands in a
+        # separate layout column that pdftotext -layout drops)
+        assert _clean_virginia_text("2026 SESSION\nReal content.") == "Real content."
+        assert _clean_virginia_text("SESSION\nReal content.") == "Real content."
+
+    def test_strips_introduced_enrolled_reprint_markers(self):
+        assert _clean_virginia_text("INTRODUCED\nReal content.") == "Real content."
+        assert _clean_virginia_text("ENROLLED\nReal content.") == "Real content."
+        assert _clean_virginia_text("REPRINT\nReal content.") == "Real content."
+
+    def test_strips_senate_and_house_substitute_stage_markers(self):
+        assert _clean_virginia_text("SENATE SUBSTITUTE\nReal content.") == "Real content."
+        assert _clean_virginia_text("HOUSE SUBSTITUTE\nReal content.") == "Real content."
+
+    def test_strips_amendment_in_the_nature_of_a_substitute_stamp(self):
+        text = "AMENDMENT IN THE NATURE OF A SUBSTITUTE\nReal content."
+        assert _clean_virginia_text(text) == "Real content."
+
+    def test_strips_committee_routing_line(self):
+        # AC6 refinement: confirmed real and near-exclusively Introduced-stage (4,909 rows),
+        # essentially never carried into a Substitute/Enrolled version -- pure noise on any
+        # Introduced->later transition.
+        text = "Referred to Committee on Health and Human Services\nReal content."
+        assert _clean_virginia_text(text) == "Real content."
+
+    def test_strips_real_offered_and_prefiled_date_lines(self):
+        # real shape confirmed against the full archive -- the ticket's own guessed
+        # "OFFERED FOR CONSIDERATION mm/dd/yyyy" phrasing never actually appears in any
+        # archived VA document (0 matches checked directly against the real DB)
+        text = "Offered January 14, 2026\nPrefiled January 14, 2026\nReal content."
+        assert _clean_virginia_text(text) == "Real content."
+
+    def test_strips_ticket_original_offered_for_consideration_guess_too(self):
+        # kept as a harmless no-op safety net even though it never matches real 2026/2026S1 data
+        text = "OFFERED FOR CONSIDERATION 01/14/2026\nReal content."
+        assert _clean_virginia_text(text) == "Real content."
+
+    def test_strips_patron_lines_including_parenthetical_substitute_form(self):
+        assert _clean_virginia_text("Patron—Marsden\nReal content.") == "Real content."
+        assert (
+            _clean_virginia_text("Patrons—Anthony, Clark, Guzman and Shin\nReal content.")
+            == "Real content."
+        )
+        # real committee-substitute form: leads with "(", and "Patron" isn't immediately
+        # followed by the dash -- would NOT match the ticket's original `Patron[—-].*` pattern
+        text = "(Patron Prior to Substitute—Senator Marsden)\nReal content."
+        assert _clean_virginia_text(text) == "Real content."
+
+    def test_strips_lone_bill_tracking_numeric_code(self):
+        text = "26101118D\nReal content."
+        assert _clean_virginia_text(text) == "Real content."
+
+    def test_strips_bill_and_resolution_title_lines(self):
+        assert _clean_virginia_text("HOUSE BILL NO. 1244\nReal content.") == "Real content."
+        assert _clean_virginia_text("SENATE BILL NO. 622\nReal content.") == "Real content."
+        # real: SJ58 is a resolution, not a bill -- the ticket's pattern only covered "BILL NO."
+        text = "SENATE JOINT RESOLUTION NO. 58\nReal content."
+        assert _clean_virginia_text(text) == "Real content."
+
+    def test_strips_virginia_acts_of_assembly_line_both_dash_variants(self):
+        assert (
+            _clean_virginia_text("VIRGINIA ACTS OF ASSEMBLY — CHAPTER\nReal content.")
+            == "Real content."
+        )
+        assert (
+            _clean_virginia_text("VIRGINIA ACTS OF ASSEMBLY -- CHAPTER\nReal content.")
+            == "Real content."
+        )
+
+    def test_strips_chaptered_stage_chapter_header_line(self):
+        # a genuinely different template from "VIRGINIA ACTS OF ASSEMBLY -- CHAPTER" above --
+        # confirmed real on chaptered bills (e.g. HB1 -> "CHAPTER 350")
+        assert _clean_virginia_text("CHAPTER 350\nReal content.") == "Real content."
+
+    def test_does_not_strip_inline_mixed_case_chapter_reference(self):
+        # real content line (SB735) -- must survive. "Chapter" here is mixed-case, part of a
+        # real sentence, not the all-caps standalone chaptered-stage header line above.
+        text = (
+            "That the eighth enactment of Chapter 780 of the Acts of Assembly of 2024 "
+            "is repealed."
+        )
+        assert _clean_virginia_text(text) == text
+
+    def test_strips_proposed_by_committee_governor_and_conference_preamble(self):
+        # confirmed real across multiple distinct entities -- matches the general shape
+        # rather than enumerating every committee/entity name
+        for opening in [
+            "(Proposed by the Senate Committee on Finance and Appropriations",
+            "(Proposed by the Governor",
+            "(Proposed by the Joint Conference Committee",
+        ]:
+            text = f"{opening}\non February 12, 2026)\nReal content."
+            assert _clean_virginia_text(text) == "Real content."
+
+    def test_strips_proposed_by_placeholder_date(self):
+        text = (
+            "(Proposed by the Senate Committee on Commerce and Labor\n"
+            "on ________________)\nReal content."
+        )
+        assert _clean_virginia_text(text) == "Real content."
+
+    def test_strips_bracketed_chamber_number_tag(self):
+        assert _clean_virginia_text("[H 1244]\nReal content.") == "Real content."
+        assert _clean_virginia_text("[H 1]\nReal content.") == "Real content."
+
+    def test_strips_trailing_inline_watermark_but_keeps_the_real_content(self):
+        # real example from the ticket: the watermark is appended to an otherwise-real line
+        text = "...where every young person has access to              SJ58"
+        assert _clean_virginia_text(text) == "...where every young person has access to"
+
+    def test_strips_leading_margin_line_number_prefix(self):
+        text = "12  Be it enacted by the General Assembly of Virginia:"
+        assert (
+            _clean_virginia_text(text) == "Be it enacted by the General Assembly of Virginia:"
+        )
+
+    def test_does_not_strip_real_amendment_instruction_using_the_word_substitute(self):
+        # OPEN-9 AC6 finding: the ticket's originally-proposed _VA_COMMITTEE_SUBSTITUTE ("any
+        # line containing the word Substitute") would have deleted this real
+        # amendment-instruction content -- confirmed real, found in a real Conference Report.
+        text = "1. After line 23, substitute"
+        assert _clean_virginia_text(text) == text
+
+    def test_does_not_strip_ordinary_bill_content(self):
+        text = (
+            "A. Any person registered and otherwise qualified to vote may request at any "
+            "time prior to 2:00 p.m. on the day preceding the election."
+        )
+        assert _clean_virginia_text(text) == text
+
+
+class TestCleanVirginiaTextRegressionSurvivorGapsOPEN9:
+    """
+    Regression test for the ticket's documented "known gap": three separate real attempts to
+    strip Virginia's title/stage-marker text each left a new survivor -- first INTRODUCED/
+    ENROLLED alone (leaving "HOUSE BILL NO. 1244" visible), then that plus HOUSE/SENATE BILL
+    NO. (leaving "VIRGINIA ACTS OF ASSEMBLY" visible). Pins a single fixture reproducing a real
+    Introduced->Enrolled transition shape with all three known title-line variants present, so
+    a future change can't silently reintroduce any of them.
+    """
+
+    INTRODUCED_HEADER = (
+        "2026 SESSION\n"
+        "INTRODUCED\n"
+        "26104319D\n"
+        "HOUSE BILL NO. 1244\n"
+        "Offered January 14, 2026\n"
+        "Prefiled January 14, 2026\n"
+        "A BILL to amend and reenact certain sections of the Code of Virginia.\n"
+        "Patrons—Anthony, Clark, Guzman and Shin\n"
+        "Be it enacted by the General Assembly of Virginia:\n"
+        "1. That certain sections are amended and reenacted as follows:\n"
+    )
+    ENROLLED_FOOTER = (
+        "2026 SESSION\n"
+        "ENROLLED\n"
+        "VIRGINIA ACTS OF ASSEMBLY -- CHAPTER\n"
+        "An Act to amend and reenact certain sections of the Code of Virginia.\n"
+        "[H 1244]\n"
+        "Approved\n"
+        "Be it enacted by the General Assembly of Virginia:\n"
+        "1. That certain sections are amended and reenacted as follows:\n"
+    )
+
+    def test_none_of_the_documented_survivors_appear_in_cleaned_text(self):
+        for cleaned in (
+            _clean_virginia_text(self.INTRODUCED_HEADER),
+            _clean_virginia_text(self.ENROLLED_FOOTER),
+        ):
+            assert "INTRODUCED" not in cleaned
+            assert "ENROLLED" not in cleaned
+            assert "HOUSE BILL NO." not in cleaned
+            assert "SENATE BILL NO." not in cleaned
+            assert "VIRGINIA ACTS OF ASSEMBLY" not in cleaned
+
+    def test_real_bill_content_survives_the_transition(self):
+        for cleaned in (
+            _clean_virginia_text(self.INTRODUCED_HEADER),
+            _clean_virginia_text(self.ENROLLED_FOOTER),
+        ):
+            assert "Be it enacted by the General Assembly of Virginia:" in cleaned
+            assert (
+                "1. That certain sections are amended and reenacted as follows:" in cleaned
+            )
+
+    def test_cleaned_diff_never_shows_the_survivor_lines_either(self):
+        import difflib
+
+        cleaned_introduced = _clean_virginia_text(self.INTRODUCED_HEADER)
+        cleaned_enrolled = _clean_virginia_text(self.ENROLLED_FOOTER)
+        diff = "\n".join(
+            difflib.unified_diff(
+                cleaned_introduced.splitlines(), cleaned_enrolled.splitlines(), lineterm=""
+            )
+        )
+        for survivor in (
+            "INTRODUCED",
+            "ENROLLED",
+            "HOUSE BILL NO.",
+            "SENATE BILL NO.",
+            "VIRGINIA ACTS OF ASSEMBLY",
+        ):
+            assert survivor not in diff
+
+
+@pytest.mark.django_db
+class TestArchiveBillVersionsVirginiaCleaningGateOPEN9:
+    """
+    AC1: a non-Virginia bill's prior_text/raw_text and resulting diff_from_previous_version
+    must be byte-for-byte identical to current (pre-OPEN-9) behavior. Uses fixture text
+    containing VA-noise-shaped lines that WOULD be stripped if the cleaning step ran -- if the
+    jurisdiction gate in archive_bill_versions() ever regresses to apply cleaning universally,
+    this test catches it. Also confirms the Virginia-jurisdiction case actually cleans, and
+    that cleaning never touches the stored raw_text field itself.
+    """
+
+    NOISY_TEXT_V1 = "INTRODUCED\n+\nSection 1. Original text."
+    NOISY_TEXT_V2 = "INTRODUCED\n+\nSection 1. Original text.\nSection 2. New text."
+
+    def _run_archive(self, bill):
+        introduced = bill.versions.create(note="Introduced", date="")
+        amended = bill.versions.create(note="Substitute #1", date="")
+        introduced.links.create(
+            url="https://example.test/v1.pdf", media_type="application/pdf"
+        )
+        amended.links.create(
+            url="https://example.test/v2.pdf", media_type="application/pdf"
+        )
+
+        texts_by_url = {
+            "https://example.test/v1.pdf": self.NOISY_TEXT_V1,
+            "https://example.test/v2.pdf": self.NOISY_TEXT_V2,
+        }
+
+        def fake_fetch_bytes(url):
+            return texts_by_url[url].encode("utf-8")
+
+        def fake_extract_func(metadata):
+            return lambda data, meta: data.decode("utf-8")
+
+        with mock.patch(
+            "openstates.cli.text_extract._fetch_bytes", side_effect=fake_fetch_bytes
+        ), mock.patch(
+            "openstates.cli.text_extract.get_extract_func",
+            side_effect=fake_extract_func,
+        ), mock.patch(
+            "openstates.cli.text_extract._upload_and_verify", return_value=None
+        ), mock.patch(
+            "openstates.cli.text_extract._block_page_reason", return_value=None
+        ), mock.patch(
+            "os.makedirs"
+        ), mock.patch(
+            "builtins.open", mock.mock_open()
+        ):
+            archive_bill_versions(bill)
+
+        return BillVersionDocument.objects.get(bill=bill, version_note="Substitute #1")
+
+    def test_non_virginia_bill_diff_keeps_the_noise_lines_untouched(self):
+        bill = _make_bill()  # jurisdiction.name == "Test", not "Virginia"
+        doc = self._run_archive(bill)
+        # if cleaning had run, "INTRODUCED" and the bare "+" line would be gone from the diff
+        assert "INTRODUCED" in doc.diff_from_previous_version
+        assert "+Section 2. New text." in doc.diff_from_previous_version
+        assert doc.raw_text == self.NOISY_TEXT_V2  # stored raw_text is never cleaned either
+
+    def test_virginia_bill_diff_has_the_noise_lines_stripped(self):
+        bill = _make_va_bill()
+        doc = self._run_archive(bill)
+        assert "INTRODUCED" not in doc.diff_from_previous_version
+        assert "+Section 2. New text." in doc.diff_from_previous_version
+        # cleaning only affects what's fed into the diff -- stored raw_text is untouched
+        assert doc.raw_text == self.NOISY_TEXT_V2

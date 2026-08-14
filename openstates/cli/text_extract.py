@@ -621,6 +621,107 @@ def _version_sort_key(note: str, date: typing.Optional[str]) -> tuple:
     return (stage, date if has_date else "", ordinal)
 
 
+_VA_LINE_PATTERNS = [
+    re.compile(r"^\s*\+\s*$"),  # decorative vertical-rule margin artifact -- indent shifts by
+    # document stage but is identical across bills at the same stage; match on content only.
+    # Decorative em-dash divider line separating a bill's summary/patron block from its body
+    # (confirmed real -- always exactly 5 em-dashes in every sample checked, 8,404 real rows
+    # contain it); found reading a real raw diff during AC6 refinement (HB1011), not guessed.
+    re.compile(r"^\s*—{2,}\s*$"),
+    re.compile(r"^\s*\d{1,2}/\d{1,2}/\d{2}\s+\d{1,2}:\d{2}\s*$"),  # generation timestamp footer
+    # "2026 SESSION" (HTML) or bare "SESSION" (PDF -- confirmed real: pdftotext -layout drops
+    # the leading year into a separate layout column that never makes it into the text stream).
+    re.compile(r"^\s*(\d{4}\s+)?SESSION\s*$", re.IGNORECASE),
+    re.compile(r"^\s*(INTRODUCED|ENROLLED|REPRINT)\s*$", re.IGNORECASE),
+    # "SENATE SUBSTITUTE"/"HOUSE SUBSTITUTE" -- the same bare stage-marker line as
+    # INTRODUCED/ENROLLED above, just for the substitute stage (confirmed real, e.g. SB622).
+    re.compile(r"^\s*(SENATE|HOUSE)\s+SUBSTITUTE\s*$", re.IGNORECASE),
+    re.compile(r"^\s*AMENDMENT IN THE NATURE OF A SUBSTITUTE\s*$", re.IGNORECASE),
+    # Committee-routing line -- confirmed real and near-exclusively Introduced-stage (4,909
+    # rows), essentially never carried forward to a Substitute/Enrolled version, so it always
+    # shows as pure removed-line noise on any Introduced->later transition. Found reading a
+    # real raw diff during AC6 refinement (HB1006), not guessed.
+    re.compile(r"^\s*Referred to Committee on .*$", re.IGNORECASE),
+    # Ticket's original guess for the offer-date line -- never observed in real 2026/2026S1
+    # archived VA text (checked directly against the full archive), kept as a harmless no-op
+    # safety net in case an older session used this phrasing.
+    re.compile(r"^\s*OFFERED FOR CONSIDERATION\s+\d{1,2}/\d{1,2}/\d{4}\s*$", re.IGNORECASE),
+    # Real shape confirmed against archived text: "Offered January 14, 2026" / "Prefiled
+    # January 14, 2026" -- the ticket's guess above never actually appears.
+    re.compile(r"^\s*(Offered|Prefiled)\s+\w+ \d{1,2},\s*\d{4}\s*$", re.IGNORECASE),
+    # Patron line -- generalized beyond the ticket's `Patron[—-].*` to also match real
+    # committee-substitute-stage forms confirmed in the archive: "(Patron Prior to
+    # Substitute—Senator Marsden)" and "(Patrons Prior to Substitute—Senators A, B, and C)",
+    # which lead with "(" and don't put the dash immediately after "Patron".
+    re.compile(r"^\s*\(?Patrons?\b.*$", re.IGNORECASE),
+    re.compile(r"^\s*\d+[A-Z]?\s*$"),  # lone bill-tracking numeric code, e.g. "26101118D"
+    # Generalized beyond the ticket's "(HOUSE|SENATE) BILL NO." to also cover resolutions
+    # (confirmed real: "SENATE JOINT RESOLUTION NO. 58" on SJ58, a resolution not a bill).
+    re.compile(
+        r"^\s*(HOUSE|SENATE)\s+(BILL|JOINT RESOLUTION|RESOLUTION) NO\.\s*\d+\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(r"^\s*VIRGINIA ACTS OF ASSEMBLY.*$", re.IGNORECASE),
+    # Chaptered stage's own act-header line -- confirmed real (e.g. "CHAPTER 350") and a
+    # genuinely different template from Enrolled's "VIRGINIA ACTS OF ASSEMBLY -- CHAPTER"
+    # above, not just more trailing text after it as the ticket's "known gap" note guessed.
+    # All-caps-anchored so it can't collide with inline mixed-case content references like
+    # "Chapter 780 of the Acts of Assembly of 2024".
+    re.compile(r"^\s*CHAPTER\s+\d+\s*$"),
+    # Committee/Governor/Conference-substitute preamble, e.g. "(Proposed by the Senate
+    # Committee on Finance and Appropriations" / "(Proposed by the Governor" / "(Proposed by
+    # the Joint Conference Committee" -- confirmed real across multiple real committees plus
+    # the Governor and Conference Committee. Matches the general shape rather than enumerating
+    # entities, same rationale as the ticket's own guidance for committee names.
+    re.compile(r"^\s*\(Proposed by .*$", re.IGNORECASE),
+    # The date/placeholder line closing the "(Proposed by ...)" preamble when it wraps onto a
+    # second physical line, e.g. "on February 12, 2026)" or the placeholder "on ________________)".
+    re.compile(r"^\s*on\s+(_+|\w+ \d{1,2},\s*\d{4})\)\s*$", re.IGNORECASE),
+    # Bracketed chamber+number cross-reference tag on its own line, e.g. "[H 1244]" (confirmed
+    # real on both Enrolled and Chaptered documents).
+    re.compile(r"^\s*\[[A-Z]{1,3}\s*\d+\]\s*$"),
+]
+# Deliberately NOT implementing the ticket's originally-proposed `_VA_COMMITTEE_SUBSTITUTE`
+# ("any line containing the word Substitute", meant to strip a supposed committee-name-plus-
+# "Substitute" heading line): checked directly against the real archive and no such standalone
+# heading line exists anywhere -- committee names only ever appear embedded inside the
+# "(Proposed by the ... Committee on <name>..." preamble already matched above. Worse, the
+# ticket's proposed pattern would have been actively unsafe: its bare `\bSubstitute\b` match
+# would also strip real amendment-instruction content that uses "substitute" as an ordinary
+# verb -- confirmed real example found in a Conference Report: "1. After line 23, substitute".
+
+_VA_TRAILING_WATERMARK = re.compile(
+    r"\s{3,}[SH][JRB]?\d+\s*$"
+)  # inline bill-ID watermark appended to the end of real content lines, e.g.
+# "...where every young person has access to              SJ58"
+_LEADING_LINE_NUMBER = re.compile(r"^\s*\d+(\s{2,}|\t)")
+
+
+def _clean_virginia_text(text: str) -> str:
+    """
+    Strip Virginia-specific administrative boilerplate from one bill version's text before
+    it's diffed against another (OPEN-9). Called only for jurisdiction.name == "Virginia",
+    immediately before the difflib.unified_diff() call in archive_bill_versions() -- never
+    applied to any other jurisdiction, and never applied to the stored raw_text itself (only
+    the text fed into that one diff call differs).
+
+    Per line: strip the inline trailing bill-ID watermark first (real content can have this
+    appended to an otherwise-real line, so only the watermark should go, not the whole line);
+    drop the line entirely if what's left matches one of _VA_LINE_PATTERNS; otherwise strip a
+    leading printed margin line-number if present and keep the rest. See _VA_LINE_PATTERNS
+    above for what's covered and why, including a deliberate deviation from the ticket's
+    starting patterns found unsafe against real archived text.
+    """
+    cleaned_lines = []
+    for line in text.splitlines():
+        line = _VA_TRAILING_WATERMARK.sub("", line)
+        if any(pattern.match(line) for pattern in _VA_LINE_PATTERNS):
+            continue
+        line = _LEADING_LINE_NUMBER.sub("", line)
+        cleaned_lines.append(line)
+    return "\n".join(cleaned_lines)
+
+
 def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
     """
     Fetch and permanently archive every not-yet-captured version+document of a bill
@@ -647,6 +748,17 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
     version whose note doesn't match any known stage (_STAGE_UNKNOWN) never updates or reads
     `prior_text` at all — its documents always get `diff_from_previous_version=None` rather
     than risk placing an unrecognized version at the wrong point in the lineage.
+
+    OPEN-9: for Virginia bills only, `prior_text`/`raw_text` are run through
+    `_clean_virginia_text()` immediately before the `difflib.unified_diff()` call below --
+    stripping repeated administrative boilerplate (session/stage markers, patron lines,
+    margin artifacts, etc.) that would otherwise dominate the raw diff. This never changes
+    what's stored as `raw_text` or fed into `this_version_texts`/`prior_text` tracking for the
+    *next* version -- only the two local copies handed to `unified_diff()` are cleaned. No
+    other jurisdiction is affected (mirrors Florida's own unrelated branch elsewhere in this
+    module, and matches recompute_bill_diff_order()'s untouched, cleaning-free diff call --
+    that function is OPEN-34's separate ordering-only backfill path, deliberately not in scope
+    here per the ticket's no-backfill constraint).
     """
     from openstates.data.models import BillVersionDocument
 
@@ -662,6 +774,7 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
         "s3_unverified": 0,
     }
 
+    jurisdiction_name = bill.legislative_session.jurisdiction.name
     prior_text: typing.Optional[str] = None
 
     ordered_versions = sorted(
@@ -754,9 +867,14 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                 and raw_text
                 and not is_unknown_position
             ):
+                diff_prior_text = prior_text
+                diff_raw_text = raw_text
+                if jurisdiction_name == "Virginia":
+                    diff_prior_text = _clean_virginia_text(prior_text)
+                    diff_raw_text = _clean_virginia_text(raw_text)
                 diff_from_previous_version = "\n".join(
                     difflib.unified_diff(
-                        prior_text.splitlines(), raw_text.splitlines(), lineterm=""
+                        diff_prior_text.splitlines(), diff_raw_text.splitlines(), lineterm=""
                     )
                 )
 
