@@ -140,6 +140,49 @@ def _cleanup(text: str) -> str:
     return text.replace("\0", "")
 
 
+def _reflow_paragraphs(text: str) -> str:
+    """
+    Arizona-only text-cleaning step (OPEN-10) applied to prior_text/raw_text
+    immediately before archive_bill_versions()'s difflib.unified_diff() call --
+    never touches the stored raw_text field or any other jurisdiction.
+
+    Arizona's bill documents are Microsoft Word HTML exports, which encode each
+    visual (word-wrapped) line as its own paragraph-like HTML block, not each
+    logical paragraph/sentence. Two exports of the same underlying text routinely
+    word-wrap at different widths between drafting stages, so the same sentence
+    fragments into a different number of "lines" in each version and a raw
+    line-based diff sees changed content on nearly every line even with zero real
+    edits. This rejoins those fragments back into one line per real sentence
+    before diffing, so a word-wrap-width difference no longer fragments the
+    document differently in each version.
+
+    Merge rule: join a line into the next unless it ends in sentence-final
+    punctuation (. : ;) -- purely mechanical, no jurisdiction-specific
+    marker/keyword knowledge needed. Blank lines are preserved as real separators
+    (paragraph/section breaks), and internal whitespace runs (including the
+    double-space/nbsp-after-period artifact Word's HTML export leaves behind) are
+    collapsed to a single space.
+    """
+    lines = text.split("\n")
+    out: list[str] = []
+    buf = ""
+    for line in lines:
+        stripped = re.sub(r"\s+", " ", line.strip())
+        if not stripped:
+            if buf:
+                out.append(buf)
+                buf = ""
+            out.append("")
+            continue
+        buf = f"{buf} {stripped}" if buf else stripped
+        if stripped.endswith((".", ":", ";")):
+            out.append(buf)
+            buf = ""
+    if buf:
+        out.append(buf)
+    return "\n".join(out)
+
+
 def download(
     version: dict[str, str]
 ) -> tuple[typing.Optional[str], typing.Optional[bytes]]:
@@ -647,8 +690,18 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
     version whose note doesn't match any known stage (_STAGE_UNKNOWN) never updates or reads
     `prior_text` at all — its documents always get `diff_from_previous_version=None` rather
     than risk placing an unrecognized version at the wrong point in the lineage.
+
+    OPEN-10: for Arizona only, `prior_text`/`raw_text` are reflowed (see
+    `_reflow_paragraphs()`) into local variables just before the `difflib.unified_diff()`
+    call below -- word-wrap-fragment noise specific to Arizona's Word-HTML-export bill
+    documents, not applicable to any other jurisdiction (Florida's own branch above is for a
+    different problem -- TLS ciphers, not text cleaning). Only the text fed into
+    `difflib.unified_diff()` changes; the stored `raw_text` field and the `prior_text`
+    carried into the next iteration both stay the original, un-reflowed text.
     """
     from openstates.data.models import BillVersionDocument
+
+    jurisdiction = bill.legislative_session.jurisdiction.name
 
     counters = {
         "fetched": 0,
@@ -754,9 +807,14 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                 and raw_text
                 and not is_unknown_position
             ):
+                diff_prior_text = prior_text
+                diff_raw_text = raw_text
+                if jurisdiction == "Arizona":
+                    diff_prior_text = _reflow_paragraphs(prior_text)
+                    diff_raw_text = _reflow_paragraphs(raw_text)
                 diff_from_previous_version = "\n".join(
                     difflib.unified_diff(
-                        prior_text.splitlines(), raw_text.splitlines(), lineterm=""
+                        diff_prior_text.splitlines(), diff_raw_text.splitlines(), lineterm=""
                     )
                 )
 

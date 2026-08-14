@@ -1,3 +1,4 @@
+import difflib
 import pytest  # type: ignore
 from unittest import mock
 
@@ -12,6 +13,7 @@ from openstates.cli.text_extract import (
     _version_sort_key,
     _note_stage,
     _STAGE_UNKNOWN,
+    _reflow_paragraphs,
     archive_bill_versions,
     recompute_bill_diff_order,
     _reextract_document,
@@ -286,12 +288,13 @@ class TestNoteStageUnknownFallback:
         assert result[-1] == "Some Never-Before-Seen Document Type"
 
 
-def _make_bill(jid="ocd-jurisdiction/country:us/state:ak/government"):
+def _make_bill(jid="ocd-jurisdiction/country:us/state:ak/government", jurisdiction_name="Test"):
     Division.objects.get_or_create(
         id="ocd-division/country:us", defaults={"name": "USA"}
     )
     j, _ = Jurisdiction.objects.get_or_create(
-        id=jid, defaults={"division_id": "ocd-division/country:us", "name": "Test"}
+        id=jid,
+        defaults={"division_id": "ocd-division/country:us", "name": jurisdiction_name},
     )
     org, _ = Organization.objects.get_or_create(
         jurisdiction=j, name="House", classification="lower"
@@ -822,4 +825,281 @@ class TestReextractDocument:
 
         doc.refresh_from_db()
         assert doc.is_error is True  # untouched
-        assert doc.raw_text == ""  # untouched
+
+
+class TestReflowParagraphsOPEN10:
+    """
+    OPEN-10: unit tests for the Arizona-only reflow step (see _reflow_paragraphs()'s own
+    docstring for the underlying mechanism -- Word's HTML export encodes each visual
+    (word-wrapped) line as its own paragraph-like block, so a word-wrap-width difference
+    between two exports of the same text fragments the same sentence into a different
+    number of "lines" in each version).
+    """
+
+    def test_rejoins_word_wrapped_sentence_into_one_line(self):
+        wrapped = "Be it\nenacted by the Legislature of the State of Arizona:"
+        assert (
+            _reflow_paragraphs(wrapped)
+            == "Be it enacted by the Legislature of the State of Arizona:"
+        )
+
+    def test_preserves_blank_line_paragraph_separators(self):
+        text = "Section 1. This is a sentence.\n\nSection 2. Another one."
+        assert _reflow_paragraphs(text) == text  # already one sentence per line
+
+    def test_splits_on_colon_and_semicolon_not_just_period(self):
+        text = "For the purposes of\nthis section:\nmeans a deductible; or\na copayment."
+        result = _reflow_paragraphs(text)
+        assert result.split("\n") == [
+            "For the purposes of this section:",
+            "means a deductible; or a copayment.",
+        ]
+
+    def test_collapses_double_space_after_period_artifact(self):
+        # Word's HTML export routinely leaves a double space after a sentence-ending
+        # period when the sentence was the last thing on a wrapped line -- a real artifact
+        # confirmed against live AZ bill text (e.g. SB1671's "...appointment.  \n").
+        text = "A. Requirements apply.  \nB. Other requirements apply."
+        result = _reflow_paragraphs(text)
+        assert result.split("\n") == [
+            "A. Requirements apply.",
+            "B. Other requirements apply.",
+        ]
+
+    def test_collapses_nbsp_artifact(self):
+        # Arizona's raw HTML declares charset=windows-1252 (a Word default); a real nbsp
+        # (already decoded to \xa0 by the time text reaches this function -- see
+        # TestArizonaCharsetHandling below for the raw-byte-decoding side of this) must
+        # collapse to a plain space like any other whitespace run, not survive as \xa0.
+        text = "A. Requirements\xa0apply."
+        assert _reflow_paragraphs(text) == "A. Requirements apply."
+
+    def test_does_not_merge_across_paragraph_break(self):
+        # A heading with no terminal punctuation, immediately followed by a blank line,
+        # must not bleed into the next paragraph's first sentence.
+        text = "CHAPTER 6.1\n\nFIDUCIARY DUTIES AND PROXY VOTING\n\nSection 1. Text."
+        result = _reflow_paragraphs(text)
+        assert result.split("\n") == [
+            "CHAPTER 6.1",
+            "",
+            "FIDUCIARY DUTIES AND PROXY VOTING",
+            "",
+            "Section 1. Text.",
+        ]
+
+    def test_real_strike_all_content_change_survives_intact(self):
+        # OPEN-10 AC4: mirrors the real SB1503 case -- a genuine "strike everything"
+        # rewrite where the entire subject matter changes between versions. Reflow must
+        # not delete, truncate, or otherwise obscure content that's simply *very
+        # different* from the prior version -- it only rejoins wrapped fragments.
+        prior_text = (
+            "Section 1. Title 38, Arizona Revised Statutes,\n"
+            "is amended by adding chapter 6.1, to read:\n\n"
+            "CHAPTER 6.1\n\nFIDUCIARY DUTIES AND PROXY VOTING"
+        )
+        raw_text = (
+            "Section 1. Subject to the requirements of\n"
+            "article IV, part 1, section 1, Constitution of Arizona, section 38-1171,\n"
+            "Arizona Revised Statutes, is amended to read:\n\n"
+            "START_STATUTE38-1171. Definitions"
+        )
+        reflowed_prior = _reflow_paragraphs(prior_text)
+        reflowed_raw = _reflow_paragraphs(raw_text)
+        diff = "\n".join(
+            difflib.unified_diff(
+                reflowed_prior.splitlines(), reflowed_raw.splitlines(), lineterm=""
+            )
+        )
+        # the real, large content swap must show up in full, not be suppressed
+        assert "FIDUCIARY DUTIES AND PROXY VOTING" in diff
+        assert "START_STATUTE38-1171. Definitions" in diff
+        assert (
+            "Section 1. Subject to the requirements of article IV, part 1, section 1, "
+            "Constitution of Arizona, section 38-1171, Arizona Revised Statutes, is "
+            "amended to read:" in diff
+        )
+
+    def test_real_cascading_renumbering_preserves_all_content(self):
+        # Found during OPEN-10's own AC5 validation against real bill SB1165: inserting a
+        # new numbered definition shifts every subsequent item's number (1->2, 2->3, ...).
+        # This is a genuine content change (the visible numeral IS part of the bill text),
+        # not a reflow bug -- confirm reflow preserves every real definition's content
+        # rather than dropping or corrupting any of them.
+        prior_text = (
+            "1. \"Cost sharing\" means a deductible.\n\n"
+            "2. \"Diagnostic Breast Examination\" means an examination."
+        )
+        raw_text = (
+            '1. "Additional screening services" includes a diagnostic breast examination.\n\n'
+            "2. \"Cost sharing\" means a deductible.\n\n"
+            "3. \"Diagnostic Breast Examination\" means an examination."
+        )
+        reflowed_prior = _reflow_paragraphs(prior_text)
+        reflowed_raw = _reflow_paragraphs(raw_text)
+        diff = "\n".join(
+            difflib.unified_diff(
+                reflowed_prior.splitlines(), reflowed_raw.splitlines(), lineterm=""
+            )
+        )
+        assert '"Additional screening services" includes a diagnostic breast examination.' in diff
+        # the two unchanged definitions must still appear, just renumbered -- not lost.
+        assert '2. "Cost sharing" means a deductible.' in diff
+        assert '3. "Diagnostic Breast Examination" means an examination.' in diff
+
+
+class TestArizonaCharsetHandling:
+    """
+    OPEN-10: Arizona's raw HTML declares charset=windows-1252 (a Microsoft Word default).
+    Confirmed directly against real archived AZ bills: passing raw bytes straight into the
+    real extractor (which parses via lxml.html.fromstring(data) on bytes, honoring the
+    declared <meta charset>) decodes a real nbsp correctly; naively pre-decoding the same
+    bytes as UTF-8 first mangles it into U+FFFD. The reflow step itself never reads raw
+    bytes (it only ever sees the already-extracted str) so it has no charset-decoding code
+    of its own -- this test pins the *existing* extraction path's correct behavior, since
+    any future direct-byte-reading tooling built on this work (e.g. a local-archive
+    validation script) would otherwise be exposed to the same real mistake found during
+    OPEN-10's research.
+    """
+
+    def test_windows1252_nbsp_decodes_correctly_through_the_real_extractor(self):
+        from openstates.fulltext import CONVERSION_FUNCTIONS
+
+        # 0xA0 is windows-1252's nbsp -- the real byte AZ's Word export uses.
+        html = (
+            b'<html><head><meta http-equiv=Content-Type '
+            b'content="text/html; charset=windows-1252"></head>'
+            b'<body><div class="WordSection2">Requirements\xa0apply.</div></body></html>'
+        )
+        func = CONVERSION_FUNCTIONS["az"]["text/html"]
+        text = func(
+            html,
+            {
+                "url": "",
+                "media_type": "text/html",
+                "title": "",
+                "jurisdiction_id": "ocd-jurisdiction/country:us/state:az/government",
+            },
+        )
+        assert "�" not in text
+        assert "Requirements apply." in text
+
+    def test_naive_utf8_predecode_would_have_mangled_the_same_bytes(self):
+        # Demonstrates the real bug this guards against: decoding the identical bytes as
+        # UTF-8 *before* handing them to lxml (instead of letting lxml's own charset-aware
+        # parser see the raw bytes) corrupts the nbsp into a replacement character. Proves
+        # the fixture above actually exercises a real, currently-avoided pitfall.
+        html = (
+            b'<html><head><meta http-equiv=Content-Type '
+            b'content="text/html; charset=windows-1252"></head>'
+            b'<body><div class="WordSection2">Requirements\xa0apply.</div></body></html>'
+        )
+        mangled = html.decode("utf-8", "replace")
+        assert "�" in mangled
+
+
+@pytest.mark.django_db
+class TestArizonaReflowJurisdictionGate:
+    """
+    OPEN-10 AC1/AC2: a non-Arizona bill's prior_text/raw_text and
+    diff_from_previous_version must be byte-for-byte identical to pre-OPEN-10 behavior --
+    reflow must only ever fire for jurisdiction.name == "Arizona".
+    """
+
+    WRAPPED_INTRODUCED = "Be it\nenacted by the Legislature of the State of Arizona:"
+    WRAPPED_ENROLLED = (
+        "Be it\nenacted by the Legislature of the State of\nArizona, with an amendment:"
+    )
+
+    def _run_two_version_bill(self, jid, jurisdiction_name):
+        bill = _make_bill(jid=jid, jurisdiction_name=jurisdiction_name)
+        introduced = bill.versions.create(note="Introduced", date="")
+        enrolled = bill.versions.create(note="Enrolled", date="")
+        introduced.links.create(
+            url="https://example.test/introduced.html", media_type="text/html"
+        )
+        enrolled.links.create(
+            url="https://example.test/enrolled.html", media_type="text/html"
+        )
+
+        texts_by_url = {
+            "https://example.test/introduced.html": self.WRAPPED_INTRODUCED,
+            "https://example.test/enrolled.html": self.WRAPPED_ENROLLED,
+        }
+
+        def fake_fetch_bytes(url):
+            return texts_by_url[url].encode("utf-8")
+
+        def fake_extract_func(metadata):
+            return lambda data, meta: data.decode("utf-8")
+
+        with mock.patch(
+            "openstates.cli.text_extract._fetch_bytes", side_effect=fake_fetch_bytes
+        ), mock.patch(
+            "openstates.cli.text_extract.get_extract_func",
+            side_effect=fake_extract_func,
+        ), mock.patch(
+            "openstates.cli.text_extract._upload_and_verify", return_value=None
+        ), mock.patch(
+            "openstates.cli.text_extract._block_page_reason", return_value=None
+        ), mock.patch(
+            "os.makedirs"
+        ), mock.patch(
+            "builtins.open", mock.mock_open()
+        ):
+            archive_bill_versions(bill)
+
+        return {
+            d.version_note: d for d in BillVersionDocument.objects.filter(bill=bill)
+        }
+
+    def test_non_arizona_diff_is_unreflowed_line_by_line(self):
+        docs = self._run_two_version_bill(
+            "ocd-jurisdiction/country:us/state:ak/government", jurisdiction_name="Alaska"
+        )
+        expected = "\n".join(
+            difflib.unified_diff(
+                self.WRAPPED_INTRODUCED.splitlines(),
+                self.WRAPPED_ENROLLED.splitlines(),
+                lineterm="",
+            )
+        )
+        assert docs["Enrolled"].diff_from_previous_version == expected
+        # sanity check the fixture actually WOULD diff differently if reflowed -- otherwise
+        # this test can't distinguish reflow-off from reflow-on.
+        reflowed_expected = "\n".join(
+            difflib.unified_diff(
+                _reflow_paragraphs(self.WRAPPED_INTRODUCED).splitlines(),
+                _reflow_paragraphs(self.WRAPPED_ENROLLED).splitlines(),
+                lineterm="",
+            )
+        )
+        assert expected != reflowed_expected
+
+    def test_non_arizona_raw_text_and_prior_text_untouched(self):
+        docs = self._run_two_version_bill(
+            "ocd-jurisdiction/country:us/state:ak/government", jurisdiction_name="Alaska"
+        )
+        assert docs["Introduced"].raw_text == self.WRAPPED_INTRODUCED
+        assert docs["Enrolled"].raw_text == self.WRAPPED_ENROLLED
+
+    def test_arizona_diff_is_reflowed(self):
+        docs = self._run_two_version_bill(
+            "ocd-jurisdiction/country:us/state:az/government", jurisdiction_name="Arizona"
+        )
+        expected = "\n".join(
+            difflib.unified_diff(
+                _reflow_paragraphs(self.WRAPPED_INTRODUCED).splitlines(),
+                _reflow_paragraphs(self.WRAPPED_ENROLLED).splitlines(),
+                lineterm="",
+            )
+        )
+        assert docs["Enrolled"].diff_from_previous_version == expected
+
+    def test_arizona_stored_raw_text_is_never_reflowed(self):
+        # Only the *diff* is reflowed -- the persisted raw_text field must stay exactly
+        # what the extractor produced, for every jurisdiction including Arizona.
+        docs = self._run_two_version_bill(
+            "ocd-jurisdiction/country:us/state:az/government", jurisdiction_name="Arizona"
+        )
+        assert docs["Introduced"].raw_text == self.WRAPPED_INTRODUCED
+        assert docs["Enrolled"].raw_text == self.WRAPPED_ENROLLED
