@@ -10,6 +10,7 @@ from .common import (
     extractor_for_element_by_id,
     extractor_for_element_by_xpath,
     extract_from_code_tags_html,
+    extractor_for_elements_by_xpath,
     textract_extractor,
     Metadata,
     ExtractorFunc,
@@ -80,7 +81,22 @@ CONVERSION_FUNCTIONS = {
     "ks": {"application/pdf": extract_sometimes_numbered_pdf},
     "ky": {"application/pdf": extract_line_numbered_pdf},
     "la": {"application/pdf": extract_sometimes_numbered_pdf},
-    "ma": {"application/pdf": extract_line_numbered_pdf},
+    "ma": {
+        "application/pdf": extract_line_numbered_pdf,
+        # Added 2026-08-14 (OPEN-37): the enacted Chapter-of-the-Acts page
+        # (scrapers/ma/bills.py's "Chapter Law Text (Enacted)" version) is
+        # plain HTML with no PDF variant. The chapter title and body text
+        # live in two sibling <div class="col-xs-12"> elements -- the first
+        # holding <h2 class="h3 chapterTitle">, the second the actual
+        # <p>-tag body ending in "Approved, <date>." -- verified directly
+        # against 5 real chapter-law pages (Chapter139/2024, Chapter15/3/18
+        # of 2025 -- the exact bills this ticket names, H972/H4100/H4004 --
+        # and Chapter163/2026).
+        "text/html": extractor_for_elements_by_xpath(
+            "//div[h2[contains(@class, 'chapterTitle')]] | "
+            "//div[h2[contains(@class, 'chapterTitle')]]/following-sibling::div[1]"
+        ),
+    },
     "md": {"application/pdf": extract_line_numbered_pdf},
     "me": {
         "text/html": extractor_for_elements_by_class("billtextbody"),

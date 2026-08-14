@@ -592,6 +592,15 @@ def _note_stage(note: str) -> tuple:
     if re.search(r"introduced|\bfiled\b|\bpb\b|original|^bill$", lowered):
         return (_STAGE_INTRODUCED, _extract_ordinal(note))
 
+    if lowered == "bill text":
+        # MA's only version_note until OPEN-37 added a second (scrapers/ma/bills.py's
+        # add_version_link("Bill Text", ...)) -- MA has no other stage name for its
+        # introduced text, and "bill text" doesn't match "^bill$" (extra word) or any other
+        # case above, so without this it fell through to _STAGE_UNKNOWN and was excluded from
+        # the diff lineage entirely. Exact match, not a substring check, so this can't
+        # accidentally swallow some other jurisdiction's differently-worded note.
+        return (_STAGE_INTRODUCED, 0.0)
+
     return (_STAGE_UNKNOWN, 0.0)
 
 
