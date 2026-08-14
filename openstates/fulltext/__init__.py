@@ -17,6 +17,7 @@ from .common import (
 from .de import handle_delaware
 from .va import handle_virginia_html
 from .ut import handle_utah_xml
+from .us import handle_us_bill_xml
 
 
 class DoNotDownload:
@@ -170,7 +171,15 @@ CONVERSION_FUNCTIONS = {
     "wv": {"text/html": extractor_for_element_by_xpath('.//*[@class="textcontainer"]')},
     "wy": {"application/pdf": extract_sometimes_numbered_pdf},
     "us": {
-        "text/xml": DoNotDownload,
+        # Found 2026-08-12: DoNotDownload here (inherited unchanged from public upstream,
+        # predates this fork entirely) skipped every US bill's XML unconditionally. Unlike
+        # AZ's PDF bug, this cost nothing in practice -- verified directly that all 44,401 US
+        # versions with an XML link also have a PDF link, and PDF extraction already succeeds
+        # 100% of the time -- but XML (govinfo's bill.dtd format for most stages, USLM for
+        # Enrolled Bills) is cleanly structured with no page-break/line-wrap artifacts, making
+        # it a meaningfully better diffing source than PDF's line-numbered extraction. See
+        # `handle_us_bill_xml` and archive_bill_versions()'s prior_text preference order below.
+        "text/xml": handle_us_bill_xml,
         "application/pdf": extract_sometimes_numbered_pdf,
     },
 }

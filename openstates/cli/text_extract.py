@@ -788,8 +788,15 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                 counters["conflicts"] += 1
 
         if this_version_texts and not is_unknown_position:
-            prior_text = this_version_texts.get("application/pdf") or next(
-                iter(this_version_texts.values())
+            # Prefer text/xml over application/pdf when both exist for the same version
+            # (found 2026-08-12, US/UT are the only jurisdictions where this choice ever
+            # arises today): XML has no page-break/line-wrap artifacts, making it a cleaner
+            # diffing source than PDF's line-numbered extraction. Falls through to PDF, then
+            # whatever else succeeded, exactly as before for every other jurisdiction.
+            prior_text = (
+                this_version_texts.get("text/xml")
+                or this_version_texts.get("application/pdf")
+                or next(iter(this_version_texts.values()))
             )
 
     return counters
