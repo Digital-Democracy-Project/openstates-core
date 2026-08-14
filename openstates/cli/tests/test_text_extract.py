@@ -855,6 +855,10 @@ class TestReextractDocument:
         assert result.exit_code == 0, result.output
         assert "now_fixed=1" in result.output
 
+        doc.refresh_from_db()
+        assert doc.is_error is True  # untouched
+        assert doc.raw_text == ""  # untouched
+
 
 # OPEN-7: fixtures below marked "real" are literal substrings captured directly from the live
 # archive (HB 1960 and SB 5129, 2025-2026 session) during this ticket's own research -- not
