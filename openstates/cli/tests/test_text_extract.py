@@ -12,6 +12,8 @@ from openstates.cli.text_extract import (
     _version_sort_key,
     _note_stage,
     _STAGE_UNKNOWN,
+    _STAGE_INTRODUCED,
+    _STAGE_ENACTED,
     archive_bill_versions,
     recompute_bill_diff_order,
     _reextract_document,
@@ -284,6 +286,37 @@ class TestNoteStageUnknownFallback:
         notes = ["Chaptered", "Introduced", "Some Never-Before-Seen Document Type"]
         result = note_order(notes)
         assert result[-1] == "Some Never-Before-Seen Document Type"
+
+
+class TestMaNoteStage:
+    """
+    OPEN-37: MA's two real version_notes -- "Bill Text" (introduced, scrapers/ma/bills.py's
+    existing add_version_link call) and "Chapter Law Text (Enacted)" (the new second version
+    this ticket adds) -- must both resolve to a known stage, in the right order, or MA's
+    entire diff lineage is excluded (both _STAGE_UNKNOWN) exactly as it was before this fix.
+    """
+
+    def test_bill_text_is_introduced_stage(self):
+        stage, _ = _note_stage("Bill Text")
+        assert stage == _STAGE_INTRODUCED
+
+    def test_chapter_law_text_enacted_is_already_enacted_stage(self):
+        # No code change needed for this side -- "chapter" is already matched by the
+        # generic enacted-stage regex above. Pinned here so a future refactor of that regex
+        # can't silently break MA's enacted-stage note without a test noticing.
+        stage, _ = _note_stage("Chapter Law Text (Enacted)")
+        assert stage == _STAGE_ENACTED
+
+    def test_bill_text_exact_match_does_not_catch_other_notes(self):
+        # The fix is an exact match ("bill text"), not a substring check -- must not
+        # reclassify some other jurisdiction's differently-worded note that merely contains
+        # "bill" or "text".
+        assert _note_stage("Bill Text - Substitute")[0] != _STAGE_INTRODUCED
+        assert _note_stage("Engrossed Bill")[0] != _STAGE_UNKNOWN  # sanity: still "engross"
+
+    def test_ma_stage_chain_sorts_introduced_before_enacted(self):
+        result = note_order(["Chapter Law Text (Enacted)", "Bill Text"])
+        assert result == ["Bill Text", "Chapter Law Text (Enacted)"]
 
 
 def _make_bill(jid="ocd-jurisdiction/country:us/state:ak/government"):
