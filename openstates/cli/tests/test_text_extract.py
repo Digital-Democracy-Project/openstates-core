@@ -14,6 +14,7 @@ from openstates.cli.text_extract import (
     _STAGE_UNKNOWN,
     _STAGE_INTRODUCED,
     _STAGE_ENACTED,
+    _clean_michigan_text,
     archive_bill_versions,
     recompute_bill_diff_order,
     _reextract_document,
@@ -664,6 +665,337 @@ class TestPriorTextPrefersXmlOverPdf:
         # If PDF had won instead, prior_text would have been "1 Section 1. Text." (the noisy
         # prefixed line), which would show up as a spurious removed line here.
         assert "1 Section 1. Text." not in diff
+
+
+@pytest.mark.django_db
+class TestMichiganCleaningJurisdictionGateOPEN11:
+    """
+    OPEN-11 AC1: a non-Michigan bill's prior_text/raw_text and resulting
+    diff_from_previous_version must be byte-for-byte identical to current (pre-OPEN-11)
+    behavior. Deliberately includes the literal Michigan enacting-clause phrase
+    _clean_michigan_text() strips ("the people of the state of michigan enact:") inside this
+    non-MI fixture's own text -- if the Michigan-only branch in archive_bill_versions() were
+    ever accidentally applied regardless of jurisdiction, this phrase (and everything before it)
+    would go missing from the diff below; this test would then fail instead of merely "looking"
+    unaffected by inspection.
+    """
+
+    def test_non_michigan_diff_matches_hand_computed_unclean_diff(self):
+        import difflib
+
+        bill = _make_bill()  # default jid is Alaska, not Michigan
+        introduced = bill.versions.create(note="Introduced", date="")
+        enrolled = bill.versions.create(note="Enrolled", date="")
+        introduced.links.create(
+            url="https://example.test/introduced.pdf", media_type="application/pdf"
+        )
+        enrolled.links.create(
+            url="https://example.test/enrolled.pdf", media_type="application/pdf"
+        )
+
+        introduced_text = (
+            "A bill to amend the test act.\n"
+            "the people of the state of michigan enact:\n"
+            "Section 1. Original text.\n"
+        )
+        enrolled_text = (
+            "A bill to amend the test act.\n"
+            "the people of the state of michigan enact:\n"
+            "Section 1. Original text. Section 2. New text.\n"
+        )
+        texts_by_url = {
+            "https://example.test/introduced.pdf": introduced_text,
+            "https://example.test/enrolled.pdf": enrolled_text,
+        }
+
+        def fake_fetch_bytes(url):
+            return texts_by_url[url].encode("utf-8")
+
+        def fake_extract_func(metadata):
+            return lambda data, meta: data.decode("utf-8")
+
+        with mock.patch(
+            "openstates.cli.text_extract._fetch_bytes", side_effect=fake_fetch_bytes
+        ), mock.patch(
+            "openstates.cli.text_extract.get_extract_func",
+            side_effect=fake_extract_func,
+        ), mock.patch(
+            "openstates.cli.text_extract._upload_and_verify", return_value=None
+        ), mock.patch(
+            "openstates.cli.text_extract._block_page_reason", return_value=None
+        ), mock.patch(
+            "os.makedirs"
+        ), mock.patch(
+            "builtins.open", mock.mock_open()
+        ):
+            archive_bill_versions(bill)
+
+        enrolled_doc = BillVersionDocument.objects.get(
+            bill=bill, version_note="Enrolled"
+        )
+        expected_diff = "\n".join(
+            difflib.unified_diff(
+                introduced_text.splitlines(), enrolled_text.splitlines(), lineterm=""
+            )
+        )
+        assert enrolled_doc.diff_from_previous_version == expected_diff
+        # The enacting-clause line _clean_michigan_text() strips must still be present --
+        # proof the Michigan-only cleaning branch never ran for this non-MI bill.
+        assert (
+            " the people of the state of michigan enact:"
+            in enrolled_doc.diff_from_previous_version
+        )
+        introduced_doc = BillVersionDocument.objects.get(
+            bill=bill, version_note="Introduced"
+        )
+        assert introduced_doc.raw_text == introduced_text
+        assert enrolled_doc.raw_text == enrolled_text
+
+
+class TestCleanMichiganTextOPEN11:
+    """
+    OPEN-11 AC7: each real pattern found in the AC2 investigation, using realistic fixture
+    strings drawn directly from real Michigan bill text captured against the live archive
+    (SB 542, HB 4493 -- both named in the ticket as its own starting-point examples), not
+    synthetic guesses. See the AC2 comment above _clean_michigan_text() in text_extract.py for
+    the full characterization these fixtures are drawn from.
+    """
+
+    def test_strips_ordinary_stage_front_matter_up_to_enacting_clause(self):
+        # Real text captured from SB 542's "Senate Introduced Bill" (text/html).
+        text = (
+            "\n\n \n\n \n\nSENATE BILL NO. 542\n\n"
+            "A bill to amend 2014 PA 259, entitled\n\n"
+            '"Michigan national guard tuition assistance\nact,"\n\n'
+            "by amending sections 3 and 4 (MCL 32.433 and 32.434),\n"
+            "as amended by 2023 PA 33.\n\n"
+            "the people of the state of michigan enact:\n\n"
+            "Sec. 3. (1) The Michigan National Guard tuition assistance\n"
+            "program is created within the department of military and veterans affairs.\n"
+        )
+        cleaned = _clean_michigan_text(text)
+        assert cleaned.startswith(
+            "\n\nSec. 3. (1) The Michigan National Guard tuition assistance"
+        )
+        assert "SENATE BILL NO. 542" not in cleaned
+        assert "A bill to amend 2014 PA 259" not in cleaned
+        assert "enact:" not in cleaned
+
+    def test_strips_enacted_stage_tracking_block(self):
+        # Real text captured from SB 542's "Public Act" (text/html) -- the enacted-stage
+        # tracking/administrative block, a genuinely different shape than the ordinary
+        # front matter above (Act No./dates/ENROLLED .../sponsor line).
+        text = (
+            "\n\nAct\nNo. 38\n\nPublic\nActs of 2025\n\n"
+            "Approved\nby the Governor\n\nDecember\n9, 2025\n\n"
+            "Filed\nwith the Secretary of State\n\nDecember\n9, 2025\n\n"
+            "EFFECTIVE\nDATE:  December 9, 2025\n\n"
+            "state of michigan\n\n103rd Legislature\n\nRegular session of 2025\n\n"
+            "Introduced by Senator Klinefelt\n\n"
+            "ENROLLED SENATE BILL No. 542\n\n"
+            "AN ACT to amend 2014 PA 259, entitled the Michigan national guard "
+            "tuition assistance act, by amending sections 3 and 4 (MCL 32.433 and "
+            "32.434), as amended by\n2023 PA 33.\n\n"
+            "The People of the State of\nMichigan enact:\n\n"
+            "Sec.\n3. (1) The Michigan National Guard tuition assistance program is "
+            "created within\nthe department of military and veterans affairs.\n"
+        )
+        cleaned = _clean_michigan_text(text)
+        assert cleaned.startswith(
+            "\n\nSec.\n3. (1) The Michigan National Guard tuition assistance"
+        )
+        for admin_fragment in (
+            "Act\nNo. 38",
+            "Approved",
+            "Filed",
+            "EFFECTIVE",
+            "ENROLLED SENATE BILL No. 542",
+            "Introduced by Senator Klinefelt",
+        ):
+            assert admin_fragment not in cleaned
+
+    def test_case_and_spelling_variants_of_enacting_clause(self):
+        # Real variants actually observed: HTML sometimes renders a mixed-case "peoplE", and
+        # PDF-extracted text (pdftotext -layout) renders the clause fully upper-case.
+        mixed_case = (
+            "substitute for\n\nSenate BILL NO. 542\n\n"
+            "the peoplE of the state of michigan enact:\n\n"
+            "Sec. 3. (1) Real content.\n"
+        )
+        upper_case = (
+            "SENATE BILL NO. 542\n\n"
+            "THE PEOPLE OF THE STATE OF MICHIGAN ENACT:\n"
+            "1   Sec. 3. (1) Real content.\n"
+        )
+        assert _clean_michigan_text(mixed_case).strip() == "Sec. 3. (1) Real content."
+        assert (
+            _clean_michigan_text(upper_case).strip() == "1   Sec. 3. (1) Real content."
+        )
+
+    def test_no_anchor_found_returns_text_unchanged(self):
+        # A resolution-shaped fixture -- never confirmed to contain the bill enacting clause.
+        # Cleaning must be a no-op rather than guessing at some other boundary (AC5).
+        text = (
+            "SENATE RESOLUTION No. 47\n\n"
+            "A resolution to declare April 2026 as Michigan Manufacturing Month.\n\n"
+            "Whereas, Michigan manufacturers employ hundreds of thousands of workers;"
+            " and\n\n"
+            "Now, therefore, be it resolved..."
+        )
+        assert _clean_michigan_text(text) == text
+
+    def test_real_content_after_anchor_is_preserved_verbatim(self):
+        # Real content captured from HB 4493's "As Passed by the House" -> "Public Act"
+        # diff: a genuine amendment-editing artifact (old struck phrase immediately followed
+        # by its replacement) that must never be mistaken for boilerplate and removed.
+        text = (
+            "the people of the state of michigan enact:\n\n"
+            "(k) A person owning that owns or operating operates a device\n"
+            "that dispenses only bottled or canned soft drinks; other packaged\n"
+            "nonperishable foods or beverages; or bulk gum, nuts, and panned\n"
+            "candies.\n"
+        )
+        cleaned = _clean_michigan_text(text)
+        assert (
+            "(k) A person owning that owns or operating operates a device" in cleaned
+        )
+        assert "that dispenses only bottled or canned soft drinks" in cleaned
+
+
+@pytest.mark.django_db
+class TestArchiveBillVersionsMichiganCleaningOPEN11:
+    """
+    OPEN-11 end-to-end: archive_bill_versions() applied to a real Michigan-jurisdiction bill
+    actually invokes _clean_michigan_text() before diffing (not just that the helper function
+    works in isolation).
+    """
+
+    def _make_mi_bill(self):
+        # _make_bill() names every jurisdiction "Test" regardless of jid (fine for the other
+        # MI-jid tests in this file, which only need the jid for CONVERSION_FUNCTIONS routing)
+        # -- archive_bill_versions()'s Michigan gate keys off jurisdiction.name specifically, so
+        # these OPEN-11 tests need the real name set.
+        bill = _make_bill(jid="ocd-jurisdiction/country:us/state:mi/government")
+        jurisdiction = bill.legislative_session.jurisdiction
+        jurisdiction.name = "Michigan"
+        jurisdiction.save()
+        return bill
+
+    def test_boilerplate_only_change_produces_empty_diff(self):
+        bill = self._make_mi_bill()
+        introduced = bill.versions.create(note="Senate Introduced Bill", date="")
+        passed = bill.versions.create(note="As Passed by the Senate", date="")
+        introduced.links.create(
+            url="https://example.test/introduced.html", media_type="text/html"
+        )
+        passed.links.create(
+            url="https://example.test/passed.html", media_type="text/html"
+        )
+
+        body = "Sec. 3. (1) Real bill content that has not changed at all.\n"
+        texts_by_url = {
+            "https://example.test/introduced.html": (
+                "SENATE BILL NO. 542\n\nA bill to amend 2014 PA 259.\n\n"
+                "the people of the state of michigan enact:\n\n" + body
+            ),
+            # Same real body, but a different (real, observed) stage-prefix + boilerplate --
+            # only the front matter differs, mirroring a genuine Introduced -> As Passed
+            # transition where the substantive text hasn't changed yet.
+            "https://example.test/passed.html": (
+                "substitute for\n\nSenate BILL NO. 542\n\nA bill to amend 2014 PA 259.\n\n"
+                "the peoplE of the state of michigan enact:\n\n" + body
+            ),
+        }
+
+        def fake_fetch_bytes(url):
+            return texts_by_url[url].encode("utf-8")
+
+        def fake_extract_func(metadata):
+            return lambda data, meta: data.decode("utf-8")
+
+        with mock.patch(
+            "openstates.cli.text_extract._fetch_bytes", side_effect=fake_fetch_bytes
+        ), mock.patch(
+            "openstates.cli.text_extract.get_extract_func",
+            side_effect=fake_extract_func,
+        ), mock.patch(
+            "openstates.cli.text_extract._upload_and_verify", return_value=None
+        ), mock.patch(
+            "openstates.cli.text_extract._block_page_reason", return_value=None
+        ), mock.patch(
+            "os.makedirs"
+        ), mock.patch(
+            "builtins.open", mock.mock_open()
+        ):
+            archive_bill_versions(bill)
+
+        passed_doc = BillVersionDocument.objects.get(
+            bill=bill, version_note="As Passed by the Senate"
+        )
+        # The stored raw_text keeps its own full (uncleaned) front matter -- only the text fed
+        # into the diff itself changes (the ticket's own scope: "only the text fed into the
+        # existing difflib.unified_diff() call should change").
+        assert passed_doc.raw_text == texts_by_url["https://example.test/passed.html"]
+        assert "substitute for" in passed_doc.raw_text
+        assert passed_doc.diff_from_previous_version == ""
+
+    def test_real_content_change_still_surfaces_after_cleaning(self):
+        bill = self._make_mi_bill()
+        introduced = bill.versions.create(note="Senate Introduced Bill", date="")
+        substitute = bill.versions.create(note="Substitute S-1", date="")
+        introduced.links.create(
+            url="https://example.test/introduced.html", media_type="text/html"
+        )
+        substitute.links.create(
+            url="https://example.test/substitute.html", media_type="text/html"
+        )
+
+        front_matter = (
+            "SENATE BILL NO. 542\n\nA bill to amend 2014 PA 259.\n\n"
+            "the people of the state of michigan enact:\n\n"
+        )
+        texts_by_url = {
+            "https://example.test/introduced.html": (
+                front_matter
+                + "Sec. 3. (1) The fund must be transferred by the state treasurer.\n"
+            ),
+            "https://example.test/substitute.html": (
+                front_matter + "Sec. 3. (1) The fund must be transferred.\n"
+            ),
+        }
+
+        def fake_fetch_bytes(url):
+            return texts_by_url[url].encode("utf-8")
+
+        def fake_extract_func(metadata):
+            return lambda data, meta: data.decode("utf-8")
+
+        with mock.patch(
+            "openstates.cli.text_extract._fetch_bytes", side_effect=fake_fetch_bytes
+        ), mock.patch(
+            "openstates.cli.text_extract.get_extract_func",
+            side_effect=fake_extract_func,
+        ), mock.patch(
+            "openstates.cli.text_extract._upload_and_verify", return_value=None
+        ), mock.patch(
+            "openstates.cli.text_extract._block_page_reason", return_value=None
+        ), mock.patch(
+            "os.makedirs"
+        ), mock.patch(
+            "builtins.open", mock.mock_open()
+        ):
+            archive_bill_versions(bill)
+
+        substitute_doc = BillVersionDocument.objects.get(
+            bill=bill, version_note="Substitute S-1"
+        )
+        diff = substitute_doc.diff_from_previous_version
+        assert "-Sec. 3. (1) The fund must be transferred by the state treasurer." in diff
+        assert "+Sec. 3. (1) The fund must be transferred." in diff
+        # The shared front matter must not appear in the diff at all -- it was stripped from
+        # both sides before diffing.
+        assert "SENATE BILL NO." not in diff
+        assert "enact:" not in diff
 
 
 class TestUtahXmlExtractor:

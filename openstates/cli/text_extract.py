@@ -630,6 +630,98 @@ def _version_sort_key(note: str, date: typing.Optional[str]) -> tuple:
     return (stage, date if has_date else "", ordinal)
 
 
+# OPEN-11: Michigan-only text cleaning applied to prior_text/raw_text immediately before the
+# difflib.unified_diff() call in archive_bill_versions() (never touching the stored raw_text
+# field, and never applied to any other jurisdiction).
+#
+# AC2 characterization (real investigation against real archived MI bills -- SB 542, HB 4493,
+# and a further ~20-bill sample -- transitions ordered via _version_sort_key(), not raw
+# bill.versions.all() order):
+#
+# 1. Every version's extracted text (text/html via extractor_for_element_by_xpath's
+#    "WordSection1" xpath, and application/pdf via extract_sometimes_numbered_pdf) opens with a
+#    repeated front-matter block: a bill-number/introduction-date/sponsor line, then "A bill to
+#    amend ... entitled ... by amending section(s) ..." recitation, ending in a single, reliable,
+#    literal anchor line -- the enacting clause ("the people of the state of michigan enact:",
+#    case varies -- seen as "peoplE", and in PDFs as "THE PEOPLE OF THE STATE OF MICHIGAN
+#    ENACT:"). This recitation repeats near-verbatim across Introduced -> Substitute -> As
+#    Passed stages -- real, repeated administrative boilerplate, not unique content (the same
+#    general shape as FL/VA/WA's page-header problem, just as a one-time front-matter block
+#    instead of a per-page-repeated one, since HTML/PDF-here aren't paginated the way FL/VA/WA's
+#    PDFs are).
+# 2. On reaching an enacted stage ("Public Act" / "Senate|House Concurred Bill"), the front
+#    matter changes shape to a distinct tracking/administrative block: "Act No. N", "Public Acts
+#    of YYYY", "Approved by the Governor [date]", "Filed with the Secretary of State [date]",
+#    "EFFECTIVE DATE: ...", "STATE OF MICHIGAN", "Nrd LEGISLATURE", "REGULAR SESSION OF YYYY", a
+#    sponsor line ("Introduced by Senator/Rep. X"), "ENROLLED [chamber] BILL No. N" -- confirmed
+#    directly via a real diff read (HB4493, As Passed by the House -> Public Act): 100%
+#    administrative, never real bill content.
+# 3. No embedded margin line-numbers survive in extracted text for either media type. MI's
+#    existing (pre-existing, unrelated to this ticket) extract_sometimes_numbered_pdf/
+#    extract_line_numbered_pdf already discard every non-digit-prefixed line -- which happens to
+#    include MI's page headers/footers/tracking codes (e.g. "JJR ... S04574'25_SB0542_INTR_1 ...
+#    52taqo") and bare page numbers -- as a side effect of only keeping lines that start with a
+#    printed line number. That means the front-matter/tracking-block problem above is REAL but
+#    concentrated specifically in (a) every text/html document (which is never line-number-
+#    filtered) and (b) the enacted "Public Act" PDF specifically, since MI's enacted PDFs don't
+#    use that numbering convention at all (see the "mi" entry in fulltext/__init__.py) and so
+#    fall through to the unfiltered extract_simple_pdf. Confirmed directly and reproducibly on
+#    multiple real bills: a PDF-vs-PDF diff for a transition already shows ratio 0.000 (no real
+#    change) while the parallel HTML-vs-(PDF prior_text) diff for the exact same transition
+#    shows a ratio of 2.0+ (i.e. more changed lines than the old document even had) -- purely
+#    from the un-stripped front matter, not any real content difference. A real, representative,
+#    20-bill validation sample (≥15 bills required by AC3, including this ticket's own named
+#    SB 542/HB 4493 examples) confirms: stripping everything up to and including the enacting
+#    clause improves the ratio on every transition where either document actually carries
+#    front matter (100% of the text/html documents and the enacted-stage PDF documents in the
+#    sample), with zero regressions across the whole sample. The remaining majority of
+#    transitions in a real MI archive are PDF-vs-PDF comparisons between two already-numbered-
+#    filtered documents -- these are correctly left unchanged (there is no MI-specific noise
+#    left to remove there; a manual read of several such "unchanged" diffs confirmed the
+#    residual differences are genuine bill-text edits, e.g. real amendment language changes and
+#    real appropriations-figure changes, not noise -- see AC5).
+# 4. Two candidate refinements were tested against the real sample and rejected: (a) collapsing
+#    each paragraph into a single re-wrapped logical line (to undo word-wrap/line-fragmentation
+#    the way AZ's ticket does) made the ratio uniformly *worse* on every transition tested --
+#    coarser line granularity means a single real word-level edit marks a whole (now much
+#    longer) line as changed, inflating the ratio relative to a smaller remaining line count;
+#    (b) normalizing internal whitespace/smart-quotes (to fix a real but narrow noise pattern
+#    found in budget-bill appropriations tables, where only column-padding spacing differs
+#    between extractions) gave a marginal additional improvement but introduced 2 real
+#    regressions on an already near-completely-rewritten budget bill (HB 5797) -- not worth the
+#    AC3 "never worse" risk for a cosmetic-only gain. Neither is included below.
+# 5. Known, documented, OUT-OF-SCOPE gap (not this ticket's to fix): _note_stage() maps both
+#    "Public Act" and "Senate|House Concurred Bill" to the same _STAGE_ENACTED bucket with no
+#    ordinal distinguishing them (nor does it distinguish same-ordinal Senate vs. House
+#    Substitute pairs, e.g. "Substitute S-2" vs. "Substitute H-2") -- so _version_sort_key()
+#    cannot always tell which of a tied pair is truly "prior". These tied-stage pairs were
+#    excluded from this ticket's own AC3/AC4 ratio validation (their true chronological order
+#    isn't reliably known, so a noise-ratio comparison for them isn't trustworthy regardless of
+#    cleaning quality) -- this is OPEN-34-shaped work, not a text-cleaning problem.
+_MI_ENACTING_CLAUSE_RE = re.compile(
+    r"the\s+people\s+of\s+the\s+state\s+of\s+michigan\s+enact\s*:", re.IGNORECASE
+)
+
+
+def _clean_michigan_text(text: str) -> str:
+    """
+    Strip Michigan's repeated front-matter/tracking-block boilerplate (see the AC2 comment
+    above) from one document's extracted text, immediately before diffing. Everything up to and
+    including the enacting clause is administrative boilerplate that repeats across versions
+    (bill number, sponsor line, title recitation, or -- for enacted stages -- the Act
+    No./Public Acts of/Approved by the Governor/ENROLLED ... BILL No. tracking block); real bill
+    content always starts right after it.
+
+    Defensive on purpose: if the anchor isn't found (e.g. a resolution or other version type
+    that was never confirmed to contain it), the text is returned unchanged rather than guessing
+    at some other boundary and risking real content loss (AC5).
+    """
+    match = _MI_ENACTING_CLAUSE_RE.search(text)
+    if not match:
+        return text
+    return text[match.end() :]
+
+
 def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
     """
     Fetch and permanently archive every not-yet-captured version+document of a bill
@@ -670,6 +762,10 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
         "s3_verified": 0,
         "s3_unverified": 0,
     }
+
+    # OPEN-11: gates _clean_michigan_text() below -- every other jurisdiction's prior_text/
+    # raw_text reach difflib.unified_diff() completely untouched (AC1).
+    is_michigan = bill.legislative_session.jurisdiction.name == "Michigan"
 
     prior_text: typing.Optional[str] = None
 
@@ -763,9 +859,15 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                 and raw_text
                 and not is_unknown_position
             ):
+                diff_prior_text, diff_raw_text = prior_text, raw_text
+                if is_michigan:
+                    diff_prior_text = _clean_michigan_text(prior_text)
+                    diff_raw_text = _clean_michigan_text(raw_text)
                 diff_from_previous_version = "\n".join(
                     difflib.unified_diff(
-                        prior_text.splitlines(), raw_text.splitlines(), lineterm=""
+                        diff_prior_text.splitlines(),
+                        diff_raw_text.splitlines(),
+                        lineterm="",
                     )
                 )
 
