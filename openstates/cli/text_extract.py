@@ -38,6 +38,11 @@ from ..utils.cookie_provider import (
 )
 from ..utils.resilience_profiles import profile_for_netloc
 from ..utils.waf_circuit_breaker import raise_if_waf_block_threshold_reached
+from ..utils.version_ordering import (
+    STAGE_UNKNOWN as _STAGE_UNKNOWN,
+    note_stage as _note_stage,
+    version_sort_key as _version_sort_key,
+)
 from openstates.exceptions import ScrapeError
 
 stats = Instrumentation()
@@ -652,169 +657,13 @@ def _upload_and_verify(
 # federal outright and any future jurisdiction that starts populating it -- and otherwise (2)
 # a content-based stage rank built directly from the real version_note vocabulary above.
 # A version whose note matches neither is never guessed into a position: it's excluded from
-# the diff lineage entirely (see _UNKNOWN_STAGE below) rather than risking a backward diff,
-# per the ticket's own framing that a wrong-direction diff is worse than a missing one.
-_STAGE_INTRODUCED = 0
-_STAGE_AMENDMENT = 1
-_STAGE_CHAMBER_PASSAGE = 2
-_STAGE_FINAL_PASSAGE = 3
-_STAGE_ENACTED = 4
-_STAGE_UNKNOWN = 99  # excluded from diff lineage entirely -- see _version_sort_key()
-
-_ORDINAL_WORDS = {
-    "first": 1,
-    "second": 2,
-    "third": 3,
-    "fourth": 4,
-    "fifth": 5,
-    "sixth": 6,
-    "seventh": 7,
-    "eighth": 8,
-    "ninth": 9,
-    "tenth": 10,
-}
-
-_DATE_RE = re.compile(r"\A\d{4}(-\d{2}(-\d{2})?)?\Z")
-
-
-def _extract_ordinal(note: str) -> float:
-    """
-    Best-effort numeric ordinal embedded in a version_note, used to rank same-stage numbered
-    variants against each other (MI's "Substitute (S-2)", UT's "Substitute #3", WA's "Second
-    Substitute", FL's "c2"/"e2"). 0.0 if no ordinal is found -- the unnumbered/first-of-its-
-    kind case (FL's "c1", WA's plain "Substitute Bill" with no ordinal word).
-
-    MI's "(S-1)"/(H-2)" parenthesized number is checked first and takes priority over a
-    trailing "- N" suffix on the same note (a second file for that *same* substitute stage,
-    e.g. "Substitute (S-1) - 2" -- a minor tiebreak, not a different amendment stage; folded
-    in as a small fraction so it sorts immediately after "Substitute (S-1)" rather than being
-    conflated with "Substitute (S-2)").
-    """
-    lowered = note.lower()
-
-    paren = re.search(r"\([sh]-(\d+)\)", lowered)
-    if paren:
-        base = float(paren.group(1))
-        tail = re.search(r"\)\s*-\s*(\d+)\s*\Z", lowered)
-        return base + (int(tail.group(1)) / 100.0 if tail else 0.0)
-
-    for word, value in _ORDINAL_WORDS.items():
-        if word in lowered:
-            return float(value)
-
-    m = (
-        re.search(r"#\s*(\d+)\b", note)
-        or re.search(r"\b[a-z](\d+)\b", lowered)
-        or re.search(r"(\d+)\s*\Z", note)
-    )
-    if m:
-        return float(m.group(1))
-    return 0.0
-
-
-def _note_stage(note: str) -> tuple:
-    """
-    Classify a version_note into (stage, ordinal) using the content-based stage table built
-    from the OPEN-34 audit (see the comment above archive_bill_versions()). Never looks at
-    DB order or position -- purely a function of the note text itself, so it's stable no
-    matter what order versions are walked in or what row order Postgres happens to return.
-    """
-    lowered = note.lower()
-
-    if re.search(
-        r"public act|public law|\bchapter|passed legislature|concurred", lowered
-    ):
-        return (_STAGE_ENACTED, _extract_ordinal(note))
-
-    # Final-passage sub-stages, most-final-first, checked in this specific order since a
-    # note can match more than one (e.g. VA's "Governor's Veto Explanation" contains neither
-    # "reenroll" nor plain "enroll"). Sub-ranks encode the real chronology confirmed against
-    # VA's own examples (OPEN-33/the ticket): Enrolled -> Governor Substitute -> Reenrolled ->
-    # Governor's Veto Explanation. Note: "enroll" (no leading \b) deliberately matches
-    # "Reenrolled" too ("re" + "enrolled" has no word boundary between them for \benroll to
-    # anchor on) -- the explicit "reenroll" check above it takes priority so the two don't
-    # collide.
-    if "veto" in lowered:
-        return (_STAGE_FINAL_PASSAGE, 3.0)
-    if "reenroll" in lowered:
-        return (_STAGE_FINAL_PASSAGE, 2.0)
-    if "governor" in lowered:
-        return (_STAGE_FINAL_PASSAGE, 1.0)
-    if "enroll" in lowered or re.search(r"\ber\b", lowered):
-        return (_STAGE_FINAL_PASSAGE, 0.0)
-
-    if re.match(r"(senate|house)\s*-", lowered):
-        # AZ floor/committee-action notes that leak into version_note -- observed after
-        # engrossment in every real sample checked (a floor amendment applies to the
-        # already-engrossed bill), so rank just after plain chamber-passage. Checked before
-        # the generic "engross" test below since these notes sometimes *reference* an
-        # engrossed version by name (e.g. "ref Senate Engrossed House Bill") without
-        # themselves being one -- a leading "senate -"/"house -" is the more specific,
-        # reliable signal for this AZ-specific note shape.
-        return (_STAGE_CHAMBER_PASSAGE, 0.5)
-
-    if re.search(r"\be\d+\b", lowered) and not re.search(
-        r"substitute|committee", lowered
-    ):
-        # FL's own engrossed shorthand ("e1", "e2") -- distinct token pattern from the
-        # "engross" word check below but the same chamber-passage stage.
-        return (_STAGE_CHAMBER_PASSAGE, _extract_ordinal(note))
-
-    if "engross" in lowered and not re.search(r"substitute|committee", lowered):
-        # AZ-style whole-bill floor engrossment ("Senate Engrossed Version") -- a later,
-        # chamber-passage-level stage, distinct from WA's per-substitute "Engrossed <N>
-        # Substitute Bill" handled below.
-        return (_STAGE_CHAMBER_PASSAGE, _extract_ordinal(note))
-
-    if re.search(r"conference|\breport|\breferr|placed on calendar|as passed", lowered):
-        return (_STAGE_CHAMBER_PASSAGE, _extract_ordinal(note) + 0.25)
-
-    if re.search(r"substitute|amend|comparison|\bc\d+\b", lowered):
-        if "engross" in lowered:
-            # WA's "Engrossed <N> Substitute Bill" amends that specific substitute number --
-            # ranks immediately after it, not after every substitute regardless of number.
-            return (_STAGE_AMENDMENT, _extract_ordinal(note) + 0.5)
-        return (_STAGE_AMENDMENT, _extract_ordinal(note))
-
-    if re.search(r"introduced|\bfiled\b|\bpb\b|original|^bill$", lowered):
-        return (_STAGE_INTRODUCED, _extract_ordinal(note))
-
-    if lowered == "bill text":
-        # MA's only version_note until OPEN-37 added a second (scrapers/ma/bills.py's
-        # add_version_link("Bill Text", ...)) -- MA has no other stage name for its
-        # introduced text, and "bill text" doesn't match "^bill$" (extra word) or any other
-        # case above, so without this it fell through to _STAGE_UNKNOWN and was excluded from
-        # the diff lineage entirely. Exact match, not a substring check, so this can't
-        # accidentally swallow some other jurisdiction's differently-worded note.
-        return (_STAGE_INTRODUCED, 0.0)
-
-    return (_STAGE_UNKNOWN, 0.0)
-
-
-def _version_sort_key(note: str, date: typing.Optional[str]) -> tuple:
-    """
-    Rank a single version (by its note + date) for chronological ordering, without ever
-    trusting the order it was returned from the DB in. See the OPEN-34 comment above
-    archive_bill_versions() for the audit this encodes.
-
-    Returns (stage, date-or-empty, ordinal). The macro stage always comes from the note (see
-    _note_stage()) -- a real, parseable date is used only as a same-stage tiebreaker, not as
-    an override of the note-based stage. This matters for jurisdictions that could have a mix
-    of dated and undated versions on the same bill (US federal is ~99.4% dated, not 100%):
-    letting a date win globally would make any dated version sort before every undated one
-    regardless of true chronology. Confirmed via audit: 0% of state-jurisdiction versions
-    (FL/MI/AZ/UT/WA/VA) have a date at all, so this tiebreaker is inert for them and they rely
-    entirely on the note-based stage; US federal's real dates resolve same-stage ordering
-    (e.g. "Reported to Senate" vs. "Engrossed in Senate") more precisely than the ordinal
-    heuristic alone would.
-
-    A note matching none of the known patterns returns stage _STAGE_UNKNOWN -- the caller
-    excludes those versions from the diff lineage entirely rather than guessing a position for
-    them (see archive_bill_versions()).
-    """
-    stage, ordinal = _note_stage(note)
-    has_date = bool(date) and bool(_DATE_RE.match(date))
-    return (stage, date if has_date else "", ordinal)
+# the diff lineage entirely (STAGE_UNKNOWN) rather than risking a backward diff, per the
+# ticket's own framing that a wrong-direction diff is worse than a missing one.
+#
+# _note_stage()/_version_sort_key() (and their STAGE_* constants) moved to
+# openstates/utils/version_ordering.py (OPEN-91) -- imported above as
+# _note_stage/_version_sort_key/_STAGE_* so every call site below is unchanged.
+# See that module's own docstring for the full OPEN-34 audit this encodes.
 
 
 _VA_LINE_PATTERNS = [
