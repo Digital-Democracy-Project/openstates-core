@@ -13,8 +13,6 @@ from openstates.cli.text_extract import (
     _note_stage,
     _STAGE_UNKNOWN,
     _reflow_paragraphs,
-    _STAGE_INTRODUCED,
-    _STAGE_ENACTED,
     _clean_michigan_text,
     _strip_michigan_boilerplate,
     _reflow_michigan_text,
@@ -26,6 +24,13 @@ from openstates.cli.text_extract import (
     _reflow_virginia_text,
     _clean_wa_text,
     S3_BILL_ARCHIVE_BUCKET,
+)
+# STAGE_INTRODUCED/STAGE_ENACTED moved to openstates.utils.version_ordering (OPEN-91) --
+# text_extract.py no longer re-exports these two specifically (only _STAGE_UNKNOWN, which
+# archive_bill_versions()/recompute_bill_diff_order() actually reference internally).
+from openstates.utils.version_ordering import (
+    STAGE_INTRODUCED as _STAGE_INTRODUCED,
+    STAGE_ENACTED as _STAGE_ENACTED,
 )
 import difflib
 
