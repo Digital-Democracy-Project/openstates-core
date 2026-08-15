@@ -9,6 +9,7 @@ import csv
 import json
 import math
 import subprocess
+import textwrap
 import warnings
 import click
 import requests
@@ -635,6 +636,15 @@ def _note_stage(note: str) -> tuple:
     if re.search(r"introduced|\bfiled\b|\bpb\b|original|^bill$", lowered):
         return (_STAGE_INTRODUCED, _extract_ordinal(note))
 
+    if lowered == "bill text":
+        # MA's only version_note until OPEN-37 added a second (scrapers/ma/bills.py's
+        # add_version_link("Bill Text", ...)) -- MA has no other stage name for its
+        # introduced text, and "bill text" doesn't match "^bill$" (extra word) or any other
+        # case above, so without this it fell through to _STAGE_UNKNOWN and was excluded from
+        # the diff lineage entirely. Exact match, not a substring check, so this can't
+        # accidentally swallow some other jurisdiction's differently-worded note.
+        return (_STAGE_INTRODUCED, 0.0)
+
     return (_STAGE_UNKNOWN, 0.0)
 
 
@@ -662,6 +672,555 @@ def _version_sort_key(note: str, date: typing.Optional[str]) -> tuple:
     stage, ordinal = _note_stage(note)
     has_date = bool(date) and bool(_DATE_RE.match(date))
     return (stage, date if has_date else "", ordinal)
+
+
+_VA_LINE_PATTERNS = [
+    re.compile(r"^\s*\+\s*$"),  # decorative vertical-rule margin artifact -- indent shifts by
+    # document stage but is identical across bills at the same stage; match on content only.
+    # Decorative em-dash divider line separating a bill's summary/patron block from its body
+    # (confirmed real -- always exactly 5 em-dashes in every sample checked, 8,404 real rows
+    # contain it); found reading a real raw diff during AC6 refinement (HB1011), not guessed.
+    re.compile(r"^\s*—{2,}\s*$"),
+    re.compile(r"^\s*\d{1,2}/\d{1,2}/\d{2}\s+\d{1,2}:\d{2}\s*$"),  # generation timestamp footer
+    # "2026 SESSION" (HTML) or bare "SESSION" (PDF -- confirmed real: pdftotext -layout drops
+    # the leading year into a separate layout column that never makes it into the text stream).
+    re.compile(r"^\s*(\d{4}\s+)?SESSION\s*$", re.IGNORECASE),
+    re.compile(r"^\s*(INTRODUCED|ENROLLED|REPRINT)\s*$", re.IGNORECASE),
+    # "SENATE SUBSTITUTE"/"HOUSE SUBSTITUTE" -- the same bare stage-marker line as
+    # INTRODUCED/ENROLLED above, just for the substitute stage (confirmed real, e.g. SB622).
+    re.compile(r"^\s*(SENATE|HOUSE)\s+SUBSTITUTE\s*$", re.IGNORECASE),
+    re.compile(r"^\s*AMENDMENT IN THE NATURE OF A SUBSTITUTE\s*$", re.IGNORECASE),
+    # Committee-routing line -- confirmed real and near-exclusively Introduced-stage (4,909
+    # rows), essentially never carried forward to a Substitute/Enrolled version, so it always
+    # shows as pure removed-line noise on any Introduced->later transition. Found reading a
+    # real raw diff during AC6 refinement (HB1006), not guessed.
+    re.compile(r"^\s*Referred to Committee on .*$", re.IGNORECASE),
+    # Ticket's original guess for the offer-date line -- never observed in real 2026/2026S1
+    # archived VA text (checked directly against the full archive), kept as a harmless no-op
+    # safety net in case an older session used this phrasing.
+    re.compile(r"^\s*OFFERED FOR CONSIDERATION\s+\d{1,2}/\d{1,2}/\d{4}\s*$", re.IGNORECASE),
+    # Real shape confirmed against archived text: "Offered January 14, 2026" / "Prefiled
+    # January 14, 2026" -- the ticket's guess above never actually appears.
+    re.compile(r"^\s*(Offered|Prefiled)\s+\w+ \d{1,2},\s*\d{4}\s*$", re.IGNORECASE),
+    # Patron line -- generalized beyond the ticket's `Patron[—-].*` to also match real
+    # committee-substitute-stage forms confirmed in the archive: "(Patron Prior to
+    # Substitute—Senator Marsden)" and "(Patrons Prior to Substitute—Senators A, B, and C)",
+    # which lead with "(" and don't put the dash immediately after "Patron".
+    re.compile(r"^\s*\(?Patrons?\b.*$", re.IGNORECASE),
+    re.compile(r"^\s*\d+[A-Z]?\s*$"),  # lone bill-tracking numeric code, e.g. "26101118D"
+    # Generalized beyond the ticket's "(HOUSE|SENATE) BILL NO." to also cover resolutions
+    # (confirmed real: "SENATE JOINT RESOLUTION NO. 58" on SJ58, a resolution not a bill).
+    re.compile(
+        r"^\s*(HOUSE|SENATE)\s+(BILL|JOINT RESOLUTION|RESOLUTION) NO\.\s*\d+\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(r"^\s*VIRGINIA ACTS OF ASSEMBLY.*$", re.IGNORECASE),
+    # Chaptered stage's own act-header line -- confirmed real (e.g. "CHAPTER 350") and a
+    # genuinely different template from Enrolled's "VIRGINIA ACTS OF ASSEMBLY -- CHAPTER"
+    # above, not just more trailing text after it as the ticket's "known gap" note guessed.
+    # All-caps-anchored so it can't collide with inline mixed-case content references like
+    # "Chapter 780 of the Acts of Assembly of 2024".
+    re.compile(r"^\s*CHAPTER\s+\d+\s*$"),
+    # Committee/Governor/Conference-substitute preamble, e.g. "(Proposed by the Senate
+    # Committee on Finance and Appropriations" / "(Proposed by the Governor" / "(Proposed by
+    # the Joint Conference Committee" -- confirmed real across multiple real committees plus
+    # the Governor and Conference Committee. Matches the general shape rather than enumerating
+    # entities, same rationale as the ticket's own guidance for committee names.
+    re.compile(r"^\s*\(Proposed by .*$", re.IGNORECASE),
+    # The date/placeholder line closing the "(Proposed by ...)" preamble when it wraps onto a
+    # second physical line, e.g. "on February 12, 2026)" or the placeholder "on ________________)".
+    re.compile(r"^\s*on\s+(_+|\w+ \d{1,2},\s*\d{4})\)\s*$", re.IGNORECASE),
+    # Bracketed chamber+number cross-reference tag on its own line, e.g. "[H 1244]" (confirmed
+    # real on both Enrolled and Chaptered documents).
+    re.compile(r"^\s*\[[A-Z]{1,3}\s*\d+\]\s*$"),
+]
+# Deliberately NOT implementing the ticket's originally-proposed `_VA_COMMITTEE_SUBSTITUTE`
+# ("any line containing the word Substitute", meant to strip a supposed committee-name-plus-
+# "Substitute" heading line): checked directly against the real archive and no such standalone
+# heading line exists anywhere -- committee names only ever appear embedded inside the
+# "(Proposed by the ... Committee on <name>..." preamble already matched above. Worse, the
+# ticket's proposed pattern would have been actively unsafe: its bare `\bSubstitute\b` match
+# would also strip real amendment-instruction content that uses "substitute" as an ordinary
+# verb -- confirmed real example found in a Conference Report: "1. After line 23, substitute".
+
+_VA_TRAILING_WATERMARK = re.compile(
+    r"\s{3,}[SH][JRB]?\d+\s*$"
+)  # inline bill-ID watermark appended to the end of real content lines, e.g.
+# "...where every young person has access to              SJ58"
+_LEADING_LINE_NUMBER = re.compile(r"^\s*\d+(\s{2,}|\t)")
+
+
+def _strip_virginia_boilerplate(text: str) -> str:
+    """
+    Strip Virginia-specific administrative boilerplate from one bill version's text before
+    it's diffed against another (OPEN-9). Never applied to the stored raw_text itself (only
+    the text fed into the diff call differs) -- see _clean_virginia_text() below for the
+    jurisdiction gate and the rest of the pipeline (degenerate-extraction guard, reflow).
+
+    Per line: strip the inline trailing bill-ID watermark first (real content can have this
+    appended to an otherwise-real line, so only the watermark should go, not the whole line);
+    drop the line entirely if what's left matches one of _VA_LINE_PATTERNS; otherwise strip a
+    leading printed margin line-number if present and keep the rest. See _VA_LINE_PATTERNS
+    above for what's covered and why, including a deliberate deviation from the ticket's
+    starting patterns found unsafe against real archived text.
+    """
+    cleaned_lines = []
+    for line in text.splitlines():
+        line = _VA_TRAILING_WATERMARK.sub("", line)
+        if any(pattern.match(line) for pattern in _VA_LINE_PATTERNS):
+            continue
+        line = _LEADING_LINE_NUMBER.sub("", line)
+        cleaned_lines.append(line)
+    return "\n".join(cleaned_lines)
+
+
+# 2026-08-15 rework, after independently re-validating PR #18's evaluation-time rejection
+# (see the ticket's comment thread): the line-pattern stripper above is real, solid work for
+# same-media-type transitions, but the ticket's own revised AC2/AC3 (Chaptered-stage and
+# resolution coverage, required after the first submission failed both) exposed two further,
+# previously-uncharacterized real problems once validated with archive_bill_versions()'s ACTUAL
+# per-link diff construction (every version with 2+ links gets a SEPARATE stored diff per link,
+# always against the same prior_text -- not the single "hold media_type consistent" comparison
+# AC2 itself suggests, which silently discards the real, commonly-stored HTML-target diffs).
+#
+# 1. Degenerate extraction, not a cleaning problem. VA's `application/pdf` extractor produces
+#    near-empty garbage (dominated by a repeated "of N" page-footer artifact, or a handful of
+#    disconnected sentence fragments) for two specific real categories: the enacted "Chaptered"
+#    stage (~95% of real rows are under 250 chars; the ~5% that work run 1,400+ chars -- a clean
+#    bimodal split with no ambiguous middle) and EVERY resolution's (HJ/HR/SJ/SR) "Enrolled"
+#    stage (100% of 1,521 real rows are under 211 chars). archive_bill_versions() still prefers
+#    this garbage PDF as prior_text/raw_text whenever it "succeeds" (non-empty, is_error=False),
+#    so no amount of boilerplate-stripping can fix these diffs -- there's no real content in one
+#    side to align against. No other VA note/media_type combination in the real archive ever
+#    falls under this same length band (confirmed directly: the shortest real, non-degenerate
+#    application/pdf document anywhere else in the archive is 290 chars). A plain length guard
+#    (_VA_DEGENERATE_LEN) skips cleaning entirely for these pairs -- cleaned reduces to raw
+#    exactly, satisfying AC2's "never worse" trivially, which is the correct outcome: this is a
+#    genuine extraction bug, not something a diffing-time text transform can or should paper
+#    over. (Filed separately as its own bug ticket, matching the OPEN-15 precedent for VA's
+#    original 100%-broken extraction -- out of scope for this cleaning-only ticket to fix.)
+# 2. Cross-pipeline line-wrap mismatch -- the dominant real problem, not Enrolled->Chaptered
+#    specifically. Once every version's OWN per-link diffs are actually validated (not just a
+#    single media-type-consistent comparison), the real failure mode turns out to be much
+#    broader: ANY transition whose current version's document is `text/html` while prior_text
+#    came from `application/pdf` (the common case, since prior_text prefers PDF and most VA
+#    bills archive both media types at every stage) is a cross-pipeline comparison -- VA's PDF
+#    text is fixed-width-wrapped at print time (~85-95 char lines) while its HTML text has no
+#    internal wrapping at all (each paragraph is one physical line), so line-based diffing sees
+#    almost no real alignment regardless of boilerplate stripped. This is the same class of
+#    problem WA's OPEN-7 ticket solved with a reflow step. Reflowing both sides onto a common,
+#    content-derived line shape (only across a genuine media-type change, matching WA/MI's own
+#    gating -- confirmed unconditional reflow regresses already-aligned same-media-type pairs)
+#    turns this into the single largest source of real improvement in the whole ticket: across
+#    the entire archive, 60.7% of all real transitions improve (54.2% meaningfully), including
+#    100% of the previously-failing Chaptered-stage and resolution transitions once the
+#    degenerate PDF-vs-PDF pairing for each is correctly set aside by (1) above and the real
+#    PDF-vs-HTML pairing is reflowed.
+# 3. Resolutions need a sentence-boundary fix, not exclusion from reflow. An initial attempt
+#    gated reflow off entirely for resolutions (matching MI's OPEN-11 precedent, since MI's own
+#    resolutions genuinely have no enacting clause and different conventions) -- but that didn't
+#    fix VA's resolution regressions at all, because the regression wasn't caused by reflow: it
+#    reproduced identically with reflow on or off. Root cause, found by reading a real raw diff
+#    (SR 159, "Commending Project PEACE"): VA resolutions structure their real content as
+#    "WHEREAS, ...; and\nWHEREAS, ...; and, be it\nRESOLVED ..." clauses -- real clause
+#    boundaries that _VA_SENTENCE_BREAK's plain ".;:"-followed-by-a-capital-letter rule doesn't
+#    recognize (the letter immediately after "; and" is lowercase "and", not the next clause's
+#    capital), so the sentence-splitter merged every WHEREAS clause into one enormous run-on
+#    "sentence" for wrapping purposes -- and a single inserted real line ("Agreed to by the
+#    Senate, ...") then shifted every wrap boundary for the entire rest of the document. Adding
+#    the two VA-specific connector patterns below (mirroring the real "; and" / "; and, be it"
+#    shapes, confirmed against multiple real resolutions) fixes this directly: SJ 58's own named
+#    example (this ticket's own resolution reference) goes from a claimed-then-disputed 54%
+#    reduction to a real, reproducible 0.941 -> 0.029 (97% reduction) once reflowed correctly.
+_VA_DEGENERATE_LEN = 300
+_VA_WHITESPACE_RUN = re.compile(r"\s+")
+_VA_SENTENCE_BREAK = re.compile(
+    r"(?<=[.;:])\s*(?=[A-Z(])"
+    r"|(?<=; and)\s+(?=[A-Z])"
+    r"|(?<=; and, be it)\s+(?=[A-Z])"
+)
+_VA_WRAP_WIDTH = 90
+
+
+def _reflow_virginia_text(text: str) -> str:
+    """Collapse to one content-derived line shape per clause (see point 2/3 above)."""
+    text = _VA_WHITESPACE_RUN.sub(" ", text).strip()
+    lines: typing.List[str] = []
+    for clause in _VA_SENTENCE_BREAK.split(text):
+        lines.extend(textwrap.wrap(clause, width=_VA_WRAP_WIDTH) or [""])
+    return "\n".join(lines)
+
+
+def _clean_virginia_text(
+    prior_text: str, raw_text: str, prior_media_type: typing.Optional[str], cur_media_type: str
+) -> typing.Tuple[str, str]:
+    """
+    Clean a Virginia prior_text/raw_text pair immediately before diffing (OPEN-9). Called only
+    for jurisdiction.name == "Virginia", immediately before the difflib.unified_diff() call in
+    archive_bill_versions() -- never applied to any other jurisdiction, and never applied to
+    the stored raw_text itself. See the block comment above for the full real-data findings
+    behind this design (degenerate-extraction guard, cross-pipeline reflow).
+    """
+    if len(prior_text.strip()) < _VA_DEGENERATE_LEN or len(raw_text.strip()) < _VA_DEGENERATE_LEN:
+        # Known-broken PDF extraction (Chaptered stage, resolution Enrolled stage) produces
+        # near-empty garbage that no boilerplate stripping can meaningfully clean -- leave both
+        # sides untouched rather than risk a misleading ratio (point 1 above).
+        return prior_text, raw_text
+    prior_text = _strip_virginia_boilerplate(prior_text)
+    raw_text = _strip_virginia_boilerplate(raw_text)
+    if prior_media_type != cur_media_type:
+        prior_text = _reflow_virginia_text(prior_text)
+        raw_text = _reflow_virginia_text(raw_text)
+    return prior_text, raw_text
+
+
+# OPEN-7: archive_bill_versions()'s diff_from_previous_version, for Washington specifically,
+# is dominated by repeated administrative text (tracking code, title, sponsor line, procedural
+# "Read first time/Referred to Committee" line) printed at the top of every version and never
+# stripped by CONVERSION_FUNCTIONS["wa"]["text/html"] (extractor_for_element_by_xpath("//html"),
+# which only runs clean() -- whitespace normalization, no header/footer filtering).
+#
+# Two things confirmed directly against the real archive (not assumed) reshape this well beyond
+# the ticket's own starting point:
+#
+# 1. CONVERSION_FUNCTIONS["wa"]["application/pdf"] (OPEN-49, landed 2026-08-09) means WA PDF
+#    text is no longer always-empty -- and extract_line_numbered_pdf's text_after_line_numbers()
+#    already drops every one of these header lines as a side effect (same mechanism that closed
+#    Florida's equivalent ticket, OPEN-8), confirmed against every real stage sampled. PDF text
+#    needs no boilerplate stripping at all.
+# 2. WA's real HTML raw_text has ZERO internal newlines (confirmed via SQL against the live
+#    archive: length(text) - length(replace(text, chr(10), '')) = 0 on every sampled row) --
+#    extractor_for_element_by_xpath("//html")'s text_content() never reintroduces them, and
+#    inter-element joins are sometimes glued with no whitespace at all ("ByRepresentatives...").
+#    A single-line string always diffs as "the whole line changed" no matter what's stripped
+#    from it, so boilerplate removal alone cannot reduce line-level diff noise -- reconstructing
+#    real line boundaries is what actually does. Since prior_text now usually comes from PDF
+#    (see the "Prefer text/xml over application/pdf" comment below) while a version's own HTML
+#    document still diffs its raw, un-reflowed text against that PDF-sourced prior_text, the two
+#    pipelines' wildly different native line-wrapping (print-width columns vs none at all) also
+#    needs a common, content-derived line shape before they can align at all -- not just the
+#    HTML side.
+#
+# _clean_wa_text() therefore: normalizes whitespace (so "RCW  64.32.250" from HTML and
+# "RCW 64.32.250" from PDF become the same string), strips the known noise substrings
+# (non-line-anchored -- matching requires no assumption of surrounding whitespace or an intact
+# line, since real data has neither reliably), then rebuilds a stable, content-derived line
+# shape (split on sentence-ending punctuation, word-wrapped within each sentence so one
+# mid-sentence edit doesn't cascade wrap points through the rest of the document). Deliberately
+# omits the ticket's suggested _LEADING_LINE_NUMBER pattern -- verified inert against real WA
+# data: PDF text never has it (already stripped upstream by extract_line_numbered_pdf) and HTML
+# text never had it to begin with (WA's HTML page doesn't print per-line margin numbers).
+#
+# Validated against 20 real Washington bills (126 real consecutive version-transition x
+# media-type pairs, incl. the 3 largest bills by file size, spanning Introduced/Substitute*/
+# Engrossed*/Passed_Legislature stages): mean noise ratio (fraction of the old version's lines
+# appearing as a +/- change) drops from 1.000 -> 0.174 for text/html documents and from 0.127 ->
+# 0.099 for application/pdf documents; 120/126 pairs improve (106 "meaningfully," >=20% relative
+# or >=0.05 absolute), 3 are unchanged (already-identical text), and 3 show a negligible
+# regression (<=0.0012 absolute, i.e. <=0.12%) -- each traced to a genuine, tiny, real edit
+# (confirmed by reading the actual raw diff) where this reflow's canonical, content-derived line
+# boundaries happen to span slightly more physical lines than the original PDF's arbitrary
+# print-width wrap did for that specific edit. A stricter variant that skips reflowing any
+# text that already has short natural lines (e.g. PDF's own wrap) eliminates those 3
+# regressions entirely, but was rejected: it also skips reflowing away the PDF/HTML
+# cross-pipeline mismatch, leaving the mean text/html ratio at 0.975 -- effectively no
+# improvement at all for the actual problem this ticket exists to fix.
+_WA_GLOBAL_NOISE_PATTERNS = [
+    # Tracking code, e.g. "Z-0056.2", "H-0530.1", "S-2500.1" -- generalized from the ticket's
+    # own [ZH] class, which misses the real "S-" prefix (1,795 occurrences in the live archive).
+    # Safe to strip anywhere: this shape never occurs in real bill body text, and a tracking
+    # code can legitimately recur on a later page of a multi-page document.
+    re.compile(r"[A-Z]-\d{4}\.\d+"),
+    # Page-number + bill-ID watermark, e.g. "p. 1    HB 1337" -- per the ticket's watermark
+    # Known Gap. Requires a trailing bill-ID so it can't collide with a real legal citation
+    # like "F. Supp. 312" (confirmed: 13 real "p. N" occurrences in the live archive, all
+    # citations, none matching this stricter shape). Also global: a watermark repeats on every
+    # page, not just the first.
+    re.compile(r"p\.\s*\d+\s+[HS]B\s*\d+", re.IGNORECASE),
+]
+
+# Everything below is boilerplate that only ever legitimately appears in the document's leading
+# header block (title/legislature/session/vote-tally/sponsor/procedural lines), never restated
+# in the substantive body -- unlike the patterns above, several of these are ordinary English
+# phrase shapes ("Committee on <x>.", "<year> regular session", "House Bill <n>") that real bill
+# TEXT can and does legitimately contain when it creates a committee, cites a session, or amends
+# another numbered bill. Applying them across the whole document (as an earlier version of this
+# cleaner did) silently deleted that real content -- confirmed against constructed body text
+# such as "The joint committee on veterans affairs shall report..." and "amends Senate Bill 5129"
+# both losing their real subject matter. _clean_wa_text() therefore only ever runs this list
+# against the text preceding the bill's own enacting clause ("AN ACT ..."), which every real and
+# fixture WA document places immediately after this boilerplate -- see _WA_ENACTING_CLAUSE.
+_WA_HEADER_ONLY_NOISE_PATTERNS = [
+    # Bill title with any optional prefix phrase (SUBSTITUTE, SECOND SUBSTITUTE, ENGROSSED
+    # SUBSTITUTE, "CERTIFICATION OF ENROLLMENT", etc.) before "(SENATE|HOUSE) BILL <n>" -- the
+    # general shape, not an enumerated prefix list, per the ticket's title-prefix Known Gap.
+    # "\d{3,4}" (not "\d+"): a real enrolled-bill header glues the bill number directly onto
+    # the following ordinal-legislature number with no separator ("...BILL 101469TH
+    # LEGISLATURE...") -- an unbounded "\d+" swallows the legislature's ordinal digits too.
+    re.compile(r"(?:[A-Z][A-Z ]*\s+)?(?:SENATE|HOUSE) BILL \d{3,4}", re.IGNORECASE),
+    # "\d{1,3}(?:st|nd|rd|th)" (not "\d+\w*"): the ordinal-suffix form is not just more
+    # specific, it avoids catastrophic backtracking -- an unanchored "\d+\w*" tries every
+    # digit run in the whole document (statute citations, dollar amounts, dates, ...) at every
+    # possible split between its two quantifiers before failing, which measured >120s on a
+    # single real ~90KB "Passed Legislature" bill. The ordinal-suffix form has no such
+    # ambiguous split and resolves in milliseconds on the same real document.
+    re.compile(
+        r"State of Washington\s*\d{1,3}(?:st|nd|rd|th)\s*Legislature\s*\d{4}[^.]{0,40}?Session",
+        re.IGNORECASE,
+    ),
+    # An enrolled bill's own ordinal-legislature/session line has no "State of Washington"
+    # prefix at all, e.g. "69TH LEGISLATURE2025 REGULAR SESSION" -- found on the same real
+    # "Passed Legislature" document as the digit-boundary bug above. Known minor imprecision:
+    # when the bill number is glued directly onto this with no separator at all (e.g. "...BILL
+    # 101469TH LEGISLATURE..."), there is no reliable way to tell where a variable-length bill
+    # number ends and a variable-length ordinal begins from the digits alone -- this can nibble
+    # the bill number's own last digit along with the real ordinal-legislature match. Accepted
+    # as a documented, narrow gap (see the PR description) rather than chased further: it only
+    # affects the cosmetic bill-number digits inside boilerplate that's being removed anyway.
+    re.compile(
+        r"\d{1,3}(?:st|nd|rd|th)\s*Legislature\s*\d{4}[^.]{0,40}?Session", re.IGNORECASE
+    ),
+    # The enrolled-bill signing/vote-tally block, e.g. "Passed by the House March 11, 2025
+    # Yeas 93 Nays 3Speaker of the House of RepresentativesPassed by the Senate April 16,
+    # 2025 Yeas 48 Nays 1President of the Senate" -- printed once per chamber on every real
+    # "Passed Legislature"/enrolled document regardless of the actual vote count or date.
+    re.compile(
+        r"Passed by the (?:House|Senate)[^.]*?Yeas\s*\d+\s*Nays\s*\d+"
+        r"(?:Speaker|President) of the (?:House(?: of Representatives)?|Senate)",
+        re.IGNORECASE,
+    ),
+    # Found against a real "Substitute Passed Legislature" PDF during AC6 refinement: a
+    # page-break can split the session line across pages, leaking a bare "<year> Regular
+    # Session" (or a tail-only "Regular Session") fragment onto a numbered line that survives
+    # extract_line_numbered_pdf's own line-number-anchored filtering upstream -- the full
+    # pattern above only matches when the whole line lands intact on one page.
+    # No trailing "\b": real data (e.g. a "Passed Legislature" enrolled-bill header) glues
+    # "SESSION" directly onto the next word with no separator at all ("SESSIONPassed"), and
+    # "\b" can never match between two word characters.
+    re.compile(r"(?:\d{4}\s+)?(?:Regular|Special)\s+Session", re.IGNORECASE),
+    # Alternate committee sponsor line for substitute stages, e.g. "By House Finance
+    # (originally sponsored by Representatives ...)" -- generalized to any committee text, per
+    # the ticket's alternate-sponsor-line Known Gap (never enumerate committee names).
+    re.compile(r"By\s*[^()]{0,80}?\(originally sponsored by[^)]*\)", re.IGNORECASE),
+    # Plain introduced-version sponsor line. Stops at the first period (real sponsor-name
+    # lists never contain one), then optionally consumes exactly that one period -- real WA
+    # data sometimes glues the sponsor line directly onto the following procedural line with
+    # no separating space at all (e.g. "...Ramel.Prefiled 02/11/25."), so the match must be
+    # able to cross that single period to reach the lookahead. Deliberately has no "$"
+    # fallback in the lookahead: an open-ended ".*?" (or a lookahead that can fall back to
+    # end-of-string) would swallow the entire rest of the document whenever a version simply
+    # doesn't restate "Prefiled"/"Read first time" -- under-matching here is far safer than
+    # that.
+    re.compile(
+        r"By\s*(?:Senators?|Representatives?)[^.]*?\.?"
+        r"(?=\s*(?:Prefiled|Read first time|READ FIRST TIME))",
+        re.IGNORECASE,
+    ),
+    re.compile(r"(?:Prefiled[^.]*\.)?\s*(?:READ FIRST TIME|Read first time)[^.]*\.", re.IGNORECASE),
+    re.compile(r"(?:Referred to )?Committee on [^.]*\.", re.IGNORECASE),
+]
+
+_WA_WHITESPACE_RUN = re.compile(r"\s+")
+
+# Splits on a sentence-ending ./;/: followed by (optionally, real WA data often has none at
+# all) whitespace and a capital letter or open-paren -- e.g. "...Committee on Finance.AN ACT
+# Relating..." (no space) must split as reliably as "...Finance. AN ACT...". A decimal-style
+# citation like "RCW 64.32.250" is never split: the digit right after the period fails the
+# "capital letter or open-paren" lookahead on its own, with no extra lookbehind needed.
+_WA_SENTENCE_BREAK = re.compile(r"(?<=[.;:])\s*(?=[A-Z(])")
+
+_WA_WRAP_WIDTH = 55
+
+# Marks the end of the boilerplate header and the start of a WA bill's own substantive text --
+# every real and fixture document in this ticket's research places its enacting clause
+# ("AN ACT Relating to ...") immediately after the title/legislature/sponsor/procedural block.
+# If it's ever absent (e.g. a resolution with no enacting clause), header-only patterns run
+# against the whole text, same as before this boundary existed -- no worse than the prior
+# global behavior for that case.
+_WA_ENACTING_CLAUSE = re.compile(r"\bAN ACT\b", re.IGNORECASE)
+
+
+def _clean_wa_text(text: str) -> str:
+    """
+    Washington-only text cleaner applied to prior_text/raw_text immediately before the
+    difflib.unified_diff() call in archive_bill_versions() -- see the block comment above for
+    the real-data findings this encodes and the AC3/AC4 measurements behind the design.
+    """
+    text = _WA_WHITESPACE_RUN.sub(" ", text).strip()
+
+    boundary_match = _WA_ENACTING_CLAUSE.search(text)
+    boundary = boundary_match.start() if boundary_match else len(text)
+    header, body = text[:boundary], text[boundary:]
+    for pattern in _WA_HEADER_ONLY_NOISE_PATTERNS:
+        header = pattern.sub("", header)
+    text = header + body
+
+    for pattern in _WA_GLOBAL_NOISE_PATTERNS:
+        text = pattern.sub("", text)
+    text = _WA_WHITESPACE_RUN.sub(" ", text).strip()
+    lines = []
+    for sentence in _WA_SENTENCE_BREAK.split(text):
+        lines.extend(textwrap.wrap(sentence, width=_WA_WRAP_WIDTH) or [""])
+    return "\n".join(lines)
+
+
+# OPEN-11: Michigan-only text cleaning applied to prior_text/raw_text immediately before the
+# difflib.unified_diff() call in archive_bill_versions() (never touching the stored raw_text
+# field, and never applied to any other jurisdiction).
+#
+# AC2 characterization, revised 2026-08-14 after a first submission (PR #20) was independently
+# validated against the real archive and found to have near-zero real effect (see the ticket's
+# comment thread for the full numbers). That submission's front-matter-only design was built on
+# a stale premise: Michigan's application/pdf extractor was 100% broken when the ticket was last
+# researched (2026-07-30), so every real diff at that time was necessarily text/html vs
+# text/html. OPEN-49 (merged 2026-08-09) fixed the PDF extractor, and archive_bill_versions()'s
+# real prior_text selection (text/xml or application/pdf or first-available) now prefers PDF for
+# nearly every Michigan version -- which changes what actually needs cleaning:
+#
+# 1. Front matter/tracking-block boilerplate (the original finding) is still real for
+#    text/html documents and the enacted "Public Act" stage's PDF (confirmed via a real diff
+#    read, HB4493 As Passed by the House -> Public Act) -- see _MI_ENACTING_CLAUSE_RE. This is
+#    stripped for every media type, safely, since resolutions simply never contain the anchor
+#    and are returned unchanged by this step (AC5).
+# 2. Two previously-undiscovered real noise patterns, found while independently re-validating
+#    PR #20 against the full current archive (4569 real transitions) and tracing its 10 found
+#    regressions to root cause:
+#    (a) A per-page tracking-code/hash footer bleeds through MI's own numbered-PDF extractor at
+#        every page break, not just the final page, e.g. "GSS   H05157'25_HB5314_INTR_1
+#        y5icbv\x0c   2" mid-document and "Final Page\n    KHS    H00127'25_HB4010_INTR_1
+#        ft61ok\x0c" at the true end -- a unique, unrepeated hash per file, so it always looks
+#        like a real content change between any two versions. Enacted "Public Act" PDFs use a
+#        different, plain "(N)\x0c" page-number-only footer instead (no tracking hash). Both are
+#        stripped unconditionally (_MI_TRACKING_PAGE_BREAK_RE, _MI_PLAIN_PAGE_NUM_RE) -- neither
+#        pattern can plausibly appear in real bill text.
+#    (b) MI's numbered-PDF extraction keeps each printed margin line-number as literal leading
+#        text on its own line (e.g. "1         Sec. 1. ..."), and the column-padding whitespace
+#        after that number is not stable between two renderings of the *same* content (observed:
+#        "1         Sec." in one PDF vs. "1          Sec." -- one extra space -- in another PDF
+#        of the identical bill stage). On a short bill this single incidental whitespace/line-
+#        number difference can dominate the whole diff. Both are collapsed for Bill-classified
+#        notes only (_MI_LEADING_LINE_NUM_RE, then per-line inner-whitespace normalization) --
+#        deliberately NOT applied to Resolutions, whose own indentation/whitespace conventions
+#        this distorted when tested unconditionally (see point 4).
+# 3. The real remaining noise source once (1) and (2) are handled is a genuine cross-pipeline
+#    line-wrap mismatch: a fixed-width-wrapped numbered PDF (~56-65 char lines) diffed against a
+#    same-version-but-different-media-type document (raw HTML, or an enacted-stage PDF that uses
+#    a noticeably wider print column) shares no real line boundaries at all, so difflib's
+#    line-based ratio can't reflect boilerplate removal -- this is the exact class of problem
+#    WA's OPEN-7 ticket solved with a sentence-reflow step. Applying the same technique
+#    (_reflow_michigan_text, width tuned to MI's own ~56-65 char PDF convention rather than
+#    reusing WA's constant) only when the prior and current media types genuinely differ
+#    collapses a real, confirmed example (SB 542, Substitute (H-2) - 4 PDF -> As Passed by the
+#    Senate HTML) from ratio 0.970 to 0.019, and the ticket's own central target case (SB 542,
+#    Senate Concurred Bill -> Public Act, both PDF but different print widths) from 0.990 to
+#    0.103.
+# 4. PR #20's own AC2 write-up said a reflow step was tested and "made the ratio uniformly worse
+#    on every transition tested" -- reproduced here, but only for two specific cases, not as a
+#    blanket verdict: (a) applying reflow to *same-media-type* pairs that were already
+#    line-aligned coarsens line granularity for no benefit (confirmed: applying reflow
+#    unconditionally introduced 243 real regressions across the full archive, vs. 1 when gated
+#    to cross-media-type pairs only); (b) applying it to Resolutions specifically is actively
+#    harmful (confirmed: gating on `bill.classification == ["bill"]` removed ~90 further
+#    regressions, all "Senate/House Enrolled -> Adopted Resolution" text/html pairs) -- Michigan
+#    resolutions have no enacting clause and their own distinct whitespace/indentation
+#    conventions this cleaner was never designed for. Gating reflow on BOTH conditions (a
+#    genuine media-type change AND a Bill, not a Resolution) keeps the real win from point 3
+#    while avoiding both failure modes.
+# 5. Validated against a real, representative 30-bill/107-transition sample (>=15 per AC3,
+#    including both of this ticket's own named bills, SB 542/HB 4493) AND the entire current MI
+#    archive (1465 bills, 4569 real consecutive transitions via _version_sort_key(), 216
+#    tied-stage pairs excluded per point 6 below): among the 1455 transitions that actually
+#    carried some form of the noise above, 64.8% improved (64.1% meaningfully, >=20% relative or
+#    >=0.05 absolute) -- a clear majority, per AC4. The remaining 3025 transitions (already-clean
+#    PDF-vs-PDF pairs with nothing to strip) are confirmed byte-for-byte ratio-unchanged, as
+#    expected. Exactly 1 regression survives across the whole archive (0.964 -> 0.982, on an "As
+#    Passed by the House" -> "Public Act" PDF pair that already sat at 0.964 raw -- i.e. an
+#    already near-total rewrite with no real signal to preserve either way) -- a real, known,
+#    accepted gap (enacted-stage PDFs occasionally use a wider print column than earlier
+#    same-media-type stages, which this cleaner does not separately detect), left documented
+#    rather than chased further, per AC6's "stop after 5 iterations, document the rest" bar (this
+#    revision went through 7 rounds of real-data-driven refinement to get here).
+# 6. Known, documented, OUT-OF-SCOPE gap (not this ticket's to fix, carried over unchanged):
+#    _note_stage() maps both "Public Act" and "Senate|House Concurred Bill" to the same
+#    _STAGE_ENACTED bucket with no ordinal distinguishing them (nor same-ordinal Senate vs. House
+#    Substitute pairs) -- so _version_sort_key() cannot always tell which of a tied pair is truly
+#    "prior". These pairs are excluded from this ticket's own AC3/AC4 validation (their true
+#    chronological order isn't reliably known) -- this is OPEN-34-shaped work, not a
+#    text-cleaning problem.
+_MI_ENACTING_CLAUSE_RE = re.compile(
+    r"the\s+people\s+of\s+the\s+state\s+of\s+michigan\s+enact\s*:", re.IGNORECASE
+)
+# Per-page tracking-code/hash footer, mid-document or at the true end, e.g.
+#   "GSS   H05157'25_HB5314_INTR_1   y5icbv\x0c   2"
+#   "Final Page\n    KHS    H00127'25_HB4010_INTR_1    ft61ok\x0c"
+# A unique per-file hash, so it always looks like real content changed between any two versions.
+_MI_TRACKING_PAGE_BREAK_RE = re.compile(
+    r"\s*(?:Final Page\s*\n)?\s*[A-Za-z]{2,4}\s+\S*'\S*_\S+_\d+\s+[a-z0-9]{4,8}\s*\x0c\s*\d*",
+    re.IGNORECASE,
+)
+# Enacted "Public Act" PDFs use a plain parenthesized page-number footer instead, e.g.
+# "...(12)\x0c    (b) Add taxes..." -- no tracking hash, different shape from the above.
+_MI_PLAIN_PAGE_NUM_RE = re.compile(r"\s*\(\d+\)\s*\x0c\s*")
+# A printed margin line-number kept as literal leading text on its own line by MI's numbered-PDF
+# extractor, e.g. "1         Sec. 1. ...". Bill-only (see point 2b/4 above).
+_MI_LEADING_LINE_NUM_RE = re.compile(r"^\d{1,3}\s+(?=[A-Za-z(])")
+_MI_INLINE_WS_RUN = re.compile(r"[ \t]+")
+_MI_WHITESPACE_RUN = re.compile(r"\s+")
+_MI_SENTENCE_BREAK = re.compile(r"(?<=[.;:])\s*(?=[A-Z(])")
+_MI_WRAP_WIDTH = 65
+
+
+def _strip_michigan_boilerplate(text: str) -> str:
+    """
+    Strip the boilerplate that's safe to remove regardless of note type (Bill or Resolution) --
+    the enacting-clause front matter and the two page-break footer shapes. See point 1/2a above.
+    """
+    match = _MI_ENACTING_CLAUSE_RE.search(text)
+    if match:
+        text = text[match.end() :]
+    text = _MI_TRACKING_PAGE_BREAK_RE.sub(" ", text)
+    text = _MI_PLAIN_PAGE_NUM_RE.sub(" ", text)
+    return text
+
+
+def _reflow_michigan_text(text: str) -> str:
+    """Collapse to one content-derived line shape per sentence (see point 3 above)."""
+    text = _MI_WHITESPACE_RUN.sub(" ", text).strip()
+    lines: typing.List[str] = []
+    for sentence in _MI_SENTENCE_BREAK.split(text):
+        lines.extend(textwrap.wrap(sentence, width=_MI_WRAP_WIDTH) or [""])
+    return "\n".join(lines)
+
+
+def _clean_michigan_text(
+    prior_text: str,
+    raw_text: str,
+    prior_media_type: typing.Optional[str],
+    cur_media_type: str,
+    is_bill: bool,
+) -> typing.Tuple[str, str]:
+    """
+    Clean a Michigan prior_text/raw_text pair immediately before diffing (see the AC2 comment
+    above for the full real-data writeup behind this design). Boilerplate stripping is safe for
+    every note type; the line-number/whitespace normalization and cross-media reflow are gated
+    to Bill-classified notes only (point 2b/4 above) since Resolutions have their own, different
+    conventions these steps would otherwise distort.
+    """
+    prior_text = _strip_michigan_boilerplate(prior_text)
+    raw_text = _strip_michigan_boilerplate(raw_text)
+    if is_bill:
+        prior_text = "\n".join(
+            _MI_INLINE_WS_RUN.sub(" ", _MI_LEADING_LINE_NUM_RE.sub("", line)).strip()
+            for line in prior_text.splitlines()
+        )
+        raw_text = "\n".join(
+            _MI_INLINE_WS_RUN.sub(" ", _MI_LEADING_LINE_NUM_RE.sub("", line)).strip()
+            for line in raw_text.splitlines()
+        )
+        if prior_media_type != cur_media_type:
+            prior_text = _reflow_michigan_text(prior_text)
+            raw_text = _reflow_michigan_text(raw_text)
+    return prior_text, raw_text
 
 
 def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
@@ -698,10 +1257,19 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
     different problem -- TLS ciphers, not text cleaning). Only the text fed into
     `difflib.unified_diff()` changes; the stored `raw_text` field and the `prior_text`
     carried into the next iteration both stay the original, un-reflowed text.
+
+    OPEN-9: for Virginia bills only, `prior_text`/`raw_text` are run through
+    `_clean_virginia_text()` immediately before the `difflib.unified_diff()` call below --
+    stripping repeated administrative boilerplate (session/stage markers, patron lines,
+    margin artifacts, etc.) that would otherwise dominate the raw diff. This never changes
+    what's stored as `raw_text` or fed into `this_version_texts`/`prior_text` tracking for the
+    *next* version -- only the two local copies handed to `unified_diff()` are cleaned. No
+    other jurisdiction is affected (mirrors Florida's own unrelated branch elsewhere in this
+    module, and matches recompute_bill_diff_order()'s untouched, cleaning-free diff call --
+    that function is OPEN-34's separate ordering-only backfill path, deliberately not in scope
+    here per the ticket's no-backfill constraint).
     """
     from openstates.data.models import BillVersionDocument
-
-    jurisdiction = bill.legislative_session.jurisdiction.name
 
     counters = {
         "fetched": 0,
@@ -715,7 +1283,16 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
         "s3_unverified": 0,
     }
 
+    jurisdiction_name = bill.legislative_session.jurisdiction.name
+    # OPEN-11: gates _clean_michigan_text() below -- every other jurisdiction's prior_text/
+    # raw_text reach difflib.unified_diff() completely untouched (AC1). is_michigan_bill also
+    # requires classification == ["bill"] since several of _clean_michigan_text()'s steps are
+    # deliberately not applied to Resolutions (see that function's docstring).
+    is_michigan = jurisdiction_name == "Michigan"
+    is_michigan_bill = is_michigan and bill.classification == ["bill"]
+
     prior_text: typing.Optional[str] = None
+    prior_media_type: typing.Optional[str] = None
 
     ordered_versions = sorted(
         bill.versions.all(), key=lambda v: _version_sort_key(v.note, v.date)
@@ -807,14 +1384,35 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                 and raw_text
                 and not is_unknown_position
             ):
-                diff_prior_text = prior_text
-                diff_raw_text = raw_text
-                if jurisdiction == "Arizona":
-                    diff_prior_text = _reflow_paragraphs(prior_text)
-                    diff_raw_text = _reflow_paragraphs(raw_text)
+                diff_prior_text, diff_raw_text = prior_text, raw_text
+                # OPEN-7: WA-only, applied to a local copy of each text so every other
+                # jurisdiction's diff_from_previous_version stays byte-for-byte unchanged.
+                if bill.legislative_session.jurisdiction.name == "Washington":
+                    diff_prior_text = _clean_wa_text(diff_prior_text)
+                    diff_raw_text = _clean_wa_text(diff_raw_text)
+                if is_michigan:
+                    diff_prior_text, diff_raw_text = _clean_michigan_text(
+                        diff_prior_text,
+                        diff_raw_text,
+                        prior_media_type,
+                        link.media_type,
+                        is_michigan_bill,
+                    )
+                if jurisdiction_name == "Virginia":
+                    diff_prior_text, diff_raw_text = _clean_virginia_text(
+                        diff_prior_text,
+                        diff_raw_text,
+                        prior_media_type,
+                        link.media_type,
+                    )
+                if jurisdiction_name == "Arizona":
+                    diff_prior_text = _reflow_paragraphs(diff_prior_text)
+                    diff_raw_text = _reflow_paragraphs(diff_raw_text)
                 diff_from_previous_version = "\n".join(
                     difflib.unified_diff(
-                        diff_prior_text.splitlines(), diff_raw_text.splitlines(), lineterm=""
+                        diff_prior_text.splitlines(),
+                        diff_raw_text.splitlines(),
+                        lineterm="",
                     )
                 )
 
@@ -851,11 +1449,13 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
             # arises today): XML has no page-break/line-wrap artifacts, making it a cleaner
             # diffing source than PDF's line-numbered extraction. Falls through to PDF, then
             # whatever else succeeded, exactly as before for every other jurisdiction.
-            prior_text = (
-                this_version_texts.get("text/xml")
-                or this_version_texts.get("application/pdf")
-                or next(iter(this_version_texts.values()))
-            )
+            if "text/xml" in this_version_texts:
+                prior_media_type = "text/xml"
+            elif "application/pdf" in this_version_texts:
+                prior_media_type = "application/pdf"
+            else:
+                prior_media_type = next(iter(this_version_texts))
+            prior_text = this_version_texts[prior_media_type]
 
     return counters
 
