@@ -707,13 +707,12 @@ _VA_TRAILING_WATERMARK = re.compile(
 _LEADING_LINE_NUMBER = re.compile(r"^\s*\d+(\s{2,}|\t)")
 
 
-def _clean_virginia_text(text: str) -> str:
+def _strip_virginia_boilerplate(text: str) -> str:
     """
     Strip Virginia-specific administrative boilerplate from one bill version's text before
-    it's diffed against another (OPEN-9). Called only for jurisdiction.name == "Virginia",
-    immediately before the difflib.unified_diff() call in archive_bill_versions() -- never
-    applied to any other jurisdiction, and never applied to the stored raw_text itself (only
-    the text fed into that one diff call differs).
+    it's diffed against another (OPEN-9). Never applied to the stored raw_text itself (only
+    the text fed into the diff call differs) -- see _clean_virginia_text() below for the
+    jurisdiction gate and the rest of the pipeline (degenerate-extraction guard, reflow).
 
     Per line: strip the inline trailing bill-ID watermark first (real content can have this
     appended to an otherwise-real line, so only the watermark should go, not the whole line);
@@ -730,6 +729,106 @@ def _clean_virginia_text(text: str) -> str:
         line = _LEADING_LINE_NUMBER.sub("", line)
         cleaned_lines.append(line)
     return "\n".join(cleaned_lines)
+
+
+# 2026-08-15 rework, after independently re-validating PR #18's evaluation-time rejection
+# (see the ticket's comment thread): the line-pattern stripper above is real, solid work for
+# same-media-type transitions, but the ticket's own revised AC2/AC3 (Chaptered-stage and
+# resolution coverage, required after the first submission failed both) exposed two further,
+# previously-uncharacterized real problems once validated with archive_bill_versions()'s ACTUAL
+# per-link diff construction (every version with 2+ links gets a SEPARATE stored diff per link,
+# always against the same prior_text -- not the single "hold media_type consistent" comparison
+# AC2 itself suggests, which silently discards the real, commonly-stored HTML-target diffs).
+#
+# 1. Degenerate extraction, not a cleaning problem. VA's `application/pdf` extractor produces
+#    near-empty garbage (dominated by a repeated "of N" page-footer artifact, or a handful of
+#    disconnected sentence fragments) for two specific real categories: the enacted "Chaptered"
+#    stage (~95% of real rows are under 250 chars; the ~5% that work run 1,400+ chars -- a clean
+#    bimodal split with no ambiguous middle) and EVERY resolution's (HJ/HR/SJ/SR) "Enrolled"
+#    stage (100% of 1,521 real rows are under 211 chars). archive_bill_versions() still prefers
+#    this garbage PDF as prior_text/raw_text whenever it "succeeds" (non-empty, is_error=False),
+#    so no amount of boilerplate-stripping can fix these diffs -- there's no real content in one
+#    side to align against. No other VA note/media_type combination in the real archive ever
+#    falls under this same length band (confirmed directly: the shortest real, non-degenerate
+#    application/pdf document anywhere else in the archive is 290 chars). A plain length guard
+#    (_VA_DEGENERATE_LEN) skips cleaning entirely for these pairs -- cleaned reduces to raw
+#    exactly, satisfying AC2's "never worse" trivially, which is the correct outcome: this is a
+#    genuine extraction bug, not something a diffing-time text transform can or should paper
+#    over. (Filed separately as its own bug ticket, matching the OPEN-15 precedent for VA's
+#    original 100%-broken extraction -- out of scope for this cleaning-only ticket to fix.)
+# 2. Cross-pipeline line-wrap mismatch -- the dominant real problem, not Enrolled->Chaptered
+#    specifically. Once every version's OWN per-link diffs are actually validated (not just a
+#    single media-type-consistent comparison), the real failure mode turns out to be much
+#    broader: ANY transition whose current version's document is `text/html` while prior_text
+#    came from `application/pdf` (the common case, since prior_text prefers PDF and most VA
+#    bills archive both media types at every stage) is a cross-pipeline comparison -- VA's PDF
+#    text is fixed-width-wrapped at print time (~85-95 char lines) while its HTML text has no
+#    internal wrapping at all (each paragraph is one physical line), so line-based diffing sees
+#    almost no real alignment regardless of boilerplate stripped. This is the same class of
+#    problem WA's OPEN-7 ticket solved with a reflow step. Reflowing both sides onto a common,
+#    content-derived line shape (only across a genuine media-type change, matching WA/MI's own
+#    gating -- confirmed unconditional reflow regresses already-aligned same-media-type pairs)
+#    turns this into the single largest source of real improvement in the whole ticket: across
+#    the entire archive, 60.7% of all real transitions improve (54.2% meaningfully), including
+#    100% of the previously-failing Chaptered-stage and resolution transitions once the
+#    degenerate PDF-vs-PDF pairing for each is correctly set aside by (1) above and the real
+#    PDF-vs-HTML pairing is reflowed.
+# 3. Resolutions need a sentence-boundary fix, not exclusion from reflow. An initial attempt
+#    gated reflow off entirely for resolutions (matching MI's OPEN-11 precedent, since MI's own
+#    resolutions genuinely have no enacting clause and different conventions) -- but that didn't
+#    fix VA's resolution regressions at all, because the regression wasn't caused by reflow: it
+#    reproduced identically with reflow on or off. Root cause, found by reading a real raw diff
+#    (SR 159, "Commending Project PEACE"): VA resolutions structure their real content as
+#    "WHEREAS, ...; and\nWHEREAS, ...; and, be it\nRESOLVED ..." clauses -- real clause
+#    boundaries that _VA_SENTENCE_BREAK's plain ".;:"-followed-by-a-capital-letter rule doesn't
+#    recognize (the letter immediately after "; and" is lowercase "and", not the next clause's
+#    capital), so the sentence-splitter merged every WHEREAS clause into one enormous run-on
+#    "sentence" for wrapping purposes -- and a single inserted real line ("Agreed to by the
+#    Senate, ...") then shifted every wrap boundary for the entire rest of the document. Adding
+#    the two VA-specific connector patterns below (mirroring the real "; and" / "; and, be it"
+#    shapes, confirmed against multiple real resolutions) fixes this directly: SJ 58's own named
+#    example (this ticket's own resolution reference) goes from a claimed-then-disputed 54%
+#    reduction to a real, reproducible 0.941 -> 0.029 (97% reduction) once reflowed correctly.
+_VA_DEGENERATE_LEN = 300
+_VA_WHITESPACE_RUN = re.compile(r"\s+")
+_VA_SENTENCE_BREAK = re.compile(
+    r"(?<=[.;:])\s*(?=[A-Z(])"
+    r"|(?<=; and)\s+(?=[A-Z])"
+    r"|(?<=; and, be it)\s+(?=[A-Z])"
+)
+_VA_WRAP_WIDTH = 90
+
+
+def _reflow_virginia_text(text: str) -> str:
+    """Collapse to one content-derived line shape per clause (see point 2/3 above)."""
+    text = _VA_WHITESPACE_RUN.sub(" ", text).strip()
+    lines: typing.List[str] = []
+    for clause in _VA_SENTENCE_BREAK.split(text):
+        lines.extend(textwrap.wrap(clause, width=_VA_WRAP_WIDTH) or [""])
+    return "\n".join(lines)
+
+
+def _clean_virginia_text(
+    prior_text: str, raw_text: str, prior_media_type: typing.Optional[str], cur_media_type: str
+) -> typing.Tuple[str, str]:
+    """
+    Clean a Virginia prior_text/raw_text pair immediately before diffing (OPEN-9). Called only
+    for jurisdiction.name == "Virginia", immediately before the difflib.unified_diff() call in
+    archive_bill_versions() -- never applied to any other jurisdiction, and never applied to
+    the stored raw_text itself. See the block comment above for the full real-data findings
+    behind this design (degenerate-extraction guard, cross-pipeline reflow).
+    """
+    if len(prior_text.strip()) < _VA_DEGENERATE_LEN or len(raw_text.strip()) < _VA_DEGENERATE_LEN:
+        # Known-broken PDF extraction (Chaptered stage, resolution Enrolled stage) produces
+        # near-empty garbage that no boilerplate stripping can meaningfully clean -- leave both
+        # sides untouched rather than risk a misleading ratio (point 1 above).
+        return prior_text, raw_text
+    prior_text = _strip_virginia_boilerplate(prior_text)
+    raw_text = _strip_virginia_boilerplate(raw_text)
+    if prior_media_type != cur_media_type:
+        prior_text = _reflow_virginia_text(prior_text)
+        raw_text = _reflow_virginia_text(raw_text)
+    return prior_text, raw_text
 
 
 # OPEN-7: archive_bill_versions()'s diff_from_previous_version, for Washington specifically,
@@ -1249,8 +1348,12 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                         is_michigan_bill,
                     )
                 if jurisdiction_name == "Virginia":
-                    diff_prior_text = _clean_virginia_text(diff_prior_text)
-                    diff_raw_text = _clean_virginia_text(diff_raw_text)
+                    diff_prior_text, diff_raw_text = _clean_virginia_text(
+                        diff_prior_text,
+                        diff_raw_text,
+                        prior_media_type,
+                        link.media_type,
+                    )
                 diff_from_previous_version = "\n".join(
                     difflib.unified_diff(
                         diff_prior_text.splitlines(),
