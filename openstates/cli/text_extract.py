@@ -34,6 +34,7 @@ from ..utils.cookie_provider import (
     BLOCK_PAGE_MARKERS as _BLOCK_PAGE_MARKERS,
     WafBlockDetected,
     content_matches_block_markers,
+    content_matches_fake_404_block,
 )
 from ..utils.resilience_profiles import profile_for_netloc
 from ..utils.waf_circuit_breaker import raise_if_waf_block_threshold_reached
@@ -114,8 +115,16 @@ def _scraper_for_profile(profile) -> scrapelib.Scraper:
     if profile.name not in _profile_scrapers:
         s = scrapelib.Scraper(verify=False)
         s.user_agent = "Mozilla"
-        s.retry_attempts = 5
-        s.retry_wait_seconds = 5
+        # OPEN-53 (reopened 2026-08-15): retry_attempts=0 here, deliberately unlike the plain
+        # module-level `scraper` above -- scrapelib.RetrySession's own retry loop has no
+        # per-exception-type exclusion, so a nonzero value here would blindly retry a WAF
+        # block (a rejected status, or any exception from the request itself) several times
+        # with the same stale cookies before do_request()'s WafBlockDetected handling below
+        # ever runs, exactly the "generic retry fires before the cookie-rewarm path engages"
+        # failure mode this ticket was filed to describe. CookieProvider.fetch_with_retry's
+        # own single invalidate-and-rewarm-once retry is the only retry layer for these
+        # profiled fetches now, matching MI's scraper-side mi_waf_get()'s same rationale.
+        s.retry_attempts = 0
         s.requests_per_minute = profile.requests_per_minute
         _profile_scrapers[profile.name] = s
     return _profile_scrapers[profile.name]
@@ -152,6 +161,25 @@ def _fetch_bytes(url: str) -> bytes:
                 )
             except requests.exceptions.ConnectionError as e:
                 raise WafBlockDetected(str(e)) from e
+            except scrapelib.HTTPError as e:
+                # OPEN-53 (reopened 2026-08-15): with retry_attempts=0 above, a rejected
+                # status now reaches here on the very first attempt instead of being blindly
+                # retried by scrapelib itself -- a WAF can serve its block behind a genuine
+                # error status (MI's fake-404, see content_matches_fake_404_block's own
+                # docstring), not just a 200-status challenge page. Any other real HTTPError
+                # (a genuinely dead link, a real server error) is not a WAF signature and
+                # must keep propagating unchanged, same as MI's original archiver do_request.
+                body = getattr(e.response, "content", None)
+                if body is None:
+                    body = (e.body or "").encode()
+                if content_matches_fake_404_block(body) or content_matches_block_markers(
+                    body
+                ):
+                    raise WafBlockDetected(
+                        f"{e.response.status_code if e.response else '?'} response matched "
+                        "known WAF block-page heuristic"
+                    ) from e
+                raise
             if content_matches_block_markers(resp.content):
                 raise WafBlockDetected(
                     "response matched known WAF block-page heuristic"
