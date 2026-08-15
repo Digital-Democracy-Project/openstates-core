@@ -169,7 +169,27 @@ CONVERSION_FUNCTIONS = {
     "tx": {"text/html": extractor_for_element_by_xpath("//html")},
     "va": {
         "text/html": handle_virginia_html,
-        "application/pdf": extract_line_numbered_pdf,
+        # Found 2026-08-15 (OPEN-76): extract_line_numbered_pdf (keep-only-numbered-lines)
+        # was mapped unconditionally for every VA PDF stage, but VA's LIS actually generates
+        # two genuinely different PDF layout templates. Introduced/Substitute/bill-Enrolled
+        # stages print a running line number on every body line (the numbered-draft
+        # convention extract_line_numbered_pdf assumes) and extract correctly. The enacted
+        # "Chaptered" stage and every resolution's (HJ/HR/SJ/SR) "Enrolled" stage instead use
+        # VA's unnumbered "Acts of Assembly" final-typeset template -- no body line numbers
+        # at all, just a "Page X of N" footer -- so extract_line_numbered_pdf drops nearly
+        # all real content and keeps only that repeated "of N" footer plus a few accidental
+        # digit-adjacent fragments. Confirmed directly against real 2026 Regular Session
+        # documents fetched from lis.virginia.gov (HB1's Chaptered PDF, HB19's 5-page
+        # Chaptered PDF, HJ1's Enrolled PDF): all are genuine embedded-text PDFs (verified via
+        # pdffonts, not scanned images -- rules out an OCR gap), and extract_line_numbered_pdf
+        # produced 0-219 chars of garbage from thousands of real chars per document.
+        # extract_sometimes_numbered_pdf (already used by 13+ other states for exactly this
+        # numbered-vs-plain situation) correctly detects which template each real document
+        # uses and extracts full real content for both. OPEN-9's existing
+        # _VA_LINE_PATTERNS/_strip_virginia_boilerplate (cli/text_extract.py) already strips
+        # the plain-template path's decorative "+" margin-artifact lines during diff
+        # cleaning, so no new VA-specific cleanup was needed here.
+        "application/pdf": extract_sometimes_numbered_pdf,
     },
     "vt": {"application/pdf": extract_sometimes_numbered_pdf},
     "wa": {
