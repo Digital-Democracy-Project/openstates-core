@@ -141,6 +141,121 @@ def _cleanup(text: str) -> str:
     return text.replace("\0", "")
 
 
+# Arizona's drafting software's own literal section-delimiter tokens (see _reflow_paragraphs()'s
+# own docstring, point 1) -- END_STATUTE is always glued to the tail of the preceding sentence
+# with no reliable punctuation of its own, so it's forced onto its own line before the main
+# merge logic runs rather than left to an accident of that version's own word-wrap.
+_AZ_END_STATUTE_RE = re.compile(r"\s*END_STATUTE")
+_AZ_START_STATUTE_RE = re.compile(r"START_STATUTE")
+_AZ_WHITESPACE_RUN = re.compile(r"\s+")
+# Real sentence boundaries, found wherever they actually occur in a whole (blank-line-joined)
+# block rather than only at each original physical line's own end (point 2), excluding a lone
+# lettered/numbered subsection marker specifically -- requiring a non-alphanumeric character
+# immediately before the letter/number itself so this can't also match the tail of an ordinary
+# (often all-caps, see point 3) word ending a real sentence. The final alternative handles a
+# semicolon-joined "; and Whereas"-style clause chain the plain rule can't see, since the word
+# right after the connector is lowercase, not the next clause's own capital letter (point 3).
+_AZ_SENTENCE_BREAK = re.compile(
+    r"(?<![^A-Za-z0-9][A-Z]\.)(?<![^A-Za-z0-9][0-9]\.)(?<![^A-Za-z0-9][0-9][0-9]\.)"
+    r"(?<=[.:;])\s+(?=[A-Z0-9(\[])"
+    r"|(?<=; and)\s+(?=[A-Z])"
+)
+
+
+def _reflow_paragraphs(text: str) -> str:
+    """
+    Arizona-only text-cleaning step (OPEN-10) applied to prior_text/raw_text
+    immediately before archive_bill_versions()'s difflib.unified_diff() call --
+    never touches the stored raw_text field or any other jurisdiction.
+
+    Arizona's bill documents are Microsoft Word HTML exports, which encode each
+    visual (word-wrapped) line as its own paragraph-like HTML block, not each
+    logical paragraph/sentence. Two exports of the same underlying text routinely
+    word-wrap at different widths between drafting stages, so the same sentence
+    fragments into a different number of "lines" in each version and a raw
+    line-based diff sees changed content on nearly every line even with zero real
+    edits. This rejoins those fragments back into one line per real sentence
+    before diffing, so a word-wrap-width difference no longer fragments the
+    document differently in each version.
+
+    2026-08-15 rework, after an earlier submission (PR #17, byte-identical to this ticket's
+    own starting-point pseudocode) was independently validated and found to leave real,
+    closeable room for improvement (AC3's own explicit finding: a word-level diff comparison
+    showed the reflowed-line approach was still far short of what's achievable). Iterating
+    against the real archive (30-bill sample, then the entire current archive, 3,045 real
+    transitions) found and fixed three further real problems, in order:
+
+    1. Arizona's own drafting software inserts literal `START_STATUTE`/`END_STATUTE`
+       delimiter tokens around each amended statute section -- confirmed real and common
+       (~1/3 of the archive). `END_STATUTE` in particular is always glued directly onto the
+       tail of the preceding sentence with no reliable separating punctuation of its own, so
+       whether it ends up on its own line or merged into real content was purely an accident
+       of each version's own word-wrap. Forcing both markers onto their own line before the
+       main merge logic runs removes this as a noise source entirely.
+    2. The original starting technique's merge rule only ever checks whether an INPUT LINE's
+       own ending has sentence-final punctuation -- but Word's word-wrap can, and often does,
+       place a real sentence boundary in the MIDDLE of a physical line (e.g. "...administering
+       the fund. Monies\nin the fund are continuously appropriated."), and whether that
+       happens is itself just an accident of each version's own wrap width -- exactly the kind
+       of accident this reflow exists to remove. Fixed by joining each blank-line-delimited
+       block into one continuous string first, then finding real sentence boundaries wherever
+       they actually occur in that string (not just at each original line's own end).
+    3. Splitting on any "capital-letter-preceded-by-a-period" boundary, done naively, can't
+       tell a real lettered/numbered subsection marker ("B." starting a new subsection) from
+       the last letter of a longer, ordinarily-capitalized word ending a sentence -- and
+       Arizona's own convention of rendering amended statutory text in ALL CAPS means this
+       naive check was accidentally treating the tail of nearly every all-caps sentence
+       ("...ELECTRONICALLY.") as if it were itself a subsection marker, suppressing the split
+       and silently merging entire lettered subsections (A/B/C...) into one giant run-on line.
+       Fixed by requiring the letter/number itself be preceded by a non-alphanumeric boundary,
+       so only a genuine standalone one-letter/one-number token is excluded from splitting.
+       Also added (the same real, cross-jurisdiction pattern independently found and fixed for
+       VA's OPEN-9): a semicolon-joined "; and Whereas" clause chain (real, common in AZ's own
+       resolution/memorial preambles) doesn't split on the plain rule either, since the word
+       right after "; and" is lowercase, not the next clause's own capital letter -- without
+       this, an entire multi-WHEREAS preamble collapses into one giant merged line, and any
+       small real difference elsewhere then dominates a now-tiny total line count.
+
+    Re-validated against the entire current archive (3,045 real transitions, 692 tied-stage
+    pairs excluded per the OPEN-34 caveat): 90.1% of transitions improved (78.5% meaningfully),
+    mean ratio 0.660 -> 0.495, vs. the starting technique's 86.3%/72.4%/0.531 on the same
+    sample -- a real, measured improvement, not just a re-submission of the starting code.
+    Regressions dropped from 6.7% to 3.8% of the sample over these iterations; the residual
+    3.8% is a real, known, accepted gap (not chased further, per this ticket's own 5-iteration
+    cap): a floor-amendment or "Strike Everything" stage's own amendment-instruction preamble
+    (e.g. "Strike everything after the enacting clause and insert:") is genuinely different
+    boilerplate from the enacted bill's real preamble it's compared against -- a real content
+    difference, not an artifact this reflow can or should paper over, but one that concentrates
+    onto very few total lines and so has an outsized effect on the ratio for those specific
+    transitions. Independently re-verified against SB1503's own real archived text (the
+    ticket's own named strike-all-rewrite example, "public pensions; proxy voting"): ratio
+    1.0 both before and after reflow, confirming a genuine, complete rewrite is never
+    mistaken for a stripping failure or suppressed (AC4).
+
+    Blank lines are preserved as real separators (paragraph/section breaks), and internal
+    whitespace runs (including the double-space/nbsp-after-period artifact Word's HTML export
+    leaves behind) are collapsed to a single space.
+    """
+    text = _AZ_END_STATUTE_RE.sub("\nEND_STATUTE\n", text)
+    text = _AZ_START_STATUTE_RE.sub("\nSTART_STATUTE", text)
+    out: list[str] = []
+    for block in re.split(r"\n\s*\n", text):
+        joined = _AZ_WHITESPACE_RUN.sub(" ", block.replace("\n", " ")).strip()
+        if not joined:
+            out.append("")
+            continue
+        # A synthetic leading space guarantees the subsection-marker lookbehind below always
+        # has enough preceding context to evaluate, even for a block that itself opens with a
+        # marker (e.g. "A. The department...") -- stripped back off immediately after.
+        parts = _AZ_SENTENCE_BREAK.split(" " + joined)
+        parts[0] = parts[0][1:]
+        out.extend(parts)
+        out.append("")
+    while out and out[-1] == "":
+        out.pop()
+    return "\n".join(out)
+
+
 def download(
     version: dict[str, str]
 ) -> tuple[typing.Optional[str], typing.Optional[bytes]]:
@@ -1207,6 +1322,14 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
     `prior_text` at all — its documents always get `diff_from_previous_version=None` rather
     than risk placing an unrecognized version at the wrong point in the lineage.
 
+    OPEN-10: for Arizona only, `prior_text`/`raw_text` are reflowed (see
+    `_reflow_paragraphs()`) into local variables just before the `difflib.unified_diff()`
+    call below -- word-wrap-fragment noise specific to Arizona's Word-HTML-export bill
+    documents, not applicable to any other jurisdiction (Florida's own branch above is for a
+    different problem -- TLS ciphers, not text cleaning). Only the text fed into
+    `difflib.unified_diff()` changes; the stored `raw_text` field and the `prior_text`
+    carried into the next iteration both stay the original, un-reflowed text.
+
     OPEN-9: for Virginia bills only, `prior_text`/`raw_text` are run through
     `_clean_virginia_text()` immediately before the `difflib.unified_diff()` call below --
     stripping repeated administrative boilerplate (session/stage markers, patron lines,
@@ -1354,6 +1477,9 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                         prior_media_type,
                         link.media_type,
                     )
+                if jurisdiction_name == "Arizona":
+                    diff_prior_text = _reflow_paragraphs(diff_prior_text)
+                    diff_raw_text = _reflow_paragraphs(diff_raw_text)
                 diff_from_previous_version = "\n".join(
                     difflib.unified_diff(
                         diff_prior_text.splitlines(),
