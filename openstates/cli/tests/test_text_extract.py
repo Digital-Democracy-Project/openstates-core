@@ -2598,3 +2598,136 @@ class TestArizonaReflowJurisdictionGate:
         )
         assert docs["Introduced"].raw_text == self.WRAPPED_INTRODUCED
         assert docs["Enrolled"].raw_text == self.WRAPPED_ENROLLED
+
+
+class TestFetchBytesResilienceProfileDispatchOPEN54:
+    """OPEN-54: _fetch_bytes() dispatches on a URL's netloc having a resilience profile,
+    generalized from the old MI-only `if "legislature.mi.gov" in ...` branch."""
+
+    def test_unprofiled_url_uses_the_plain_scraper_unchanged(self):
+        from openstates.cli.text_extract import _fetch_bytes
+
+        with mock.patch("openstates.cli.text_extract.scraper") as fake_scraper:
+            fake_scraper.request.return_value = mock.Mock(content=b"plain content")
+            result = _fetch_bytes("https://example.com/some-bill.pdf")
+
+        assert result == b"plain content"
+        fake_scraper.request.assert_called_once_with(
+            "GET", "https://example.com/some-bill.pdf", allow_redirects=True
+        )
+
+    def test_profiled_url_goes_through_its_cookie_provider_not_the_plain_scraper(self):
+        from openstates.cli.text_extract import _fetch_bytes
+
+        fake_profile = mock.Mock(
+            name="fake",
+            requests_per_minute=10,
+            circuit_breaker_max_consecutive_blocks=3,
+        )
+        fake_profile.cookie_provider.fetch_with_retry.return_value = mock.Mock(
+            content=b"real profiled content"
+        )
+
+        with mock.patch(
+            "openstates.cli.text_extract.profile_for_netloc", return_value=fake_profile
+        ), mock.patch("openstates.cli.text_extract.scraper") as fake_plain_scraper:
+            result = _fetch_bytes("https://flhouse.gov/some-bill-detail.aspx")
+
+        assert result == b"real profiled content"
+        fake_plain_scraper.request.assert_not_called()
+        fake_profile.cookie_provider.fetch_with_retry.assert_called_once()
+
+
+class TestFetchBytesCircuitBreakerOPEN52:
+    """OPEN-52: a sustained WAF block must abort the whole archive run (ScrapeError), not get
+    silently absorbed as one more per-document blocked/fetch_errors count forever."""
+
+    def _fake_profile(self, max_consecutive_blocks):
+        from openstates.utils.cookie_provider import WafBlockDetected
+
+        fake_profile = mock.Mock(
+            name="fake",
+            requests_per_minute=10,
+            circuit_breaker_max_consecutive_blocks=max_consecutive_blocks,
+        )
+        fake_profile.cookie_provider.fetch_with_retry.side_effect = WafBlockDetected(
+            "always blocked"
+        )
+        return fake_profile
+
+    def test_below_threshold_reraises_wafblockdetected_not_scrapeerror(self):
+        from openstates.cli.text_extract import _fetch_bytes
+        from openstates.utils.cookie_provider import WafBlockDetected
+
+        fake_profile = self._fake_profile(max_consecutive_blocks=3)
+        with mock.patch(
+            "openstates.cli.text_extract.profile_for_netloc", return_value=fake_profile
+        ), mock.patch("openstates.cli.text_extract._profile_consecutive_blocks", {}):
+            with pytest.raises(WafBlockDetected):
+                _fetch_bytes("https://flhouse.gov/one.aspx")
+
+    def test_reaching_threshold_raises_scrapeerror_instead(self):
+        from openstates.cli.text_extract import _fetch_bytes
+        from openstates.exceptions import ScrapeError
+
+        fake_profile = self._fake_profile(max_consecutive_blocks=2)
+        with mock.patch(
+            "openstates.cli.text_extract.profile_for_netloc", return_value=fake_profile
+        ), mock.patch("openstates.cli.text_extract._profile_consecutive_blocks", {}):
+            from openstates.utils.cookie_provider import WafBlockDetected
+
+            with pytest.raises(WafBlockDetected):
+                _fetch_bytes("https://flhouse.gov/one.aspx")
+            with pytest.raises(ScrapeError):
+                _fetch_bytes("https://flhouse.gov/two.aspx")
+
+    def test_a_success_in_between_resets_the_counter(self):
+        from openstates.cli.text_extract import _fetch_bytes
+        from openstates.utils.cookie_provider import WafBlockDetected
+
+        fake_profile = self._fake_profile(max_consecutive_blocks=2)
+        with mock.patch(
+            "openstates.cli.text_extract.profile_for_netloc", return_value=fake_profile
+        ), mock.patch("openstates.cli.text_extract._profile_consecutive_blocks", {}):
+            with pytest.raises(WafBlockDetected):
+                _fetch_bytes("https://flhouse.gov/one.aspx")
+
+            fake_profile.cookie_provider.fetch_with_retry.side_effect = None
+            fake_profile.cookie_provider.fetch_with_retry.return_value = mock.Mock(
+                content=b"recovered"
+            )
+            assert _fetch_bytes("https://flhouse.gov/two.aspx") == b"recovered"
+
+            fake_profile.cookie_provider.fetch_with_retry.side_effect = WafBlockDetected(
+                "blocked again"
+            )
+            fake_profile.cookie_provider.fetch_with_retry.return_value = None
+            # Only one block since the reset -- must not raise ScrapeError yet.
+            with pytest.raises(WafBlockDetected):
+                _fetch_bytes("https://flhouse.gov/three.aspx")
+
+
+@pytest.mark.django_db
+class TestArchiveCommandAbortsOnScrapeErrorOPEN52:
+    """OPEN-52 AC: a fully-blocked archive run must exit non-zero and print a clear signal,
+    not silently complete with exit 0 and a high (but unalerted-on) blocked count."""
+
+    def test_scrape_error_from_archive_bill_versions_exits_nonzero(self):
+        from openstates.cli.text_extract import archive
+        from openstates.exceptions import ScrapeError
+        from click.testing import CliRunner
+
+        bill = _make_bill(jid="ocd-jurisdiction/country:us/state:fl/government")
+
+        with mock.patch("openstates.cli.text_extract.init_django"), mock.patch(
+            "openstates.cli.text_extract.abbr_to_jid",
+            return_value=bill.legislative_session.jurisdiction_id,
+        ), mock.patch(
+            "openstates.cli.text_extract.archive_bill_versions",
+            side_effect=ScrapeError("fl archive fetch aborted: 3 consecutive WAF blocks"),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(archive, ["fl"])
+
+        assert result.exit_code == 1
+        assert "aborted" in result.output
