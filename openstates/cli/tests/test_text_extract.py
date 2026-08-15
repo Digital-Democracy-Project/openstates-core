@@ -15,6 +15,8 @@ from openstates.cli.text_extract import (
     _STAGE_INTRODUCED,
     _STAGE_ENACTED,
     _clean_michigan_text,
+    _strip_michigan_boilerplate,
+    _reflow_michigan_text,
     archive_bill_versions,
     recompute_bill_diff_order,
     _reextract_document,
@@ -758,9 +760,15 @@ class TestCleanMichiganTextOPEN11:
     """
     OPEN-11 AC7: each real pattern found in the AC2 investigation, using realistic fixture
     strings drawn directly from real Michigan bill text captured against the live archive
-    (SB 542, HB 4493 -- both named in the ticket as its own starting-point examples), not
-    synthetic guesses. See the AC2 comment above _clean_michigan_text() in text_extract.py for
-    the full characterization these fixtures are drawn from.
+    (SB 542, HB 4493, HB 4010, HB 5314 -- the ticket's own named examples plus two more found
+    while independently re-validating a first submission, PR #20), not synthetic guesses. See
+    the AC2 comment above _clean_michigan_text() in text_extract.py for the full characterization
+    these fixtures are drawn from.
+
+    These tests call the lower-level `_strip_michigan_boilerplate()`/`_reflow_michigan_text()`
+    helpers directly where a test is about one specific pattern (matching this file's existing
+    convention for `_clean_wa_text()`'s internals), and the public `_clean_michigan_text()`
+    wrapper for tests about how those pieces combine (gating, media-type awareness).
     """
 
     def test_strips_ordinary_stage_front_matter_up_to_enacting_clause(self):
@@ -775,7 +783,7 @@ class TestCleanMichiganTextOPEN11:
             "Sec. 3. (1) The Michigan National Guard tuition assistance\n"
             "program is created within the department of military and veterans affairs.\n"
         )
-        cleaned = _clean_michigan_text(text)
+        cleaned = _strip_michigan_boilerplate(text)
         assert cleaned.startswith(
             "\n\nSec. 3. (1) The Michigan National Guard tuition assistance"
         )
@@ -802,7 +810,7 @@ class TestCleanMichiganTextOPEN11:
             "Sec.\n3. (1) The Michigan National Guard tuition assistance program is "
             "created within\nthe department of military and veterans affairs.\n"
         )
-        cleaned = _clean_michigan_text(text)
+        cleaned = _strip_michigan_boilerplate(text)
         assert cleaned.startswith(
             "\n\nSec.\n3. (1) The Michigan National Guard tuition assistance"
         )
@@ -829,9 +837,13 @@ class TestCleanMichiganTextOPEN11:
             "THE PEOPLE OF THE STATE OF MICHIGAN ENACT:\n"
             "1   Sec. 3. (1) Real content.\n"
         )
-        assert _clean_michigan_text(mixed_case).strip() == "Sec. 3. (1) Real content."
         assert (
-            _clean_michigan_text(upper_case).strip() == "1   Sec. 3. (1) Real content."
+            _strip_michigan_boilerplate(mixed_case).strip()
+            == "Sec. 3. (1) Real content."
+        )
+        assert (
+            _strip_michigan_boilerplate(upper_case).strip()
+            == "1   Sec. 3. (1) Real content."
         )
 
     def test_no_anchor_found_returns_text_unchanged(self):
@@ -844,7 +856,7 @@ class TestCleanMichiganTextOPEN11:
             " and\n\n"
             "Now, therefore, be it resolved..."
         )
-        assert _clean_michigan_text(text) == text
+        assert _strip_michigan_boilerplate(text) == text
 
     def test_real_content_after_anchor_is_preserved_verbatim(self):
         # Real content captured from HB 4493's "As Passed by the House" -> "Public Act"
@@ -857,11 +869,128 @@ class TestCleanMichiganTextOPEN11:
             "nonperishable foods or beverages; or bulk gum, nuts, and panned\n"
             "candies.\n"
         )
-        cleaned = _clean_michigan_text(text)
+        cleaned = _strip_michigan_boilerplate(text)
         assert (
             "(k) A person owning that owns or operating operates a device" in cleaned
         )
         assert "that dispenses only bottled or canned soft drinks" in cleaned
+
+    def test_strips_final_page_tracking_footer(self):
+        # Real text captured from HB 4010 ("designate Harrison Township as Boat Town USA") --
+        # the specific short/ceremonial-bill regression PR #20 was sent back over: a per-file
+        # tracking-code + random hash + form-feed footer that survives MI's own numbered-PDF
+        # extractor, and that this original submission never stripped. Left unstripped, this
+        # unique-per-file hash always looks like a real content change between any two versions
+        # of the same short bill, and was confirmed to flip the noise ratio from improved to
+        # regressed (0.053 -> 0.111) on this exact bill.
+        text = (
+            "1         Sec. 1. Harrison Township is designated as \"Boat Town USA\".\n"
+            "\n\n\n\n"
+            "                                         Final Page\n"
+            "    KHS                           H00127'25_HB4010_INTR_1"
+            "                                 ft61ok\n\x0c"
+        )
+        cleaned = _strip_michigan_boilerplate(text)
+        assert "Final Page" not in cleaned
+        assert "H00127'25_HB4010_INTR_1" not in cleaned
+        assert "ft61ok" not in cleaned
+        assert "\x0c" not in cleaned
+        assert 'Sec. 1. Harrison Township is designated as "Boat Town USA".' in cleaned
+
+    def test_strips_mid_document_tracking_footer_at_a_page_break(self):
+        # Real text captured from HB 5314 -- the same tracking-code+hash+form-feed shape as
+        # above, but occurring at an intermediate page break (followed by the next page's own
+        # number), not just at the true end of the document. Anchoring only on the final
+        # occurrence (as an earlier revision of this cleaner did) misses this one entirely.
+        text = (
+            "1         Enacting section 1. Section 2 of 1919 PA 232, MCL 14.102, is\n"
+            "\n\n\n\n"
+            "    GSS                          H05157'25_HB5314_INTR_1"
+            "                              y5icbv\n\x0c                           2\n"
+            "\n\n"
+            "1   repealed.\n"
+        )
+        cleaned = _strip_michigan_boilerplate(text)
+        assert "H05157'25_HB5314_INTR_1" not in cleaned
+        assert "y5icbv" not in cleaned
+        assert "\x0c" not in cleaned
+        assert "Enacting section 1." in cleaned
+        assert "repealed." in cleaned
+
+    def test_strips_enacted_stage_plain_page_number_footer(self):
+        # Real text captured from HB 4961's "Public Act" (application/pdf) -- enacted-stage
+        # PDFs use a plain parenthesized page number + form-feed instead of the tracking-code
+        # shape above (no per-file hash, since these aren't the pre-enactment numbered PDFs).
+        text = (
+            "the internal revenue code.\n\n\n\n"
+            "                                                                 (12)\n\x0c"
+            "    (b) Add taxes on or measured by income.\n"
+        )
+        cleaned = _strip_michigan_boilerplate(text)
+        assert "(12)" not in cleaned
+        assert "\x0c" not in cleaned
+        assert "the internal revenue code." in cleaned
+        assert "(b) Add taxes on or measured by income." in cleaned
+
+    def test_bill_only_normalizes_leading_line_number_and_padding(self):
+        # Real regression found while validating PR #20 against the full archive: two PDF
+        # renderings of the literal same HB 4044 stage differ only by (a) MI's numbered-PDF
+        # extractor keeping the printed margin line-number as leading text, and (b) one extra
+        # column-padding space after it -- "1         Sec." vs. "1          Sec." -- an
+        # extraction artifact, not a real content difference. On a short bill this alone
+        # flipped the noise ratio from improved to regressed. Gated to Bill notes (is_bill=True)
+        # since Resolutions have their own indentation conventions this distorts (see the next
+        # test).
+        prior = "1         Sec. 1. The wood duck (Aix sponsa) is designated as the\n2   official duck of this state."
+        raw = "1          Sec. 1. The wood duck (Aix sponsa) is designated as the\n2   official duck of this state."
+        cleaned_prior, cleaned_raw = _clean_michigan_text(
+            prior, raw, "application/pdf", "application/pdf", True
+        )
+        assert cleaned_prior == cleaned_raw
+
+    def test_resolution_is_not_normalized_or_reflowed(self):
+        # Real shape captured from SR 13's "Senate Enrolled Resolution" (application/pdf) vs.
+        # "Senate Adopted Resolution" (text/html) -- a genuine cross-media-type transition, but
+        # is_bill=False (classification == ["resolution"]) must skip both the line-number/
+        # whitespace normalization AND the reflow step. Applying either unconditionally to
+        # Resolutions was confirmed, during this ticket's own validation, to make an
+        # already-bad ratio worse (found: ~90 real regressions on this exact note-name pair
+        # across the archive) -- Resolutions have no enacting clause and their own distinct
+        # indentation/whitespace conventions this cleaner was never designed for.
+        prior = "  WHEREAS,   Michigan's   school-based   health centers have\ndelivered care; and"
+        raw = "WHEREAS, Michigan's school-based health centers have delivered\ncare; and"
+        cleaned_prior, cleaned_raw = _clean_michigan_text(
+            prior, raw, "application/pdf", "text/html", False
+        )
+        # Only the universal boilerplate step (a no-op here -- no enacting clause, no footer)
+        # ran; the text is otherwise untouched.
+        assert cleaned_prior == prior
+        assert cleaned_raw == raw
+
+    def test_reflow_only_applies_across_a_genuine_media_type_change(self):
+        # Real, confirmed example: SB 542's "Substitute (H-2) - 4" (application/pdf) vs. "As
+        # Passed by the Senate" (text/html) -- fixed-width-wrapped numbered-PDF lines share no
+        # real line boundaries at all with HTML's own different wrapping, so difflib's
+        # line-based ratio can't reflect real content alignment without reflowing both sides
+        # onto a common, content-derived line shape first (the same mechanism WA's OPEN-7
+        # needed). Same-media-type pairs must NOT be reflowed (see the next test) -- they're
+        # usually already well line-aligned, and reflowing them anyway was confirmed to
+        # introduce 243 real regressions across the archive when tried unconditionally.
+        prior = "Sec. 3. (1) The Michigan National Guard tuition assistance program is created."
+        raw = "Sec. 3. (1) The Michigan National Guard tuition assistance program is created."
+
+        same_media_prior, same_media_raw = _clean_michigan_text(
+            prior, raw, "application/pdf", "application/pdf", True
+        )
+        cross_media_prior, cross_media_raw = _clean_michigan_text(
+            prior, raw, "application/pdf", "text/html", True
+        )
+
+        # Identical content either way, but only the cross-media-type pair actually goes
+        # through _reflow_michigan_text() -- confirm by comparing against calling it directly.
+        assert same_media_prior == prior  # same-media: no reflow, byte-identical
+        assert cross_media_prior == _reflow_michigan_text(prior)
+        assert cross_media_raw == _reflow_michigan_text(raw)
 
 
 @pytest.mark.django_db
@@ -872,15 +1001,18 @@ class TestArchiveBillVersionsMichiganCleaningOPEN11:
     works in isolation).
     """
 
-    def _make_mi_bill(self):
+    def _make_mi_bill(self, classification="bill"):
         # _make_bill() names every jurisdiction "Test" regardless of jid (fine for the other
         # MI-jid tests in this file, which only need the jid for CONVERSION_FUNCTIONS routing)
         # -- archive_bill_versions()'s Michigan gate keys off jurisdiction.name specifically, so
-        # these OPEN-11 tests need the real name set.
+        # these OPEN-11 tests need the real name set. classification also matches a real bill's
+        # default ("bill") since several cleaning steps are gated to Bill-classified notes only.
         bill = _make_bill(jid="ocd-jurisdiction/country:us/state:mi/government")
         jurisdiction = bill.legislative_session.jurisdiction
         jurisdiction.name = "Michigan"
         jurisdiction.save()
+        bill.classification = [classification]
+        bill.save()
         return bill
 
     def test_boilerplate_only_change_produces_empty_diff(self):
@@ -998,6 +1130,73 @@ class TestArchiveBillVersionsMichiganCleaningOPEN11:
         # both sides before diffing.
         assert "SENATE BILL NO." not in diff
         assert "enact:" not in diff
+
+    def test_cross_media_type_transition_is_reflowed_and_real_edit_still_surfaces(self):
+        # End-to-end version of the cross-media reflow case in TestCleanMichiganTextOPEN11 --
+        # a PDF-sourced prior_text (application/pdf, becomes prior_text via the text/xml ->
+        # application/pdf -> first-available preference) diffed against this version's own
+        # text/html document. Without reflow this pair shares no real line boundaries at all
+        # (confirmed on real data: ratio 0.970, effectively "the whole document changed") --
+        # with it, the genuine single-word edit below must still be the only thing that shows
+        # up as changed.
+        bill = self._make_mi_bill()
+        introduced = bill.versions.create(note="Senate Introduced Bill", date="")
+        passed = bill.versions.create(note="As Passed by the Senate", date="")
+        introduced.links.create(
+            url="https://example.test/introduced.pdf", media_type="application/pdf"
+        )
+        passed.links.create(
+            url="https://example.test/passed.html", media_type="text/html"
+        )
+
+        texts_by_url = {
+            # PDF text is already front-matter-free, matching MI's real numbered-PDF extractor.
+            "https://example.test/introduced.pdf": (
+                "Sec. 3. (1) The Michigan National Guard tuition assistance program "
+                "is created within the department of military and veterans affairs."
+            ),
+            "https://example.test/passed.html": (
+                "SENATE BILL NO. 542\n\nA bill to amend 2014 PA 259.\n\n"
+                "the people of the state of michigan enact:\n\n"
+                "Sec. 3. (1) The Michigan Army National Guard tuition assistance "
+                "program is created within the department of military and veterans "
+                "affairs."
+            ),
+        }
+
+        def fake_fetch_bytes(url):
+            return texts_by_url[url].encode("utf-8")
+
+        def fake_extract_func(metadata):
+            return lambda data, meta: data.decode("utf-8")
+
+        with mock.patch(
+            "openstates.cli.text_extract._fetch_bytes", side_effect=fake_fetch_bytes
+        ), mock.patch(
+            "openstates.cli.text_extract.get_extract_func",
+            side_effect=fake_extract_func,
+        ), mock.patch(
+            "openstates.cli.text_extract._upload_and_verify", return_value=None
+        ), mock.patch(
+            "openstates.cli.text_extract._block_page_reason", return_value=None
+        ), mock.patch(
+            "os.makedirs"
+        ), mock.patch(
+            "builtins.open", mock.mock_open()
+        ):
+            archive_bill_versions(bill)
+
+        passed_doc = BillVersionDocument.objects.get(
+            bill=bill, version_note="As Passed by the Senate"
+        )
+        diff = passed_doc.diff_from_previous_version
+        assert "SENATE BILL NO." not in diff
+        assert "enact:" not in diff
+        # The genuine edit (National Guard -> Army National Guard) must surface...
+        assert "Army" in diff
+        # ...without the whole (now-aligned) document being marked as one giant change: real
+        # unchanged sentences on either side of the edit must survive as context, not noise.
+        assert "created within the department of military and veterans affairs" in diff
 
 
 class TestUtahXmlExtractor:
