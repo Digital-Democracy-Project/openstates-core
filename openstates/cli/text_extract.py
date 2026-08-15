@@ -35,7 +35,9 @@ from ..utils.cookie_provider import (
     WafBlockDetected,
     content_matches_block_markers,
 )
-from ..utils.mi_cookies import MI_COOKIE_PROVIDER
+from ..utils.resilience_profiles import profile_for_netloc
+from ..utils.waf_circuit_breaker import raise_if_waf_block_threshold_reached
+from openstates.exceptions import ScrapeError
 
 stats = Instrumentation()
 # disable SSL validation and ignore warnings
@@ -98,25 +100,50 @@ def _block_page_reason(data: bytes, media_type: str) -> typing.Optional[str]:
     return None
 
 
+# Per-profile scrapelib.Scraper instances (OPEN-53) -- lazily created so a WAF-profiled
+# jurisdiction's own rate limit doesn't affect (or get affected by) every other jurisdiction
+# sharing the plain module-level `scraper` above. Module-level state is fine: each
+# `os-text-extract archive` invocation is its own fresh process.
+_profile_scrapers: typing.Dict[str, scrapelib.Scraper] = {}
+
+# Per-profile consecutive-WAF-block counters (OPEN-52), same reasoning.
+_profile_consecutive_blocks: typing.Dict[str, int] = {}
+
+
+def _scraper_for_profile(profile) -> scrapelib.Scraper:
+    if profile.name not in _profile_scrapers:
+        s = scrapelib.Scraper(verify=False)
+        s.user_agent = "Mozilla"
+        s.retry_attempts = 5
+        s.retry_wait_seconds = 5
+        s.requests_per_minute = profile.requests_per_minute
+        _profile_scrapers[profile.name] = s
+    return _profile_scrapers[profile.name]
+
+
 def _fetch_bytes(url: str) -> bytes:
     """
     GET url via the module-level `scraper` and return its content.
 
-    Only legislature.mi.gov (OPEN-19) is wired to the cached WAF cookies -- every other
-    jurisdiction's fetch is completely unchanged. Deliberately scoped to this function
-    (used by archive_bill_versions(), the path run-archive.sh actually calls) and not the
-    older download()/update_bill() paths used by the separate `sample`/`update` commands --
-    out of scope for this ticket, not an oversight.
+    Jurisdictions with a WAF resilience profile (OPEN-54's `resilience_profiles.py` -- MI and FL
+    as of this writing) are wired to that profile's cached WAF cookies, own rate limit (OPEN-53),
+    and a consecutive-block circuit breaker (OPEN-52) that aborts the whole archive run (raising
+    ScrapeError, letting `archive()` exit non-zero) rather than silently absorbing every fetch as
+    one more per-document `fetch_errors` count. Every other jurisdiction's fetch is unchanged.
+    Deliberately scoped to this function (used by archive_bill_versions(), the path
+    run-archive.sh actually calls) and not the older download()/update_bill() paths used by the
+    separate `sample`/`update` commands -- out of scope for this ticket, not an oversight.
     """
-    if "legislature.mi.gov" in urlparse(url).netloc:
+    profile = profile_for_netloc(urlparse(url).netloc)
+    if profile is not None:
+        profile_scraper = _scraper_for_profile(profile)
 
         def do_request(cookies: dict, user_agent: str) -> requests.Response:
             try:
-                # OPEN-23: attach the real User-Agent MI_COOKIE_PROVIDER captured
-                # alongside these same cookies -- this archiver previously sent no
-                # MI-specific User-Agent at all, the same cookie/identity mismatch bug
-                # fixed in scrapers/mi/bills.py and events.py.
-                resp = scraper.request(
+                # OPEN-23: attach the real User-Agent the cookie provider captured alongside
+                # these same cookies -- sending no jurisdiction-specific User-Agent at all was
+                # the original cookie/identity mismatch bug this fixed for MI.
+                resp = profile_scraper.request(
                     "GET",
                     url,
                     allow_redirects=True,
@@ -131,7 +158,23 @@ def _fetch_bytes(url: str) -> bytes:
                 )
             return resp
 
-        return MI_COOKIE_PROVIDER.fetch_with_retry(do_request).content
+        try:
+            content = profile.cookie_provider.fetch_with_retry(do_request).content
+        except WafBlockDetected as e:
+            _profile_consecutive_blocks[profile.name] = (
+                _profile_consecutive_blocks.get(profile.name, 0) + 1
+            )
+            raise_if_waf_block_threshold_reached(
+                _profile_consecutive_blocks[profile.name],
+                profile.circuit_breaker_max_consecutive_blocks,
+                e,
+                scrape_label=f"{profile.name} archive fetch",
+                fetch_description=f"fetching {url}",
+            )
+            raise
+        else:
+            _profile_consecutive_blocks[profile.name] = 0
+            return content
 
     return scraper.request("GET", url, allow_redirects=True).content
 
@@ -1398,6 +1441,12 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
 
             try:
                 data = _fetch_bytes(link.url)
+            except ScrapeError:
+                # OPEN-52: a sustained, circuit-breaker-tripped WAF block must abort the whole
+                # run (propagate up to archive()'s own exit-code handling), not get silently
+                # absorbed as one more per-document fetch_errors/blocked count the way every
+                # other exception here is.
+                raise
             except WafBlockDetected as e:
                 click.secho(
                     f"blocked (WAF) fetching {link.url} even after cookie re-warm: {e}",
@@ -1850,7 +1899,15 @@ def archive(state: str, session: str = None, n: int = None) -> None:
     bill_count = 0
     for bill in bills:
         bill_count += 1
-        for key, value in archive_bill_versions(bill).items():
+        try:
+            bill_counters = archive_bill_versions(bill)
+        except ScrapeError as e:
+            # OPEN-52: a sustained WAF block (consecutive-block circuit breaker tripped) must
+            # be visible as a real failure, not a silent exit-0 run with a high "blocked" count
+            # nobody's alerting on.
+            click.secho(f"{state}: aborted -- {e}", fg="red")
+            sys.exit(1)
+        for key, value in bill_counters.items():
             totals[key] += value
 
     status_color = "green"
