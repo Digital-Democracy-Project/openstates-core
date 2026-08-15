@@ -2212,11 +2212,30 @@ class TestReflowParagraphsOPEN10:
         assert _reflow_paragraphs(text) == text  # already one sentence per line
 
     def test_splits_on_colon_and_semicolon_not_just_period(self):
+        # 2026-08-15: real AZ bill shape (SB1503) -- a colon/semicolon only marks a real
+        # clause boundary when a new capital-letter-starting clause actually follows (here,
+        # a numbered definitions list); it must not fire on every literal colon/semicolon
+        # regardless of what follows (see the next test).
+        text = (
+            "IN THIS CHAPTER, UNLESS THE CONTEXT\nOTHERWISE REQUIRES:\n"
+            '1. "PLAN" MEANS A PLAN, FUND OR PROGRAM THAT IS\n'
+            "ESTABLISHED BY A PUBLIC ENTITY."
+        )
+        result = _reflow_paragraphs(text)
+        assert result.split("\n") == [
+            "IN THIS CHAPTER, UNLESS THE CONTEXT OTHERWISE REQUIRES:",
+            '1. "PLAN" MEANS A PLAN, FUND OR PROGRAM THAT IS ESTABLISHED BY A PUBLIC ENTITY.',
+        ]
+
+    def test_does_not_split_a_colon_or_semicolon_mid_clause(self):
+        # Real AZ shape: "For the purposes of this section: means a deductible" -- a
+        # colon/semicolon followed by a lowercase continuation is still mid-sentence, not a
+        # real clause boundary, and must stay merged (this was a real regression risk found
+        # while broadening the merge rule beyond the ticket's own literal starting code).
         text = "For the purposes of\nthis section:\nmeans a deductible; or\na copayment."
         result = _reflow_paragraphs(text)
         assert result.split("\n") == [
-            "For the purposes of this section:",
-            "means a deductible; or a copayment.",
+            "For the purposes of this section: means a deductible; or a copayment.",
         ]
 
     def test_collapses_double_space_after_period_artifact(self):
@@ -2252,20 +2271,32 @@ class TestReflowParagraphsOPEN10:
         ]
 
     def test_real_strike_all_content_change_survives_intact(self):
-        # OPEN-10 AC4: mirrors the real SB1503 case -- a genuine "strike everything"
-        # rewrite where the entire subject matter changes between versions. Reflow must
-        # not delete, truncate, or otherwise obscure content that's simply *very
-        # different* from the prior version -- it only rejoins wrapped fragments.
+        # OPEN-10 AC4 -- 2026-08-15: this test previously used a hand-authored fixture
+        # described as merely "mirroring" the real SB1503 case, which the ticket's own
+        # revised AC4 explicitly rejected as insufficient. Replaced with SB1503's own real
+        # archived text (title confirmed real: "public pensions; proxy voting"), captured
+        # directly from the two real version_notes spanning its actual strike-all rewrite
+        # (Senate Engrossed Version -> HOUSE - Appropriations - Strike Everything) --
+        # independently re-verified directly against the live archive: this real transition's
+        # noise ratio is 1.0 both before AND after reflow, i.e. a genuine, complete rewrite is
+        # never mistaken for a stripping failure or suppressed.
         prior_text = (
-            "Section 1. Title 38, Arizona Revised Statutes,\n"
-            "is amended by adding chapter 6.1, to read:\n\n"
-            "CHAPTER 6.1\n\nFIDUCIARY DUTIES AND PROXY VOTING"
+            "Be it enacted by the Legislature of the State of Arizona:\n"
+            "Section 1. Title 38, Arizona Revised Statutes, is amended by adding\n"
+            "chapter 6.1, to read:\n"
+            "CHAPTER 6.1\n"
+            "FIDUCIARY DUTIES AND PROXY VOTING\n"
+            "ARTICLE 1. GENERAL PROVISIONS\n"
+            "38-971. Definitions\n"
+            "IN THIS CHAPTER, UNLESS THE CONTEXT OTHERWISE REQUIRES:"
         )
         raw_text = (
-            "Section 1. Subject to the requirements of\n"
-            "article IV, part 1, section 1, Constitution of Arizona, section 38-1171,\n"
-            "Arizona Revised Statutes, is amended to read:\n\n"
-            "START_STATUTE38-1171. Definitions"
+            'Strike everything after the enacting clause and insert:\n'
+            '"Section 1. Subject to the requirements of article IV, part 1,\n'
+            "section 1, Constitution of Arizona, section 38-1171, Arizona Revised\n"
+            "Statutes, is amended to read:\n"
+            "38-1171. Definitions\n"
+            "In this article, unless the context otherwise requires:"
         )
         reflowed_prior = _reflow_paragraphs(prior_text)
         reflowed_raw = _reflow_paragraphs(raw_text)
@@ -2274,14 +2305,21 @@ class TestReflowParagraphsOPEN10:
                 reflowed_prior.splitlines(), reflowed_raw.splitlines(), lineterm=""
             )
         )
-        # the real, large content swap must show up in full, not be suppressed
+        # the real, large content swap must show up in full, not be suppressed. "38-1171."
+        # splits from "Definitions" (a numbered-section label the reflow doesn't specially
+        # recognize) -- consistently for both documents, so it's still not a noise source.
         assert "FIDUCIARY DUTIES AND PROXY VOTING" in diff
-        assert "START_STATUTE38-1171. Definitions" in diff
+        assert "38-1171." in diff
+        assert "Definitions" in diff
         assert (
             "Section 1. Subject to the requirements of article IV, part 1, section 1, "
             "Constitution of Arizona, section 38-1171, Arizona Revised Statutes, is "
             "amended to read:" in diff
         )
+        # every real line differs -- correctly reflects a genuine, complete rewrite, not a
+        # stripping failure.
+        assert reflowed_prior.splitlines()
+        assert not (set(reflowed_prior.splitlines()) & set(reflowed_raw.splitlines()))
 
     def test_real_cascading_renumbering_preserves_all_content(self):
         # Found during OPEN-10's own AC5 validation against real bill SB1165: inserting a
@@ -2309,6 +2347,99 @@ class TestReflowParagraphsOPEN10:
         # the two unchanged definitions must still appear, just renumbered -- not lost.
         assert '2. "Cost sharing" means a deductible.' in diff
         assert '3. "Diagnostic Breast Examination" means an examination.' in diff
+
+    def test_end_statute_marker_forced_onto_its_own_line(self):
+        # 2026-08-15 AC3 finding: END_STATUTE is Arizona's drafting software's own literal
+        # section-delimiter token (real, confirmed on ~1/3 of the archive), always glued
+        # directly onto the tail of the preceding sentence with no separating punctuation of
+        # its own -- whether it ends up merged into real content or on its own line was purely
+        # an accident of that version's own word-wrap width, exactly the kind of accident this
+        # reflow exists to remove.
+        text = "The director shall administer the fund.END_STATUTE"
+        result = _reflow_paragraphs(text)
+        assert result.split("\n") == [
+            "The director shall administer the fund.",
+            "END_STATUTE",
+        ]
+
+    def test_start_statute_marker_forced_onto_its_own_line(self):
+        text = "read:\nSTART_STATUTE38-1171. Definitions"
+        result = _reflow_paragraphs(text)
+        lines = result.split("\n")
+        # START_STATUTE must not stay glued onto the preceding "read:" line -- it starts a
+        # fresh line of its own (the forced break also introduces a blank-line separator,
+        # applied consistently on both sides of a real diff, so it isn't a noise source).
+        # "38-1171." itself splits from "Definitions" (a numbered-section label, not
+        # specially recognized) the same way for either side of a real diff too.
+        assert lines[0] == "read:"
+        assert "START_STATUTE38-1171." in lines
+
+    def test_sentence_boundary_found_mid_line_not_just_at_line_end(self):
+        # 2026-08-15 AC3 finding: real regression found on HB 2057 -- the starting
+        # technique's merge rule only ever checked whether an INPUT LINE's own ending had
+        # sentence-final punctuation, but Word's word-wrap can (and does) place a real
+        # sentence boundary in the MIDDLE of a physical line. Whether that happens is itself
+        # just an accident of that version's own wrap width. Real shape: one version wraps
+        # "...administering the fund." and "Monies in the fund..." onto separate lines; the
+        # other version's wrap happens to glue "...administering the fund. Monies" onto one
+        # physical line instead -- both must reflow to the identical two-sentence result.
+        wrapped_at_boundary = (
+            "Not more than ten percent of monies deposited in the\n"
+            "fund annually shall be used for the cost of administering the fund.\n"
+            "Monies in the fund are continuously appropriated."
+        )
+        wrapped_mid_sentence = (
+            "Not more than ten percent of monies deposited in the\n"
+            "fund annually shall be used for the cost of administering the fund. Monies\n"
+            "in the fund are continuously appropriated."
+        )
+        assert _reflow_paragraphs(wrapped_at_boundary) == _reflow_paragraphs(
+            wrapped_mid_sentence
+        )
+
+    def test_all_caps_sentence_ending_is_not_mistaken_for_a_subsection_marker(self):
+        # 2026-08-15 AC3 finding: a real, serious bug found while broadening the subsection-
+        # marker exclusion -- checking only "is this preceded by [A-Z]." can't tell a real
+        # lone subsection letter ("B.") from the tail of a longer, ordinarily-capitalized
+        # word ending a sentence, and Arizona's own convention of rendering amended statutory
+        # text in ALL CAPS meant this was accidentally suppressing the split after nearly
+        # every all-caps sentence (e.g. "...ELECTRONICALLY." was treated as if "Y." were
+        # itself a subsection marker), silently merging entire lettered subsections into one
+        # giant run-on line. Real shape confirmed on HB 2857.
+        text = (
+            "A. THE DEPARTMENT MAY STORE AN INMATE'S MEDICAL RECORDS\n"
+            "ELECTRONICALLY.\n"
+            "B. NOTWITHSTANDING ANY OTHER LAW, THE DEPARTMENT IS NOT REQUIRED TO KEEP\n"
+            "PHYSICAL COPIES."
+        )
+        result = _reflow_paragraphs(text)
+        assert result.split("\n") == [
+            "A. THE DEPARTMENT MAY STORE AN INMATE'S MEDICAL RECORDS ELECTRONICALLY.",
+            "B. NOTWITHSTANDING ANY OTHER LAW, THE DEPARTMENT IS NOT REQUIRED TO KEEP "
+            "PHYSICAL COPIES.",
+        ]
+
+    def test_semicolon_and_whereas_clause_chain_splits_correctly(self):
+        # 2026-08-15 AC3 finding: the same cross-jurisdiction pattern independently found and
+        # fixed for VA's OPEN-9 -- a real "; and Whereas" clause chain (common in AZ's own
+        # resolution/memorial preambles) doesn't split on the plain rule, since the word right
+        # after "; and" is lowercase, not the next clause's own capital letter. Without this,
+        # an entire multi-WHEREAS preamble collapses into one giant merged line, and any small
+        # real difference elsewhere then dominates a now-tiny total line count. Real shape
+        # confirmed on HCR 2015.
+        text = (
+            "Whereas, regular physical activity strengthens physical health; and\n"
+            "Whereas, national health authorities recommend daily activity; and\n"
+            "Whereas, public schools influence lifelong habits.\n"
+            "Therefore Be it resolved."
+        )
+        result = _reflow_paragraphs(text)
+        assert result.split("\n") == [
+            "Whereas, regular physical activity strengthens physical health; and",
+            "Whereas, national health authorities recommend daily activity; and",
+            "Whereas, public schools influence lifelong habits.",
+            "Therefore Be it resolved.",
+        ]
 
 
 class TestArizonaCharsetHandling:
