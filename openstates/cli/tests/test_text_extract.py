@@ -2731,3 +2731,85 @@ class TestArchiveCommandAbortsOnScrapeErrorOPEN52:
 
         assert result.exit_code == 1
         assert "aborted" in result.output
+
+
+def _make_transport_response(request, status_code, content):
+    import requests
+
+    resp = requests.Response()
+    resp.status_code = status_code
+    resp._content = content
+    resp.url = request.url
+    resp.request = request
+    return resp
+
+
+class TestFetchBytesRealScrapelibRetryInteractionOPEN53:
+    """OPEN-53 (reopened 2026-08-15): a real 403/fake-404 WAF-block response must be handled
+    by CookieProvider.fetch_with_retry's own single invalidate-and-rewarm-once retry, not
+    scrapelib's own blind retry_attempts loop firing first with the same stale cookies. Patches
+    only at the requests transport layer (HTTPAdapter.send) so scrapelib's real
+    Scraper/RetrySession code -- accept_response, raise_errors, the retry loop itself -- all
+    actually run, instead of mocking around them."""
+
+    def test_blocked_then_recovered_hits_transport_exactly_twice_not_five_times(
+        self, tmp_path
+    ):
+        from openstates.cli.text_extract import _fetch_bytes
+        from openstates.utils.cookie_provider import CookieProvider
+        from openstates.utils.resilience_profiles import WafResilienceProfile
+
+        send_calls = []
+
+        def fake_send(self, request, **kwargs):
+            send_calls.append(request.url)
+            if len(send_calls) == 1:
+                return _make_transport_response(request, 403, b"Request Rejected")
+            return _make_transport_response(
+                request, 200, b"real bill content, no block markers here"
+            )
+
+        warm_up_calls = []
+
+        def fake_warm_up(url):
+            warm_up_calls.append(url)
+            return (
+                [{"name": "session_cookie_mfhp", "value": "fresh", "expires": 0}],
+                "Real Chrome UA",
+            )
+
+        real_profile = WafResilienceProfile(
+            name="test-open53",
+            netloc="flhouse.gov",
+            cookie_provider=CookieProvider(
+                name="test-open53",
+                warm_up_url="https://flhouse.gov/",
+                cookie_names=("session_cookie_mfhp",),
+                cache_path=str(tmp_path / "test_open53_waf_cookies.json"),
+                warm_up_func=fake_warm_up,
+            ),
+            requests_per_minute=60,
+            circuit_breaker_max_consecutive_blocks=3,
+            retry_excluded_exceptions=(),
+            user_agent_rotation_enabled=False,
+        )
+
+        with mock.patch(
+            "openstates.cli.text_extract.profile_for_netloc", return_value=real_profile
+        ), mock.patch(
+            "openstates.cli.text_extract._profile_consecutive_blocks", {}
+        ), mock.patch(
+            "openstates.cli.text_extract._profile_scrapers", {}
+        ), mock.patch(
+            "requests.adapters.HTTPAdapter.send", fake_send
+        ):
+            content = _fetch_bytes("https://flhouse.gov/some-bill-detail.aspx")
+
+        assert content == b"real bill content, no block markers here"
+        # Exactly 2 transport-level calls -- the initial (blocked) attempt and the one
+        # retry after CookieProvider invalidated and re-warmed. NOT scrapelib's own
+        # retry_attempts=5 blindly hitting the same stale cookies 5 more times first.
+        assert len(send_calls) == 2
+        # Exactly one re-warm happened (the initial get_cookies() call during do_request
+        # plus the invalidate-triggered re-warm) -- not the un-set default cache TTL path.
+        assert len(warm_up_calls) == 2
