@@ -14,7 +14,9 @@ from ..exceptions import DuplicateItemError, UnresolvedIdError, DataImportError
 from ..utils import get_pseudo_id, utcnow
 from ._types import _ID, _JsonDict, _RelatedModels, _TransformerMapping
 
-_PersonCacheKey = typing.Tuple[str, typing.Optional[str], typing.Optional[str]]
+_PersonCacheKey = typing.Tuple[
+    str, typing.Optional[str], typing.Optional[str], typing.Optional[str]
+]
 
 
 def omnihash(obj: typing.Any) -> int:
@@ -571,10 +573,6 @@ class BaseImporter:
         end_date: typing.Optional[str] = None,
         org_classification: typing.Optional[str] = None,
     ) -> str:
-        cache_key = (psuedo_person_id, start_date, end_date)
-        if cache_key in self.person_cache:
-            return self.person_cache[cache_key]
-
         # turn spec into DB query
         spec = get_pseudo_id(psuedo_person_id)
 
@@ -582,6 +580,21 @@ class BaseImporter:
         if "chamber" in spec and org_classification is None:
             org_classification = spec["chamber"]
             del spec["chamber"]
+
+        # OPEN-112: cache key includes org_classification (resolved above, so a
+        # chamber embedded in psuedo_person_id counts the same as one passed
+        # explicitly) -- a bare-name lookup for one chamber and the identical
+        # lookup for a different chamber, same session dates, are DIFFERENT
+        # queries that can resolve to different people (e.g. two same-surname
+        # legislators, one per chamber). Without this, whichever chamber gets
+        # resolved first in an import run poisons the cache for the other for
+        # the rest of that run -- confirmed live: a Florida "Smith" Senate
+        # lookup, cached, then wrongly reused for a same-session Florida
+        # "Smith" House lookup that should have resolved to a different person
+        # entirely (OPEN-110).
+        cache_key = (psuedo_person_id, start_date, end_date, org_classification)
+        if cache_key in self.person_cache:
+            return self.person_cache[cache_key]
 
         # a stable per-person identifier (e.g. bioguide, lis_id) takes priority over
         # name matching when the scraper had one on hand -- house/senate roll calls
