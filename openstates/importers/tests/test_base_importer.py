@@ -263,6 +263,39 @@ def test_resolve_person_cache_key_includes_org_classification_reverse_order():
 
 
 @pytest.mark.django_db
+def test_resolve_person_cache_key_includes_embedded_chamber():
+    """PM review: the cache key is built AFTER a chamber embedded in
+    psuedo_person_id (rather than passed as the explicit org_classification
+    argument) is folded in -- this test covers that path specifically, since
+    it's the actual subtlety the moved cache-check introduces. Two embedded
+    chambers must not collide just because the caller never passed
+    org_classification explicitly."""
+    create_jurisdiction()
+    upper_org = Organization.objects.create(jurisdiction_id="jid", classification="upper")
+    lower_org = Organization.objects.create(jurisdiction_id="jid", classification="lower")
+    upper_person = Person.objects.create(name="Smith")
+    upper_person.memberships.create(organization=upper_org)
+    lower_person = Person.objects.create(name="Smith")
+    lower_person.memberships.create(organization=lower_org)
+
+    bi = BillImporter("jid")
+    same_start, same_end = "2026-01-01", "2026-12-31"
+
+    resolved_upper = bi.resolve_person(
+        '~{"name": "Smith", "chamber": "upper"}', same_start, same_end
+    )
+    resolved_lower = bi.resolve_person(
+        '~{"name": "Smith", "chamber": "lower"}', same_start, same_end
+    )
+
+    assert resolved_upper == upper_person.id
+    assert resolved_lower == lower_person.id, (
+        "A chamber embedded in psuedo_person_id must participate in the "
+        "cache key the same way an explicit org_classification does."
+    )
+
+
+@pytest.mark.django_db
 def test_resolve_person_same_chamber_still_hits_cache():
     """The fix must not turn the cache into a no-op -- a second lookup with
     the SAME org_classification (the common case: many votes on one bill, one
