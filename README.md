@@ -2,6 +2,15 @@
 
 This repository contains the Open States data model and scraper backend.
 
+## Digital Democracy Project fork
+
+This is [Digital Democracy Project](https://digitaldemocracyproject.org)'s fork, used to power our own civic-data pipeline.
+
+- `origin` → this fork; `upstream` → the public project.
+- Our own fixes land on this fork's `main` via a normal branch + PR — no cherry-picking, no separate patch branch.
+- Public upstream is merged into `main` on a periodic (roughly monthly, or opportunistic) cadence.
+- Fixes with no DDP-specific assumptions baked in are contributed back upstream when practical — see [openstates/openstates-core#205](https://github.com/openstates/openstates-core/pull/205) for a recent example.
+
 ## Links
 
 * [Code of Conduct](https://docs.openstates.org/en/latest/contributing/code-of-conduct.html)
