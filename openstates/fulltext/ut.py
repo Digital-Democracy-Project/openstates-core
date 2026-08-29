@@ -1,9 +1,8 @@
 import re
-import typing
 
 from lxml import etree
 
-from .common import Metadata
+from .common import Metadata, xml_tree_to_lines
 
 
 # Utah's own bill XML export declares `encoding="UTF-16"` in its XML prolog, but the actual
@@ -23,17 +22,22 @@ def handle_utah_xml(data: bytes, metadata: Metadata) -> str:
     Utah's format (`<leg>` root) carries the bill's actual text spread across many structural
     elements (title/sponsor headers, then numbered section/paragraph elements for the body) --
     unlike a page-oriented PDF/HTML, there's no single "the text is in this one element"
-    shortcut. Pulling every text node via `itertext()` and joining with single spaces is the
-    same aggressive-but-effective approach already used for Washington/Texas's bare HTML
-    (`extractor_for_element_by_xpath("//html")`) -- it captures real content correctly (verified
-    directly against several real bills) at the cost of losing the original document's visual
-    line/paragraph structure, which `raw_text` was never expected to preserve exactly anyway
-    (see FL/VA's own line-numbered-PDF extractors, which have the same trade-off).
+    shortcut.
+
+    OPEN-210: serialized via `xml_tree_to_lines()`, which emits one line per block-level
+    element and folds inline markup into its surrounding line. This replaced an
+    `itertext()`-and-join-with-spaces pass that produced a single line for the entire bill --
+    fine while `raw_text` only fed search and display, but not once it became the input to a
+    line-based `difflib` diff (every one of Utah's 2,074 archived XML diffs was a degenerate
+    whole-document hunk as a result; see OPEN-209).
+
+    Utah's markup makes the block/inline split unambiguous: `<bold>`/`<xref>` and friends sit
+    in mixed content (`<bold>81-4-502</bold>, as enacted by ...`) and stay on their line, while
+    `<secline>`, `<sn>`, `<hl>` and the rest each start one.
     """
     fixed = _BAD_ENCODING_DECL.sub(b'encoding="UTF-8"', data, count=1)
     parser = etree.XMLParser(recover=True)
     root = etree.fromstring(fixed, parser=parser)
     if root is None:
         raise ValueError("Utah bill XML did not parse even with the encoding fix + recovery")
-    parts: typing.List[str] = [t.strip() for t in root.itertext() if t and t.strip()]
-    return " ".join(parts)
+    return xml_tree_to_lines(root)
