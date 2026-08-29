@@ -214,16 +214,39 @@ def xml_tree_to_lines(root: typing.Any) -> str:
         if text:
             buffer.append(text)
 
-    def walk(el: typing.Any) -> None:
-        inline = _is_inline(el)
+    def walk(el: typing.Any, within_inline: bool = False) -> None:
+        # `within_inline` stops a nested wrapper from breaking a sentence apart:
+        # `<p>foo <bold><italic>bar</italic></bold> baz</p>` would otherwise yield "foo" /
+        # "bar" / "baz", because <italic> has no adjacent text of its own. Raised by
+        # /pm-review.
+        #
+        # Inheritance is deliberately narrower than "inline elements have inline children",
+        # which over-merges: in Utah's `<sa>Utah Code Sections Affected:<saamd><snhead>AMENDS:
+        # </snhead>...</saamd></sa>` the <saamd> is adjacent to text and so inline by the rule
+        # above, but it is a container of blocks, and inheriting into it swallowed the whole
+        # section onto one line.
+        #
+        # The discriminator is the element's OWN tail, and it is measured rather than guessed.
+        # Across the sampled UT/US corpus, 34 elements were inline-with-children whose tail
+        # carried real text -- `<quote>` mid-sentence, genuinely embedded in a run -- and 18
+        # were inline-with-children whose tail did not -- `<hl>`, a block container that merely
+        # follows text. Text after the element means the run continues past it, so its subtree
+        # is part of that run; no trailing text means it was appended after a line, not woven
+        # into one.
+        #
+        # The tail check governs ENTERING a run, not continuing one: once inside, an
+        # intermediate wrapper with no tail of its own (the <y> in `a <x><y><z>b</z></y></x> c`)
+        # must not end it.
+        inline = within_inline or _is_inline(el)
+        carries_run_onward = bool(el.tail and el.tail.strip())
         if not inline:
             flush()
         add(el.text)
         for child in el:
             if isinstance(child.tag, str):  # skip comments/processing instructions
-                walk(child)
+                walk(child, within_inline=within_inline or (inline and carries_run_onward))
             else:
-                add(child.tail)
+                add(child.tail)  # a comment's tail is still real document text
         if not inline:
             flush()
         add(el.tail)
