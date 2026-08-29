@@ -193,7 +193,13 @@ CONVERSION_FUNCTIONS = {
     },
     "vt": {"application/pdf": extract_sometimes_numbered_pdf},
     "wa": {
-        "text/html": extractor_for_element_by_xpath("//html"),
+        # OPEN-212: structured=True. WA serves its bill HTML with no newlines between
+        # elements, so lxml's separator-free text_content() fused tokens across block
+        # boundaries -- 5,750 of 5,818 documents stored as a single line, and Engrossed
+        # Substitute Senate Bill 5167 stored as bill "516769". Every other jurisdiction using
+        # this helper measures clean today and is deliberately left on the old path here; see
+        # text_from_element_xpath's docstring.
+        "text/html": extractor_for_element_by_xpath("//html", preserve_element_boundaries=True),
         # Found 2026-08-09 (OPEN-49): no application/pdf entry ever existed here, upstream
         # or in this fork -- every WA PDF (5,800+) silently extracted as empty/is_error=True.
         # Verified directly against real WA bills: same printed-line-number PDF shape already
