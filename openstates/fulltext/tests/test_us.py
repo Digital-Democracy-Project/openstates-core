@@ -93,3 +93,42 @@ def test_raises_on_genuinely_unparseable_data():
     metadata = {**US_METADATA, "media_type": "text/xml"}
     with pytest.raises(Exception):
         handle_us_bill_xml(b"this is not xml at all, not even close", metadata)
+
+
+def test_output_has_real_line_structure():
+    """OPEN-210: both schemas used to collapse onto a single line, which made 6,683 of the
+    6,692 archived US XML diffs degenerate whole-document hunks."""
+    metadata = {**US_METADATA, "media_type": "text/xml"}
+
+    for fixture in (LEGACY_DTD_XML, USLM_XML):
+        lines = handle_us_bill_xml(fixture, metadata).split("\n")
+        assert len(lines) > 3
+        assert "This Act may be cited as the Test Act." in lines
+        assert "To do a test thing." in lines
+        assert all(line == line.strip() and line for line in lines)
+
+
+def test_a_version_transition_produces_a_targeted_diff():
+    """The condition OPEN-209 measures: a real edit must diff to a specific hunk rather than
+    replacing the whole document."""
+    import difflib
+    import re
+
+    metadata = {**US_METADATA, "media_type": "text/xml"}
+    amended = LEGACY_DTD_XML.replace(
+        b"This Act may be cited as the Test Act.",
+        b"This Act may be cited as the Revised Test Act.",
+    )
+
+    diff = "\n".join(
+        difflib.unified_diff(
+            handle_us_bill_xml(LEGACY_DTD_XML, metadata).splitlines(),
+            handle_us_bill_xml(amended, metadata).splitlines(),
+            lineterm="",
+        )
+    )
+    hunks = re.findall(r"@@[^@]*@@", diff)
+
+    assert len(hunks) == 1
+    assert not re.fullmatch(r"@@ -1(,\d+)? \+1(,\d+)? @@", hunks[0]), hunks[0]
+    assert "+This Act may be cited as the Revised Test Act." in diff

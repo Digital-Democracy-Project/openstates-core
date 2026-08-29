@@ -2,7 +2,7 @@ import typing
 
 from lxml import etree
 
-from .common import Metadata
+from .common import Metadata, xml_tree_to_lines
 
 
 # US federal bill XML (govinfo.gov) actually comes in two different schemas depending on
@@ -23,10 +23,19 @@ def handle_us_bill_xml(data: bytes, metadata: Metadata) -> str:
     timestamp change on every re-export even when the bill's actual text hasn't changed, which
     would inject spurious diff noise on every version transition -- the same boilerplate-noise
     failure mode already found and fixed for FL/VA/WA/AZ (OPEN-7/8/9/10). The rest of the
-    document (form/preface + legis-body/main) is walked in full via itertext(), matching the
-    same trade-off already accepted for Utah/Washington/Texas: real content is captured
-    correctly at the cost of the original document's exact visual layout, which `raw_text` was
-    never expected to preserve.
+    document (form/preface + legis-body/main) is walked in full.
+
+    OPEN-210: serialized via `xml_tree_to_lines()`, which emits one line per block-level
+    element and folds inline markup into its surrounding line, replacing an
+    `itertext()`-and-join-with-spaces pass that collapsed the whole bill onto a single line.
+    That was harmless while `raw_text` only fed search and display; it is not once the same
+    field is diffed with a line-based `difflib` (6,683 of 6,692 archived US XML diffs were
+    degenerate whole-document hunks as a result -- see OPEN-209).
+
+    Works across both schemas without a per-schema tag list, because block-vs-inline is read
+    from the document's own mixed content rather than enumerated: bill.dtd's `<text>`/`<enum>`/
+    `<header>` and USLM's `<text>`/`<num>`/`<heading>` all sit alone in their parents and get
+    their own line, while genuine inline markup carries adjacent text and does not.
     """
     parser = etree.XMLParser(
         recover=True, resolve_entities=False, no_network=True, load_dtd=False
@@ -47,5 +56,4 @@ def handle_us_bill_xml(data: bytes, metadata: Metadata) -> str:
             if parent is not None:
                 parent.remove(el)
 
-    parts: typing.List[str] = [t.strip() for t in root.itertext() if t and t.strip()]
-    return " ".join(parts)
+    return xml_tree_to_lines(root)
