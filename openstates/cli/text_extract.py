@@ -1831,6 +1831,13 @@ def recompute_bill_diff_order(bill: typing.Any) -> dict[str, list]:
     from openstates.data.models import BillVersionDocument
 
     docs = list(BillVersionDocument.objects.filter(bill=bill).order_by("id"))
+    return recomputed_diffs_for_documents(docs)
+
+
+def recomputed_diffs_for_documents(docs: list) -> dict[str, list]:
+    """The ordering-and-diffing half of `recompute_bill_diff_order`, split out (OPEN-211) so it
+    can be exercised without a database -- it reads nothing but plain attributes off each
+    document, while its caller above is the part that queries. Behaviour is unchanged."""
     groups: dict[tuple, list] = {}
     for doc in docs:
         groups.setdefault((doc.version_note, doc.version_date), []).append(doc)
@@ -1839,12 +1846,28 @@ def recompute_bill_diff_order(bill: typing.Any) -> dict[str, list]:
 
     unchanged = []
     changed = []
-    prior_text: typing.Optional[str] = None
+    # OPEN-211: one baseline PER MEDIA TYPE, not one shared baseline for the whole version.
+    #
+    # This used to keep a single `prior_text` (PDF-preferred) and diff every document of the
+    # next version against it, so an XML or HTML document was compared against the previous
+    # version's PDF. Two different renderings of the same words never align, so the result was
+    # a full rewrite rather than a changelog -- measured on Utah SB 0059, new XML against prior
+    # PDF: one hunk, 20,161 chars, "@@ -1,133 +1,148 @@".
+    #
+    # That is why re-extracting alone (OPEN-210/OPEN-212 gave XML and WA HTML real line
+    # structure) does not by itself produce usable diffs: the comparison has to be
+    # like-for-like. Each document now diffs against the previous version's document of its
+    # own media type.
+    #
+    # A media type absent from one version does not reset its lineage -- only the types present
+    # are updated -- so a version that happens to ship PDF-only does not orphan the XML chain.
+    prior_by_media: dict[str, str] = {}
     for note, date in ordered_keys:
         is_unknown_position = _note_stage(note)[0] == _STAGE_UNKNOWN
         group_texts: dict[str, str] = {}
         for doc in groups[(note, date)]:
             new_diff = None
+            prior_text = prior_by_media.get(doc.media_type)
             if (
                 prior_text is not None
                 and not doc.is_error
@@ -1863,9 +1886,7 @@ def recompute_bill_diff_order(bill: typing.Any) -> dict[str, list]:
             if not doc.is_error and doc.raw_text:
                 group_texts[doc.media_type] = doc.raw_text
         if group_texts and not is_unknown_position:
-            prior_text = group_texts.get("application/pdf") or next(
-                iter(group_texts.values())
-            )
+            prior_by_media.update(group_texts)
 
     return {"unchanged": unchanged, "changed": changed}
 
@@ -2057,3 +2078,175 @@ def reindex(ids_to_update: list[int]) -> None:
 
 if __name__ == "__main__":
     main()
+
+
+@main.command(
+    name="refresh-extraction",
+    help="OPEN-211: re-extract already-archived documents whose stored raw_text no longer "
+    "matches what the current extractor produces, then recompute that bill's diffs",
+)
+@click.argument("state")
+@click.option("--session", default=None)
+@click.option(
+    "--commit/--dry-run",
+    default=False,
+    help="apply changes to the DB; default is a dry run that only reports counts",
+)
+@click.option("-n", default=None, help="limit number of bills processed, for testing")
+def refresh_extraction(
+    state: str, session: str = None, commit: bool = False, n: int = None
+) -> None:
+    """
+    Makes an extractor fix retroactive.
+
+    `reextract` cannot do this: it selects `is_error=True`, and the documents this exists for
+    extracted "successfully" -- as a single line. ~51,900 of them: 43,055 US XML, 5,750
+    Washington HTML, 3,100 Utah XML (OPEN-210, OPEN-212).
+
+    Nor is re-extraction on its own enough. `archive_bill_versions()` skips an already-archived
+    document and feeds its STORED text into the next version's diff, so a freshly-extracted
+    version is compared against its predecessor's old single-line text and the result is as
+    degenerate as before. Verified on Utah SB 0059: fresh-vs-fresh gives 5 hunks / 7,585 chars,
+    fresh-vs-stored gives one hunk of 20,560.
+
+    So this walks BILL BY BILL and, for each: re-extracts every document whose current
+    extractor output differs from what is stored, and only then recomputes that bill's diffs.
+    The ordering is structural rather than a rule to remember -- recomputing while any version
+    of the bill still holds stale text simply reproduces the problem for that hop.
+
+    Reads bytes from the local archive copy (`_reextract_document`), so there is no re-fetching
+    from any legislature's site and no S3 traffic.
+
+    Idempotent: a second run finds nothing stale and rewrites nothing.
+
+    Dry run reports how many documents are stale. It deliberately does NOT predict the diff
+    recompute, because `recompute_bill_diff_order` reads `raw_text` from the database -- with
+    nothing committed it would be recomputing against the stale text, and reporting that number
+    would be worse than reporting none.
+    """
+    init_django()
+    from openstates.data.models import Bill
+
+    if state == "all":
+        bills = Bill.objects.all()
+    elif session:
+        bills = Bill.objects.filter(
+            legislative_session__jurisdiction_id=abbr_to_jid(state),
+            legislative_session__identifier=session,
+        )
+    else:
+        bills = Bill.objects.filter(
+            legislative_session__jurisdiction_id=abbr_to_jid(state)
+        )
+    bills = bills.filter(version_documents__isnull=False).distinct()
+    if n:
+        bills = bills[: int(n)]
+
+    bills_touched = 0
+    docs_stale = 0
+    docs_skipped = 0
+    docs_refused = 0
+    diffs_corrected = 0
+    diffs_would_change = 0
+    skip_reasons: dict[str, int] = {}
+
+    class _Proposed:
+        """Stand-in carrying a document's PROPOSED text, for simulating the diff recompute in a
+        dry run without writing anything. `recomputed_diffs_for_documents` reads only these
+        attributes, which is why it was split out from its database-querying caller."""
+
+        __slots__ = (
+            "version_note", "version_date", "media_type",
+            "raw_text", "is_error", "diff_from_previous_version",
+        )
+
+        def __init__(self, doc, raw_text, is_error):
+            self.version_note = doc.version_note
+            self.version_date = doc.version_date
+            self.media_type = doc.media_type
+            self.raw_text = raw_text
+            self.is_error = is_error
+            self.diff_from_previous_version = doc.diff_from_previous_version
+
+    for bill in bills:
+        proposed = []
+        stale_docs = []
+        for doc in bill.version_documents.all():
+            result = _reextract_document(doc)
+            if not result["attempted"]:
+                docs_skipped += 1
+                reason = result["reason"]
+                skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+                continue
+
+            # Strict, not `.get(..., "")`. _reextract_document has an attempted=True branch that
+            # returns NEITHER key (the DoNotDownload media types) and another that returns
+            # new_is_error=True (an extractor exception). Defaulting those to empty text and
+            # is_error=True would overwrite a perfectly good stored extraction with nothing --
+            # real, reachable data loss on a ~51,900-document migration. Raised by /pm-review.
+            if "new_raw_text" not in result or "new_is_error" not in result:
+                docs_skipped += 1
+                reason = result.get("reason", "helper returned no extraction")
+                skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+                continue
+            new_raw_text = result["new_raw_text"]
+            new_is_error = result["new_is_error"]
+
+            # Never downgrade. This command exists to give documents BETTER text; a document
+            # that currently extracts worse than what is stored is a signal to look at, not a
+            # row to overwrite.
+            currently_good = bool(doc.raw_text) and not doc.is_error
+            now_worse = new_is_error or not new_raw_text
+            if currently_good and now_worse:
+                docs_refused += 1
+                continue
+
+            if new_raw_text == doc.raw_text and new_is_error == doc.is_error:
+                proposed.append(_Proposed(doc, doc.raw_text, doc.is_error))
+                continue
+            docs_stale += 1
+            stale_docs.append((doc, new_raw_text, new_is_error))
+            proposed.append(_Proposed(doc, new_raw_text, new_is_error))
+
+        if not stale_docs:
+            continue
+        bills_touched += 1
+
+        if not commit:
+            # Simulate the recompute against the PROPOSED text, so a dry run reports the thing
+            # this migration is actually for rather than only how many documents would change.
+            diffs_would_change += len(recomputed_diffs_for_documents(proposed)["changed"])
+            continue
+
+        # One transaction per bill. The ordering below -- every version brought current before
+        # any diff is recomputed -- is only an invariant if it cannot be interrupted halfway,
+        # which would leave refreshed text paired with diffs computed from the old text.
+        with transaction.atomic():
+            for doc, new_raw_text, new_is_error in stale_docs:
+                doc.raw_text = new_raw_text
+                doc.is_error = new_is_error
+                doc.save(update_fields=["raw_text", "is_error", "updated_at"])
+
+            for doc, new_diff in recompute_bill_diff_order(bill)["changed"]:
+                doc.diff_from_previous_version = new_diff
+                doc.save(update_fields=["diff_from_previous_version", "updated_at"])
+                diffs_corrected += 1
+
+    mode = "COMMITTED" if commit else "DRY RUN"
+    click.secho(
+        f"{state}: [{mode}] bills_with_stale_docs={bills_touched} "
+        f"stale_docs={docs_stale} "
+        f"{'diffs_corrected' if commit else 'diffs_would_change'}="
+        f"{diffs_corrected if commit else diffs_would_change} "
+        f"docs_skipped={docs_skipped} docs_refused={docs_refused}",
+        fg="green" if commit else "yellow",
+    )
+    if docs_refused:
+        click.secho(
+            f"  refused {docs_refused} document(s): stored text is good but the current "
+            "extractor returns empty/errored output -- not overwritten, worth investigating",
+            fg="red",
+        )
+    if skip_reasons:
+        for reason, count in sorted(skip_reasons.items(), key=lambda kv: -kv[1])[:10]:
+            click.secho(f"  skipped {count}: {reason}", fg="yellow")
