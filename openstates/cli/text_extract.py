@@ -1464,6 +1464,14 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                 # there first and the document IS safely archived -- nothing was lost, and
                 # there is nothing to alarm about. Anything else is a real uniqueness
                 # violation and keeps its loud, run-failing treatment.
+                #
+                # The winner is authoritative, deliberately (raised on /pm-review): the two
+                # runs fetched independently and their bytes are not guaranteed identical,
+                # but the four-field natural key IS the archival identity for this table
+                # (see BillVersionDocument's own docstring), so the loser's bytes have
+                # nowhere to go. That also makes the recovered row -- not this run's own
+                # fetch -- what feeds the diff baseline below, which is the consistent
+                # choice: the baseline must match the text actually stored.
                 stored = BillVersionDocument.objects.filter(
                     bill=bill,
                     version_note=version.note,
