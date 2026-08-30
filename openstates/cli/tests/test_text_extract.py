@@ -619,23 +619,33 @@ class TestRecomputeDiffOrder:
 @pytest.mark.django_db
 class TestPriorTextPrefersXmlOverPdf:
     """
-    Found 2026-08-12 alongside enabling US XML extraction: prior_text (the text the *next*
-    version gets diffed against) used to hardcode `this_version_texts.get("application/pdf")`
-    first, unconditionally, for every jurisdiction. US and UT are the only jurisdictions where
-    a version can have both a real (non-DoNotDownload) PDF and XML link today, so this only
-    changes behavior for those two -- XML has no page-break/line-wrap artifacts, making it a
-    cleaner diffing source than PDF's line-numbered extraction.
+    OPEN-217 replaced the preference this class was written for, and the fixture is kept because
+    it is the sharpest statement of why.
+
+    From 2026-08-12 until OPEN-217, a version's single `prior_text` preferred text/xml, on the
+    reasoning that XML has no page-break or line-wrap artifacts and so is a cleaner diffing
+    source than a line-numbered PDF extraction. That was true about the *text* and wrong as a
+    diffing strategy: it still compared the next version's PDF against the previous version's
+    XML. The answer is not to pick the cleaner rendering, it is to compare like with like.
+
+    Note what per-media baselines do to the very noise the preference was meant to dodge: the
+    PDF's line-number prefix is present identically on *both* sides of a PDF-to-PDF comparison,
+    so it cancels out of the diff entirely. That is a better outcome than the preference
+    achieved, not merely a different one.
     """
 
-    def test_next_versions_diff_is_computed_against_xml_not_pdf(self):
+    def test_each_media_type_diffs_against_its_own_previous_rendering(self):
         bill = _make_bill()
         introduced = bill.versions.create(note="Introduced", date="")
         enrolled = bill.versions.create(note="Enrolled", date="")
 
         # Deliberately give "Introduced" both links with *different* extracted text -- the
-        # XML text is clean, the PDF text carries a fake line-number-style prefix noise on
-        # the same content, mirroring a real line-numbered PDF extraction -- so the test can
-        # tell which one prior_text actually carried forward.
+        # XML text is clean, the PDF text carries a fake line-number-style prefix on the same
+        # content, mirroring a real line-numbered PDF extraction -- so the test can tell which
+        # one the Enrolled PDF actually got compared against. Both PDFs carry the prefix,
+        # because a line-numbered extractor produces it on every version it touches; the old
+        # fixture gave it to the Introduced PDF only, which was an artifact of wanting XML to
+        # win rather than a description of the extractor.
         introduced.links.create(
             url="https://example.test/introduced.xml", media_type="text/xml"
         )
@@ -649,7 +659,7 @@ class TestPriorTextPrefersXmlOverPdf:
         texts_by_url = {
             "https://example.test/introduced.xml": "Section 1. Text.",
             "https://example.test/introduced.pdf": "1 Section 1. Text.",
-            "https://example.test/enrolled.pdf": "Section 1. Text.\nSection 2. Added.",
+            "https://example.test/enrolled.pdf": "1 Section 1. Text.\n2 Section 2. Added.",
         }
 
         def fake_fetch_bytes(url):
@@ -678,14 +688,27 @@ class TestPriorTextPrefersXmlOverPdf:
             bill=bill, version_note="Enrolled", media_type="application/pdf"
         )
         diff = enrolled_pdf_doc.diff_from_previous_version
-        # With XML preferred, "Section 1. Text." is unchanged between versions -- the diff
-        # should show only the real addition, not a spurious first-line change.
-        assert "+Section 2. Added." in diff
-        assert "-Section 1. Text." not in diff
-        assert "+Section 1. Text." not in diff
-        # If PDF had won instead, prior_text would have been "1 Section 1. Text." (the noisy
-        # prefixed line), which would show up as a spurious removed line here.
-        assert "1 Section 1. Text." not in diff
+        # Enrolled's PDF now diffs against Introduced's PDF. The real addition is the only
+        # change, and the PDF's own line-number noise ("1 " prefix) appears on both sides of
+        # the comparison so it never reaches the diff -- the same clean result the XML
+        # preference was reaching for, arrived at by comparing like with like.
+        assert "+2 Section 2. Added." in diff
+        # The shared first line -- line-number prefix and all -- is identical on both sides of
+        # a PDF-to-PDF comparison, so it survives as unchanged *context* rather than being
+        # reported as a change. Under the old XML preference the PDF's prefixed line was
+        # compared against the XML's unprefixed one and showed up as a spurious edit.
+        changed_lines = [
+            line for line in diff.splitlines()
+            if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
+        ]
+        assert changed_lines == ["+2 Section 2. Added."], changed_lines
+        assert " 1 Section 1. Text." in diff  # present, as context
+        # And Introduced's own XML, having no earlier XML to compare against, records nothing
+        # rather than reaching across to the PDF.
+        introduced_xml_doc = BillVersionDocument.objects.get(
+            bill=bill, version_note="Introduced", media_type="text/xml"
+        )
+        assert introduced_xml_doc.diff_from_previous_version is None
 
 
 @pytest.mark.django_db
@@ -1148,14 +1171,24 @@ class TestArchiveBillVersionsMichiganCleaningOPEN11:
         assert "SENATE BILL NO." not in diff
         assert "enact:" not in diff
 
-    def test_cross_media_type_transition_is_reflowed_and_real_edit_still_surfaces(self):
-        # End-to-end version of the cross-media reflow case in TestCleanMichiganTextOPEN11 --
-        # a PDF-sourced prior_text (application/pdf, becomes prior_text via the text/xml ->
-        # application/pdf -> first-available preference) diffed against this version's own
-        # text/html document. Without reflow this pair shares no real line boundaries at all
-        # (confirmed on real data: ratio 0.970, effectively "the whole document changed") --
-        # with it, the genuine single-word edit below must still be the only thing that shows
-        # up as changed.
+    def test_a_media_type_with_no_earlier_counterpart_records_no_diff(self):
+        # Was `test_cross_media_type_transition_is_reflowed_and_real_edit_still_surfaces`.
+        #
+        # OPEN-217 made this fixture impossible to diff: the first version is PDF-only and the
+        # second is HTML-only, so the HTML has no earlier HTML to compare against and records
+        # nothing rather than reaching across to the PDF. The cross-media reflow branch inside
+        # _clean_michigan_text() can no longer be reached from archive_bill_versions() at all;
+        # TestCleanMichiganTextOPEN11 still exercises that branch directly as a unit.
+        #
+        # Keeping the fixture rather than deleting it, because "no diff" is a real behaviour
+        # change and worth pinning deliberately. It is also not a loss in practice: measured
+        # across the whole archive, Michigan has 4,717 documents carrying a diff and every one
+        # of them has a same-media predecessor within its own bill, so no real MI diff
+        # disappears. This alternating-rendering shape is synthetic. The only jurisdiction that
+        # loses diffs is Massachusetts (291), where every bill pairs a "Bill Text" PDF with a
+        # "Chapter Law Text (Enacted)" HTML -- two different documents, of which 193 were
+        # already whole-document replacements. Dropping those is the correction, not a
+        # regression.
         bill = self._make_mi_bill()
         introduced = bill.versions.create(note="Senate Introduced Bill", date="")
         passed = bill.versions.create(note="As Passed by the Senate", date="")
@@ -1206,14 +1239,7 @@ class TestArchiveBillVersionsMichiganCleaningOPEN11:
         passed_doc = BillVersionDocument.objects.get(
             bill=bill, version_note="As Passed by the Senate"
         )
-        diff = passed_doc.diff_from_previous_version
-        assert "SENATE BILL NO." not in diff
-        assert "enact:" not in diff
-        # The genuine edit (National Guard -> Army National Guard) must surface...
-        assert "Army" in diff
-        # ...without the whole (now-aligned) document being marked as one giant change: real
-        # unchanged sentences on either side of the edit must survive as context, not noise.
-        assert "created within the department of military and veterans affairs" in diff
+        assert passed_doc.diff_from_previous_version is None
 
 
 class TestUtahXmlExtractor:
