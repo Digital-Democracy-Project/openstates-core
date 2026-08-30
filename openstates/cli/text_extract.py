@@ -1229,18 +1229,19 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
 
     Also computes `diff_from_previous_version` (added 2026-07-20): versions are walked in
     `_version_sort_key()` order (OPEN-34 — bill.versions.all() has no reliable order of its
-    own; see the comment above that function for the audit behind this), and `prior_text`
-    tracks the most recently seen version's representative text (preferring a PDF document
-    over other media types when a version has more than one file — the same PDF > HTML
-    priority already used elsewhere in this plan for lineage-field caching), updated once per
-    version rather than once per document so that two files of the *same* version (e.g. a PDF
-    and an HTML copy) never get diffed against each other. Every newly-archived document
-    within a version is diffed against that same `prior_text` snapshot. Already-archived
-    (skipped) documents still feed `prior_text` so a partial re-run (e.g. only a new
-    amendment's version is unarchived) diffs correctly against previously-archived text. A
-    version whose note doesn't match any known stage (_STAGE_UNKNOWN) never updates or reads
-    `prior_text` at all — its documents always get `diff_from_previous_version=None` rather
-    than risk placing an unrecognized version at the wrong point in the lineage.
+    own; see the comment above that function for the audit behind this), and `prior_by_media`
+    tracks one baseline **per media type** (OPEN-217), so each document is diffed against the
+    previous version's document of its *own* rendering. A version's PDF is never compared
+    against a previous version's XML: two extractors never agree line for line, and the result
+    was a whole-document replacement rather than a changelog. Baselines are updated once per
+    version rather than once per document, so two files of the *same* version never get diffed
+    against each other. Already-archived (skipped) documents still feed their media type's
+    baseline, so a partial re-run (e.g. only a new amendment's version is unarchived) diffs
+    correctly against previously-archived text. A media type absent from one version does not
+    reset its lineage — only the types present are updated. A version whose note doesn't match
+    any known stage (_STAGE_UNKNOWN) never updates or reads a baseline at all — its documents
+    always get `diff_from_previous_version=None` rather than risk placing an unrecognized
+    version at the wrong point in the lineage.
 
     OPEN-10: for Arizona only, `prior_text`/`raw_text` are reflowed (see
     `_reflow_paragraphs()`) into local variables just before the `difflib.unified_diff()`
@@ -1283,8 +1284,25 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
     is_michigan = jurisdiction_name == "Michigan"
     is_michigan_bill = is_michigan and bill.classification == ["bill"]
 
-    prior_text: typing.Optional[str] = None
-    prior_media_type: typing.Optional[str] = None
+    # OPEN-217: one baseline PER MEDIA TYPE, matching `recomputed_diffs_for_documents` below.
+    #
+    # This used to keep a single `prior_text` for the whole version, preferring text/xml, and
+    # diff every document of the next version against it -- so a version's PDF was compared
+    # against the previous version's XML. Two different extractors never agree line for line,
+    # so every line read as changed and the diff collapsed to one whole-document hunk.
+    #
+    # Measured on the first US archive run after OPEN-211's backfill (2026-08-30): of 21 diffs
+    # written per media type, 0 text/xml were whole-document and 19 of 21 application/pdf were.
+    # Same bill and version -- HR 1869 "Reported in House" -- came out as "@@ -1,15 +1,23 @@"
+    # for XML and "@@ -1,108 +1,156 @@" for PDF.
+    #
+    # Note the XML preference never caused the flattening OPEN-210 fixed; it only decided which
+    # media type absorbed it. Before that ticket XML was the single-line rendering, so XML
+    # looked broken; afterwards XML was correct and PDF carried the damage.
+    #
+    # A media type absent from one version does not reset its lineage -- only the types present
+    # are updated -- so a version that ships PDF-only does not orphan the XML chain.
+    prior_by_media: dict[str, str] = {}
 
     ordered_versions = sorted(
         bill.versions.all(), key=lambda v: _version_sort_key(v.note, v.date)
@@ -1293,7 +1311,12 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
         is_unknown_position = _note_stage(version.note)[0] == _STAGE_UNKNOWN
         this_version_texts: dict[str, str] = {}
 
-        for link in version.links.all():
+        # OPEN-217 (review round 1): 3,744 production versions have more than one
+        # successfully-extracted document of the SAME media type, so `this_version_texts`
+        # last-write-wins had to stop depending on `links.all()`'s unspecified row order --
+        # media type is the lineage key now, and that choice propagates to every later
+        # comparison. Sorted by url so the same link wins on every run.
+        for link in sorted(version.links.all(), key=lambda ln: (ln.media_type, ln.url)):
             existing = BillVersionDocument.objects.filter(
                 bill=bill,
                 version_note=version.note,
@@ -1376,6 +1399,12 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                 counters["extract_errors"] += 1
 
             diff_from_previous_version = None
+            prior_text = prior_by_media.get(link.media_type)
+            # Same-media by construction now, so the cross-media reflow branch inside
+            # _clean_michigan_text()/_clean_virginia_text() can no longer fire from this call
+            # site. Left in place rather than removed: both are shared helpers with their own
+            # tests, and dropping a parameter from them is a separate cleanup.
+            prior_media_type = link.media_type
             if (
                 prior_text is not None
                 and not is_error
@@ -1442,18 +1471,11 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                 counters["conflicts"] += 1
 
         if this_version_texts and not is_unknown_position:
-            # Prefer text/xml over application/pdf when both exist for the same version
-            # (found 2026-08-12, US/UT are the only jurisdictions where this choice ever
-            # arises today): XML has no page-break/line-wrap artifacts, making it a cleaner
-            # diffing source than PDF's line-numbered extraction. Falls through to PDF, then
-            # whatever else succeeded, exactly as before for every other jurisdiction.
-            if "text/xml" in this_version_texts:
-                prior_media_type = "text/xml"
-            elif "application/pdf" in this_version_texts:
-                prior_media_type = "application/pdf"
-            else:
-                prior_media_type = next(iter(this_version_texts))
-            prior_text = this_version_texts[prior_media_type]
+            # OPEN-217: every media type this version produced becomes the baseline for its
+            # own next appearance. The XML-over-PDF preference that used to pick a single
+            # representative text here is gone -- with per-media baselines there is nothing
+            # left to prefer.
+            prior_by_media.update(this_version_texts)
 
     return counters
 
