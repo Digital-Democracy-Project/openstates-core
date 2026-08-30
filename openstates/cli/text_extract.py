@@ -1271,6 +1271,9 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
         "extract_errors": 0,
         "archived": 0,
         "conflicts": 0,
+        # OPEN-107: a benign lost race, counted separately from "conflicts" because the two
+        # need opposite responses -- see the IntegrityError handler below.
+        "concurrent_writes": 0,
         "s3_verified": 0,
         "s3_unverified": 0,
     }
@@ -1432,14 +1435,53 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                 if not is_error and raw_text:
                     this_version_texts[link.media_type] = raw_text
             except IntegrityError:
-                # Should be rare-to-never — surface loudly rather than silently drop or crash
-                # the whole run (a concurrent scrape run for the same bill is the likeliest cause).
-                click.secho(
-                    f"WARNING natural-key conflict archiving {bill.identifier} "
-                    f"{version.note} ({version.date}) {link.url}",
-                    fg="red",
-                )
-                counters["conflicts"] += 1
+                # OPEN-107: ask the database which of two very different things just
+                # happened, instead of reporting both as a "natural-key conflict" and
+                # failing the run for either.
+                #
+                # `run-archive.sh` states in its own header that running an archive
+                # concurrently with a scrape for the SAME jurisdiction is safe, because the
+                # skip check above makes an already-archived version a cheap DB check. That
+                # was not true in practice: two archivers can both pass the skip check for
+                # the same link before either inserts, and the loser's IntegrityError was
+                # counted as a conflict -- which `archive()` turns into sys.exit(1), failing
+                # the whole run. Confirmed as the cause of this ticket: the WA and VA full
+                # archives of 2026-07-28 ran simultaneously (both started 12:28:52) and
+                # produced 347 and 1,820 of these respectively, and every affected document
+                # is archived today, which a genuinely broken dedup key could not produce.
+                #
+                # A row now existing for this exact natural key means the other writer got
+                # there first and the document IS safely archived -- nothing was lost, and
+                # there is nothing to alarm about. Anything else is a real uniqueness
+                # violation and keeps its loud, run-failing treatment.
+                stored = BillVersionDocument.objects.filter(
+                    bill=bill,
+                    version_note=version.note,
+                    version_date=version.date,
+                    source_url=link.url,
+                ).first()
+                if stored is not None:
+                    click.secho(
+                        f"NOTE already archived by a concurrent run: {bill.identifier} "
+                        f"{version.note} ({version.date}) {link.url}",
+                        fg="yellow",
+                    )
+                    counters["concurrent_writes"] += 1
+                    # Feed the baseline from the row the other run wrote. Without this the
+                    # losing run drops this media type from the version's baseline entirely,
+                    # so the NEXT version's document of the same rendering gets a diff
+                    # against an older version, or none at all -- a silent lineage gap
+                    # caused purely by having lost a race.
+                    if not stored.is_error and stored.raw_text:
+                        this_version_texts[stored.media_type] = stored.raw_text
+                else:
+                    click.secho(
+                        f"WARNING unexplained integrity error archiving "
+                        f"{bill.identifier} {version.note} ({version.date}) {link.url} "
+                        f"-- no row exists for this natural key",
+                        fg="red",
+                    )
+                    counters["conflicts"] += 1
 
         if this_version_texts and not is_unknown_position:
             # Prefer text/xml over application/pdf when both exist for the same version
@@ -1770,6 +1812,7 @@ def archive(state: str, session: str = None, n: int = None) -> None:
         "extract_errors": 0,
         "archived": 0,
         "conflicts": 0,
+        "concurrent_writes": 0,
         "s3_verified": 0,
         "s3_unverified": 0,
     }
@@ -1795,6 +1838,9 @@ def archive(state: str, session: str = None, n: int = None) -> None:
         or totals["blocked"]
         or totals["extract_errors"]
         or totals["s3_unverified"]
+        # OPEN-107: worth seeing, not worth failing over. Every affected document is
+        # archived; the only cost is this run having done redundant fetching.
+        or totals["concurrent_writes"]
     ):
         status_color = "yellow"
 
@@ -1804,12 +1850,19 @@ def archive(state: str, session: str = None, n: int = None) -> None:
         f"archived={totals['archived']} fetch_errors={totals['fetch_errors']} "
         f"blocked={totals['blocked']} "
         f"extract_errors={totals['extract_errors']} conflicts={totals['conflicts']} "
+        f"concurrent_writes={totals['concurrent_writes']} "
         f"s3_verified={totals['s3_verified']} s3_unverified={totals['s3_unverified']}",
         fg=status_color,
     )
     if totals["conflicts"]:
         # A conflict means our own uniqueness assumption was wrong somewhere — worth a
         # non-zero exit so this surfaces as a failure in run-scrape.sh, not just a log line.
+        #
+        # OPEN-107: `concurrent_writes` deliberately does NOT reach here. Losing a race to
+        # another archiver leaves the document archived and the run's work correct, so
+        # failing on it made `run-archive.sh`'s documented "safe to run concurrently"
+        # false -- and, before the 2026-07-31 archiver/scraper split, left the incremental
+        # cutoff stuck because the run never reported success.
         sys.exit(1)
 
 
