@@ -1418,19 +1418,29 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                 )
 
             try:
-                BillVersionDocument.objects.create(
-                    bill=bill,
-                    version_note=version.note,
-                    version_date=version.date,
-                    source_url=link.url,
-                    media_type=link.media_type,
-                    raw_text=raw_text,
-                    is_error=is_error,
-                    sha256_hash=sha256_hash,
-                    diff_from_previous_version=diff_from_previous_version,
-                    archive_location=archive_location,
-                    archived_at=archived_at,
-                )
+                # OPEN-107: the insert gets its own savepoint so a duplicate-key
+                # IntegrityError rolls back only this statement. Without it the recovery
+                # SELECT below cannot run at all -- a failed INSERT marks the connection as
+                # needing rollback, and the next query raises TransactionManagementError
+                # instead. Found by /pm-review, then reproduced against a real Postgres
+                # unique violation rather than a hand-raised one. It also makes this
+                # function safe to call from inside a caller's own transaction.atomic(),
+                # which it previously was not. A savepoint per document is negligible
+                # against the network fetch that precedes it.
+                with transaction.atomic():
+                    BillVersionDocument.objects.create(
+                        bill=bill,
+                        version_note=version.note,
+                        version_date=version.date,
+                        source_url=link.url,
+                        media_type=link.media_type,
+                        raw_text=raw_text,
+                        is_error=is_error,
+                        sha256_hash=sha256_hash,
+                        diff_from_previous_version=diff_from_previous_version,
+                        archive_location=archive_location,
+                        archived_at=archived_at,
+                    )
                 counters["archived"] += 1
                 if not is_error and raw_text:
                     this_version_texts[link.media_type] = raw_text
