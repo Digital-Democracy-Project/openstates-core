@@ -1311,7 +1311,12 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
         is_unknown_position = _note_stage(version.note)[0] == _STAGE_UNKNOWN
         this_version_texts: dict[str, str] = {}
 
-        for link in version.links.all():
+        # OPEN-217 (review round 1): 3,744 production versions have more than one
+        # successfully-extracted document of the SAME media type, so `this_version_texts`
+        # last-write-wins had to stop depending on `links.all()`'s unspecified row order --
+        # media type is the lineage key now, and that choice propagates to every later
+        # comparison. Sorted by url so the same link wins on every run.
+        for link in sorted(version.links.all(), key=lambda ln: (ln.media_type, ln.url)):
             existing = BillVersionDocument.objects.filter(
                 bill=bill,
                 version_note=version.note,

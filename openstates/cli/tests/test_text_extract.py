@@ -639,13 +639,22 @@ class TestPriorTextPrefersXmlOverPdf:
         introduced = bill.versions.create(note="Introduced", date="")
         enrolled = bill.versions.create(note="Enrolled", date="")
 
-        # Deliberately give "Introduced" both links with *different* extracted text -- the
-        # XML text is clean, the PDF text carries a fake line-number-style prefix on the same
-        # content, mirroring a real line-numbered PDF extraction -- so the test can tell which
-        # one the Enrolled PDF actually got compared against. Both PDFs carry the prefix,
-        # because a line-numbered extractor produces it on every version it touches; the old
-        # fixture gave it to the Introduced PDF only, which was an artifact of wanting XML to
-        # win rather than a description of the extractor.
+        # Deliberately give "Introduced" both links different extracted text, so the test can
+        # tell which one the Enrolled PDF actually got compared against. The distinguishing
+        # marker is carried by BOTH PDFs, because whatever a PDF extractor does to a document it
+        # does to every version of it; the old fixture put the marker on the Introduced PDF
+        # only, which was an artifact of wanting XML to win rather than a property of any
+        # extractor.
+        #
+        # Review round 1 asked whether the marker faithfully represents production, and a
+        # numeric line prefix does not: Utah's real PDF extraction strips line numbers
+        # (extract_line_numbered_pdf's text_after_line_numbers). The marker is kept as a
+        # deliberately synthetic, minimal stand-in, because the real divergence between two
+        # renderings is far larger than anything worth writing into a fixture -- a real Utah
+        # XML extraction opens with a bare list of the code sections the bill affects
+        # ("27 | 20A-1-509.1 | 20A-2-107 | ...") which the PDF rendering of the same version
+        # does not contain at all, while the PDF opens with the bill title. So the fixture
+        # understates the problem rather than overstating it.
         introduced.links.create(
             url="https://example.test/introduced.xml", media_type="text/xml"
         )

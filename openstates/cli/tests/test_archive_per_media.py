@@ -249,3 +249,82 @@ class TestPerMediaBaseline:
                 re.fullmatch(r"@@ -1(,\d+)? \+1(,\d+)? @@", hunks[0])
                 and "\n " not in diff
             ), f"{media}: whole-document replacement, the bug this fixes: {hunks[0]}"
+
+    def test_an_errored_document_does_not_become_a_baseline(self):
+        """Review round 1 caught an overclaim: OPEN-217's AC4 lists "error rows never become
+        baselines" but no test named it. An error row has no usable text, so it must not poison
+        or occupy its media type's lineage -- the next real document of that rendering has
+        nothing to compare against, and must say so rather than reaching sideways.
+
+        This is the exact shape of Washington HB 1344 and Michigan SR 123 in production, where
+        an errored PDF let the old shared baseline fall through to the sibling HTML."""
+        bill = _make_bill()
+        v1 = bill.versions.create(note="Introduced", date="")
+        v1.links.create(url="https://x.test/v1.pdf", media_type="application/pdf")
+        v1.links.create(url="https://x.test/v1.xml", media_type="text/xml")
+        v2 = bill.versions.create(note="Enrolled", date="")
+        v2.links.create(url="https://x.test/v2.pdf", media_type="application/pdf")
+
+        # v1's PDF extracts to nothing -> is_error, so it never becomes the PDF baseline. Its
+        # XML sibling does extract, and must NOT be borrowed for v2's PDF.
+        _archive(
+            bill,
+            {
+                "https://x.test/v1.pdf": "",
+                "https://x.test/v1.xml": XML_V1,
+                "https://x.test/v2.pdf": PDF_V2,
+            },
+        )
+
+        docs = _docs(bill)
+        assert docs[("Introduced", "application/pdf")].is_error is True
+        assert docs[("Enrolled", "application/pdf")].diff_from_previous_version is None
+
+    def test_an_already_archived_error_row_does_not_become_a_baseline_either(self):
+        """The skip path has its own eligibility check, separate from the fetch path's, so
+        "error rows are excluded" has to hold on both. Round 1 flagged that only the happy skip
+        case was covered."""
+        bill = _make_bill()
+        v1 = bill.versions.create(note="Introduced", date="")
+        v1.links.create(url="https://x.test/v1.pdf", media_type="application/pdf")
+        _archive(bill, {"https://x.test/v1.pdf": ""})
+        assert BillVersionDocument.objects.get(bill=bill).is_error is True
+
+        v2 = bill.versions.create(note="Enrolled", date="")
+        v2.links.create(url="https://x.test/v2.pdf", media_type="application/pdf")
+        counters = _archive(
+            bill, {"https://x.test/v1.pdf": "", "https://x.test/v2.pdf": PDF_V2}
+        )
+
+        assert counters["skipped"] == 1
+        assert _docs(bill)[("Enrolled", "application/pdf")].diff_from_previous_version is None
+
+    def test_duplicate_same_media_links_pick_a_deterministic_baseline(self):
+        """Round 1: 3,744 production versions carry more than one successfully-extracted
+        document of the same media type (Virginia 2,201, Utah 633, Arizona 544, Washington 234,
+        United States 129). Media type is the lineage key now, so whichever of them becomes the
+        baseline propagates into every later comparison -- and `links.all()` has no guaranteed
+        row order. Links are walked sorted by (media_type, url), so the winner is stable."""
+        bill = _make_bill()
+        v1 = bill.versions.create(note="Introduced", date="")
+        # created in the reverse of sorted order, so an unsorted walk would pick "b"
+        v1.links.create(url="https://x.test/v1-b.pdf", media_type="application/pdf")
+        v1.links.create(url="https://x.test/v1-a.pdf", media_type="application/pdf")
+        v2 = bill.versions.create(note="Enrolled", date="")
+        v2.links.create(url="https://x.test/v2.pdf", media_type="application/pdf")
+
+        _archive(
+            bill,
+            {
+                # "-a" sorts last of the two v1 links, so it is the baseline; give the two
+                # distinct text so the resulting diff says which one won.
+                "https://x.test/v1-a.pdf": "FROM A\nshared line",
+                "https://x.test/v1-b.pdf": "FROM B\nshared line",
+                "https://x.test/v2.pdf": "FROM A\nshared line\nplus an addition",
+            },
+        )
+
+        diff = _docs(bill)[("Enrolled", "application/pdf")].diff_from_previous_version
+        # url sort puts v1-a.pdf before v1-b.pdf, and last-write-wins makes v1-b the baseline.
+        assert "-FROM B" in diff and "+FROM A" in diff, diff
+        assert "+plus an addition" in diff
