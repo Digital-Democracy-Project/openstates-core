@@ -1215,6 +1215,69 @@ def _clean_michigan_text(
     return prior_text, raw_text
 
 
+def apply_prediff_cleaning(
+    prior_text: str,
+    raw_text: str,
+    *,
+    jurisdiction_name: str,
+    is_bill: bool,
+    prior_media_type: typing.Optional[str],
+    cur_media_type: str,
+) -> typing.Tuple[str, str]:
+    """The per-jurisdiction text cleaning that runs immediately before
+    `difflib.unified_diff()` -- OPEN-7 (WA), OPEN-9 (VA), OPEN-10 (AZ), OPEN-11 (MI).
+
+    OPEN-219: extracted so that BOTH diff-computing paths run it. It previously lived
+    inline in `archive_bill_versions` only, so `recomputed_diffs_for_documents` --
+    added eight days earlier and ~600 lines away in this same file -- produced
+    different diffs from identical inputs, with nothing indicating which you had.
+
+    That mattered because the cleaning is not cosmetic. Legislative text reprints
+    tracking codes, title and sponsor lines, session headers and margin line numbers
+    on every version; a single inserted sentence shifts every following line number,
+    so a line-based diff reports the whole remainder of the document as changed.
+    OPEN-7's own commit message: "plus reflow so real edits aren't buried by
+    line-number shifts."
+
+    Measured before this fix, by classifying every diff `recompute-diff-order` would
+    rewrite: Washington had already lost the cleaning from **all 4,537** of its stored
+    diffs (OPEN-211's backfill ran the uncleaned path over it), and recomputing
+    Virginia would have stripped it from a further **2,031** to gain 2,304 -- close to
+    a one-for-one trade of real cleaning for real fixes.
+
+    Jurisdiction is a PARAMETER rather than something read off a model, deliberately:
+    `recomputed_diffs_for_documents` reads only plain attributes off each document,
+    which is what lets it be tested without a database and lets `refresh-extraction`
+    simulate a dry run with stand-in objects. Looking the jurisdiction up from the ORM
+    here would destroy both.
+
+    `is_bill` gates Michigan's line-number and whitespace normalisation to
+    Bill-classified notes only -- Resolutions have different conventions those steps
+    would distort (OPEN-11).
+
+    The media-type pair is threaded through because `_clean_michigan_text` and
+    `_clean_virginia_text` take it, but note that since OPEN-217 both call sites diff
+    like-for-like, so their cross-media reflow branch is unreachable from either. It is
+    left in place rather than removed: both are shared helpers with their own unit
+    tests, and dropping a parameter from them is a separate cleanup.
+    """
+    if jurisdiction_name == "Washington":
+        prior_text = _clean_wa_text(prior_text)
+        raw_text = _clean_wa_text(raw_text)
+    if jurisdiction_name == "Michigan":
+        prior_text, raw_text = _clean_michigan_text(
+            prior_text, raw_text, prior_media_type, cur_media_type, is_bill
+        )
+    if jurisdiction_name == "Virginia":
+        prior_text, raw_text = _clean_virginia_text(
+            prior_text, raw_text, prior_media_type, cur_media_type
+        )
+    if jurisdiction_name == "Arizona":
+        prior_text = _reflow_paragraphs(prior_text)
+        raw_text = _reflow_paragraphs(raw_text)
+    return prior_text, raw_text
+
+
 def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
     """
     Fetch and permanently archive every not-yet-captured version+document of a bill
@@ -1414,30 +1477,17 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                 and raw_text
                 and not is_unknown_position
             ):
-                diff_prior_text, diff_raw_text = prior_text, raw_text
-                # OPEN-7: WA-only, applied to a local copy of each text so every other
-                # jurisdiction's diff_from_previous_version stays byte-for-byte unchanged.
-                if bill.legislative_session.jurisdiction.name == "Washington":
-                    diff_prior_text = _clean_wa_text(diff_prior_text)
-                    diff_raw_text = _clean_wa_text(diff_raw_text)
-                if is_michigan:
-                    diff_prior_text, diff_raw_text = _clean_michigan_text(
-                        diff_prior_text,
-                        diff_raw_text,
-                        prior_media_type,
-                        link.media_type,
-                        is_michigan_bill,
-                    )
-                if jurisdiction_name == "Virginia":
-                    diff_prior_text, diff_raw_text = _clean_virginia_text(
-                        diff_prior_text,
-                        diff_raw_text,
-                        prior_media_type,
-                        link.media_type,
-                    )
-                if jurisdiction_name == "Arizona":
-                    diff_prior_text = _reflow_paragraphs(diff_prior_text)
-                    diff_raw_text = _reflow_paragraphs(diff_raw_text)
+                # OPEN-219: shared with recomputed_diffs_for_documents below. Applied to
+                # a local copy of each text, so the stored raw_text is untouched and every
+                # jurisdiction without a cleaner is byte-for-byte unchanged.
+                diff_prior_text, diff_raw_text = apply_prediff_cleaning(
+                    prior_text,
+                    raw_text,
+                    jurisdiction_name=jurisdiction_name,
+                    is_bill=is_michigan_bill,
+                    prior_media_type=prior_media_type,
+                    cur_media_type=link.media_type,
+                )
                 diff_from_previous_version = "\n".join(
                     difflib.unified_diff(
                         diff_prior_text.splitlines(),
@@ -1924,13 +1974,34 @@ def recompute_bill_diff_order(bill: typing.Any) -> dict[str, list]:
     from openstates.data.models import BillVersionDocument
 
     docs = list(BillVersionDocument.objects.filter(bill=bill).order_by("id"))
-    return recomputed_diffs_for_documents(docs)
+    return recomputed_diffs_for_documents(
+        docs,
+        jurisdiction_name=bill.legislative_session.jurisdiction.name,
+        is_bill=bill.classification == ["bill"],
+    )
 
 
-def recomputed_diffs_for_documents(docs: list) -> dict[str, list]:
+def recomputed_diffs_for_documents(
+    docs: list,
+    *,
+    jurisdiction_name: str,
+    is_bill: bool,
+) -> dict[str, list]:
     """The ordering-and-diffing half of `recompute_bill_diff_order`, split out (OPEN-211) so it
     can be exercised without a database -- it reads nothing but plain attributes off each
-    document, while its caller above is the part that queries. Behaviour is unchanged."""
+    document, while its caller above is the part that queries.
+
+    OPEN-219: `jurisdiction_name` and `is_bill` are REQUIRED keyword arguments, with no
+    defaults, and that is the point. This function used to apply none of the four
+    per-jurisdiction pre-diff cleaners `archive_bill_versions` applies, so the two paths
+    produced different diffs from identical inputs. A default would have preserved exactly
+    that failure -- a caller that forgot would silently get uncleaned output, which is how
+    the divergence survived unnoticed from 2026-08-14 to 2026-08-29. Making the caller state
+    the jurisdiction means it cannot be skipped by omission.
+
+    They are parameters rather than values read off a model because this function's whole
+    contract is that it touches only plain attributes: that is what lets it be tested with no
+    database, and what lets `refresh-extraction` simulate a dry run with stand-in objects."""
     groups: dict[tuple, list] = {}
     for doc in docs:
         groups.setdefault((doc.version_note, doc.version_date), []).append(doc)
@@ -1967,9 +2038,23 @@ def recomputed_diffs_for_documents(docs: list) -> dict[str, list]:
                 and doc.raw_text
                 and not is_unknown_position
             ):
+                # OPEN-219: the same cleaning archive_bill_versions applies. Both paths are
+                # same-media since OPEN-217, so the media type is passed identically on both
+                # sides -- the cleaners' cross-media reflow branch is unreachable from here,
+                # exactly as it is from the archive path.
+                diff_prior_text, diff_raw_text = apply_prediff_cleaning(
+                    prior_text,
+                    doc.raw_text,
+                    jurisdiction_name=jurisdiction_name,
+                    is_bill=is_bill,
+                    prior_media_type=doc.media_type,
+                    cur_media_type=doc.media_type,
+                )
                 new_diff = "\n".join(
                     difflib.unified_diff(
-                        prior_text.splitlines(), doc.raw_text.splitlines(), lineterm=""
+                        diff_prior_text.splitlines(),
+                        diff_raw_text.splitlines(),
+                        lineterm="",
                     )
                 )
             if new_diff != doc.diff_from_previous_version:
@@ -2308,7 +2393,13 @@ def refresh_extraction(
         if not commit:
             # Simulate the recompute against the PROPOSED text, so a dry run reports the thing
             # this migration is actually for rather than only how many documents would change.
-            diffs_would_change += len(recomputed_diffs_for_documents(proposed)["changed"])
+            diffs_would_change += len(
+                recomputed_diffs_for_documents(
+                    proposed,
+                    jurisdiction_name=bill.legislative_session.jurisdiction.name,
+                    is_bill=bill.classification == ["bill"],
+                )["changed"]
+            )
             continue
 
         # One transaction per bill. The ordering below -- every version brought current before
