@@ -702,7 +702,14 @@ def _upload_and_verify_direct(
         )
         return None
 
-    client = _get_s3_client()
+    try:
+        client = _get_s3_client()
+    except BotoCoreError as e:
+        # Client construction itself can raise (e.g. ProfileNotFound from a misconfigured
+        # AWS_PROFILE) even though it makes no network call -- this function's contract is
+        # "None on any failure," not "None on any failure after the client exists."
+        click.secho(f"S3 upload failed for {object_key}: {e}", fg="red")
+        return None
 
     try:
         with open(path, "rb") as f:

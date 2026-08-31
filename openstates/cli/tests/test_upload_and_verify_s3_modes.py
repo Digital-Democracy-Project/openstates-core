@@ -228,6 +228,19 @@ class TestUploadAndVerifyDirect:
             result = _upload_and_verify_direct(path, "some/key", md5)
         assert result is None
 
+    def test_client_construction_failure_returns_none(self, tmp_path, monkeypatch):
+        # _get_s3_client() itself can raise (e.g. ProfileNotFound from a misconfigured
+        # AWS_PROFILE) before any put_object/head_object call is even reachable -- this must
+        # be caught too, not just failures from calls made on an already-constructed client.
+        monkeypatch.setenv("WORKING_TIER_S3_BUCKET", "ddp-openstates-scraper-memory")
+        path, md5 = self._write_temp_file(tmp_path, b"pdf bytes")
+        with mock.patch(
+            "openstates.cli.text_extract._get_s3_client",
+            side_effect=NoCredentialsError(),
+        ):
+            result = _upload_and_verify_direct(path, "some/key", md5)
+        assert result is None
+
     def test_vault_non_client_botocore_error_returns_none(self, tmp_path, monkeypatch):
         # NoCredentialsError/EndpointConnectionError are BotoCoreError subclasses, not
         # ClientError -- they never got a response from S3 to wrap at all. This function's
