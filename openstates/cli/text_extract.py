@@ -1343,12 +1343,17 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
     }
 
     jurisdiction_name = bill.legislative_session.jurisdiction.name
-    # OPEN-11: gates _clean_michigan_text() below -- every other jurisdiction's prior_text/
-    # raw_text reach difflib.unified_diff() completely untouched (AC1). is_michigan_bill also
-    # requires classification == ["bill"] since several of _clean_michigan_text()'s steps are
-    # deliberately not applied to Resolutions (see that function's docstring).
-    is_michigan = jurisdiction_name == "Michigan"
-    is_michigan_bill = is_michigan and bill.classification == ["bill"]
+    # OPEN-11: several of _clean_michigan_text()'s steps are deliberately not applied to
+    # Resolutions (see that function's docstring), so it needs to know whether this is a
+    # Bill. Every other jurisdiction's prior_text/raw_text still reach
+    # difflib.unified_diff() completely untouched (AC1) -- apply_prediff_cleaning() gates
+    # on the jurisdiction name itself.
+    #
+    # OPEN-219: this is the bill's own classification, NOT ANDed with the jurisdiction as
+    # it used to be. Only Michigan's cleaner reads it, so the AND was harmless -- but it
+    # meant this path and recompute_bill_diff_order passed different values for the same
+    # bill, an argument-parity gap of exactly the kind this ticket is about.
+    is_bill = bill.classification == ["bill"]
 
     # OPEN-217: one baseline PER MEDIA TYPE, matching `recomputed_diffs_for_documents` below.
     #
@@ -1484,7 +1489,7 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                     prior_text,
                     raw_text,
                     jurisdiction_name=jurisdiction_name,
-                    is_bill=is_michigan_bill,
+                    is_bill=is_bill,
                     prior_media_type=prior_media_type,
                     cur_media_type=link.media_type,
                 )

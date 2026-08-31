@@ -223,3 +223,143 @@ def test_michigan_line_number_stripping_still_respects_the_resolution_gate():
     # the leading margin line numbers survive on the resolution path, and not on the bill one
     assert any(ln.startswith("1   Sec.") for ln in as_resolution.splitlines())
     assert not any(ln.startswith("1   Sec.") for ln in as_bill.splitlines())
+
+
+# --- /pm-review round 1 -------------------------------------------------------------
+#
+# The parity test above calls recomputed_diffs_for_documents DIRECTLY, supplying
+# jurisdiction_name and is_bill by hand. Round 1 correctly objected that this proves the
+# shared helper behaves, but NOT that production derives the same arguments -- a wiring
+# error in recompute_bill_diff_order would survive it. These enter through the production
+# wrapper instead, deriving everything from the bill exactly as the real command does.
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("jurisdiction", sorted(FIXTURES))
+def test_both_paths_agree_through_the_production_wrapper(jurisdiction):
+    """Same assertion as `test_both_diff_paths_agree`, but nothing is passed by hand:
+    `recompute_bill_diff_order` derives jurisdiction and classification off the bill."""
+    from openstates.cli.text_extract import recompute_bill_diff_order
+
+    bill = _build_and_archive(jurisdiction)
+    assert recompute_bill_diff_order(bill)["changed"] == [], (
+        f"{jurisdiction}: the production recompute wrapper disagrees with the archiver"
+    )
+
+
+@pytest.mark.django_db
+def test_the_wrapper_derives_is_bill_the_same_way_the_archiver_does():
+    """Round 1: 'Archive and recompute may calculate is_bill differently.' They did --
+    the archive path ANDed the jurisdiction into it (`is_michigan and classification ==
+    ["bill"]`) while the wrapper used classification alone. Harmless, since only Michigan's
+    cleaner reads the value, but a real argument-parity gap. Both now use the bill's own
+    classification, and a Michigan RESOLUTION is where a divergence would show, because
+    that is the one input whose cleaning depends on it."""
+    from openstates.cli.text_extract import recompute_bill_diff_order
+
+    jid, v1_text, v2_text = FIXTURES["Michigan"]
+    bill = _make_bill(jid=jid, jurisdiction_name="Michigan")
+    bill.classification = ["resolution"]
+    bill.save()
+    v1 = bill.versions.create(note="Introduced", date="")
+    v1.links.create(url=V1_URL, media_type="application/pdf")
+    v2 = bill.versions.create(note="Enrolled", date="")
+    v2.links.create(url=V2_URL, media_type="application/pdf")
+    _archive(bill, {V1_URL: v1_text, V2_URL: v2_text})
+
+    assert recompute_bill_diff_order(bill)["changed"] == []
+
+
+@pytest.mark.django_db
+def test_parity_holds_when_a_version_carries_two_media_types():
+    """Round 1: does the recompute path really partition predecessors by media type before
+    passing `doc.media_type` for both sides? It does -- `prior_by_media.get(doc.media_type)`
+    (OPEN-211/OPEN-217) -- but that was asserted in prose, not shown. A mixed-media fixture
+    proves the two paths still agree when a version has both a PDF and an HTML rendering,
+    which is when a same-media baseline mistake would surface."""
+    from openstates.cli.text_extract import recompute_bill_diff_order
+
+    jid, v1_text, v2_text = FIXTURES["Washington"]
+    bill = _make_bill(jid=jid, jurisdiction_name="Washington")
+    bill.classification = ["bill"]
+    bill.save()
+    v1 = bill.versions.create(note="Introduced", date="")
+    v1.links.create(url=V1_URL, media_type="application/pdf")
+    v1.links.create(url="https://x.test/v1.htm", media_type="text/html")
+    v2 = bill.versions.create(note="Enrolled", date="")
+    v2.links.create(url=V2_URL, media_type="application/pdf")
+    v2.links.create(url="https://x.test/v2.htm", media_type="text/html")
+
+    _archive(
+        bill,
+        {
+            V1_URL: v1_text,
+            V2_URL: v2_text,
+            # deliberately different text per rendering, so a cross-media baseline would
+            # produce a visibly different diff rather than coincidentally matching
+            "https://x.test/v1.htm": v1_text.replace("Sec. 1.", "Section 1."),
+            "https://x.test/v2.htm": v2_text.replace("Sec. 1.", "Section 1."),
+        },
+    )
+
+    assert recompute_bill_diff_order(bill)["changed"] == []
+    assert BillVersionDocument.objects.filter(bill=bill).count() == 4
+
+
+@pytest.mark.django_db
+def test_error_and_empty_documents_never_reach_the_cleaner():
+    """Round 1: 'Are error and missing-text rows excluded before apply_prediff_cleaning?'
+
+    Yes -- the `prior_text is not None and not doc.is_error and doc.raw_text` guard sits in
+    front of the call on both paths, so a cleaner never sees an error row or empty text.
+    Asserted by spying on the helper rather than by reading the guard, so a future edit that
+    moves the call above the guard fails here."""
+    from openstates.cli import text_extract as te
+
+    jid, v1_text, v2_text = FIXTURES["Washington"]
+    bill = _make_bill(jid=jid, jurisdiction_name="Washington")
+    bill.classification = ["bill"]
+    bill.save()
+    v1 = bill.versions.create(note="Introduced", date="")
+    v1.links.create(url=V1_URL, media_type="application/pdf")
+    v2 = bill.versions.create(note="Enrolled", date="")
+    v2.links.create(url=V2_URL, media_type="application/pdf")
+    # v1 extracts to nothing -> is_error, so v2 has no usable predecessor at all
+    _archive(bill, {V1_URL: "", V2_URL: v2_text})
+
+    docs = list(BillVersionDocument.objects.filter(bill=bill).order_by("id"))
+    assert any(d.is_error for d in docs)
+
+    seen = []
+    real = te.apply_prediff_cleaning
+    with mock.patch.object(
+        te, "apply_prediff_cleaning",
+        side_effect=lambda p, r, **kw: (seen.append((p, r)), real(p, r, **kw))[1],
+    ):
+        te.recomputed_diffs_for_documents(
+            docs, jurisdiction_name="Washington", is_bill=True
+        )
+
+    assert seen == [], f"cleaner was called with {seen!r} despite an error/empty row"
+
+
+@pytest.mark.django_db
+def test_an_unknown_stage_version_is_excluded_on_both_paths():
+    """A version whose note matches no known stage takes no diff and becomes no baseline
+    (OPEN-34). Pinned here too because cleaning now sits inside that same branch."""
+    from openstates.cli.text_extract import recompute_bill_diff_order
+
+    jid, v1_text, v2_text = FIXTURES["Virginia"]
+    bill = _make_bill(jid=jid, jurisdiction_name="Virginia")
+    bill.classification = ["bill"]
+    bill.save()
+    v1 = bill.versions.create(note="Introduced", date="")
+    v1.links.create(url=V1_URL, media_type="application/pdf")
+    mystery = bill.versions.create(note="???", date="")
+    mystery.links.create(url=V2_URL, media_type="application/pdf")
+
+    _archive(bill, {V1_URL: v1_text, V2_URL: v2_text})
+
+    docs = {d.version_note: d for d in BillVersionDocument.objects.filter(bill=bill)}
+    assert docs["???"].diff_from_previous_version is None
+    assert recompute_bill_diff_order(bill)["changed"] == []
