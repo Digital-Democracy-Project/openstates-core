@@ -45,6 +45,19 @@ XML_V1 = "Section 1\nA court may consider the tax consequences.\nSection 2\nEffe
 XML_V2 = "Section 1\nA court shall consider the tax consequences.\nSection 2\nEffective July 1."
 
 
+# OPEN-219: jurisdiction_name/is_bill are now required. Every case in this module is a
+# jurisdiction with NO pre-diff cleaner, which is what keeps these assertions about the
+# same-media baseline logic and nothing else. Named explicitly rather than defaulted --
+# a default is what let the two diff paths silently disagree in the first place.
+NO_CLEANER = "Utah"
+
+
+def _recompute(docs):
+    return recomputed_diffs_for_documents(
+        docs, jurisdiction_name=NO_CLEANER, is_bill=True
+    )
+
+
 def _by_doc(result):
     return {doc: diff for doc, diff in result["changed"]}
 
@@ -58,7 +71,7 @@ def test_each_media_type_diffs_against_its_own_previous_rendering():
     v2_pdf = FakeDoc("Enrolled", "application/pdf", PDF_V2)
     v2_xml = FakeDoc("Enrolled", "text/xml", XML_V2)
 
-    changed = _by_doc(recomputed_diffs_for_documents([v1_pdf, v1_xml, v2_pdf, v2_xml]))
+    changed = _by_doc(_recompute([v1_pdf, v1_xml, v2_pdf, v2_xml]))
 
     for doc in (v2_pdf, v2_xml):
         diff = changed[doc]
@@ -78,7 +91,7 @@ def test_a_versions_first_appearance_of_a_media_type_has_no_diff():
     v2_pdf = FakeDoc("Enrolled", "application/pdf", PDF_V2)
     v2_xml = FakeDoc("Enrolled", "text/xml", XML_V2)  # XML appears only in version 2
 
-    result = recomputed_diffs_for_documents([v1_pdf, v2_pdf, v2_xml])
+    result = _recompute([v1_pdf, v2_pdf, v2_xml])
 
     # No diff computed and none stored, so there is nothing to correct: it belongs in
     # "unchanged", not in "changed" with a None. Asserting it this way also pins that the
@@ -94,7 +107,7 @@ def test_a_missing_rendering_does_not_break_the_lineage():
     v2_pdf = FakeDoc("Substitute #1", "application/pdf", PDF_V1)
     v3_xml = FakeDoc("Enrolled", "text/xml", XML_V2)
 
-    changed = _by_doc(recomputed_diffs_for_documents([v1_xml, v2_pdf, v3_xml]))
+    changed = _by_doc(_recompute([v1_xml, v2_pdf, v3_xml]))
 
     diff = changed[v3_xml]
     assert diff is not None and "+A court shall consider the tax consequences." in diff
@@ -105,10 +118,10 @@ def test_unchanged_text_produces_no_recorded_change():
     must report them unchanged rather than rewriting them."""
     v1 = FakeDoc("Introduced", "application/pdf", PDF_V1)
     v2 = FakeDoc("Enrolled", "application/pdf", PDF_V2)
-    first = _by_doc(recomputed_diffs_for_documents([v1, v2]))
+    first = _by_doc(_recompute([v1, v2]))
     v2.diff_from_previous_version = first[v2]
 
-    second = recomputed_diffs_for_documents([v1, v2])
+    second = _recompute([v1, v2])
 
     assert second["changed"] == []
     assert v2 in second["unchanged"]
@@ -128,7 +141,7 @@ def test_a_media_type_that_disappears_and_returns_keeps_its_lineage():
     v2_pdf_only = FakeDoc("Substitute #1", "application/pdf", PDF_V1)
     v3_xml = FakeDoc("Enrolled", "text/xml", XML_V2)
 
-    changed = _by_doc(recomputed_diffs_for_documents([v1_xml, v2_pdf_only, v3_xml]))
+    changed = _by_doc(_recompute([v1_xml, v2_pdf_only, v3_xml]))
 
     assert "+A court shall consider the tax consequences." in changed[v3_xml]
 
@@ -140,7 +153,7 @@ def test_an_errored_document_does_not_become_a_baseline():
     v2 = FakeDoc("Substitute #1", "text/xml", "", is_error=True)
     v3 = FakeDoc("Enrolled", "text/xml", XML_V2)
 
-    changed = _by_doc(recomputed_diffs_for_documents([v1, v2, v3]))
+    changed = _by_doc(_recompute([v1, v2, v3]))
 
     assert "+A court shall consider the tax consequences." in changed[v3]
 
@@ -153,7 +166,7 @@ def test_unknown_stage_versions_are_excluded_from_the_lineage():
     mystery = FakeDoc("???", "text/xml", "totally different text")
     v3 = FakeDoc("Enrolled", "text/xml", XML_V2)
 
-    result = recomputed_diffs_for_documents([v1, mystery, v3])
+    result = _recompute([v1, mystery, v3])
     changed = _by_doc(result)
 
     assert mystery not in changed
