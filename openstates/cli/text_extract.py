@@ -592,10 +592,22 @@ def _upload_and_verify(
     Returns the s3:// URI on a verified match; None on any upload failure, ETag mismatch, or a
     multipart ETag -- the caller leaves `archive_location`/`archived_at` unset in every None
     case, so an unverified upload is never recorded as archived. Same contract, either mode.
+
+    An explicitly-set but unrecognized `ARCHIVE_S3_MODE` value is a configuration error, not a
+    signal to fall back to wrapper mode -- a typo'd value (e.g. a container env with
+    `ARCHIVE_S3_MODE=driect`) would otherwise silently invoke the sudo-gated Mac wrapper, which
+    doesn't exist in a cloud container, rather than failing at this one obvious point.
     """
     mode = os.environ.get("ARCHIVE_S3_MODE", "wrapper")
     if mode == "direct":
         return _upload_and_verify_direct(path, object_key, local_md5)
+    if mode != "wrapper":
+        click.secho(
+            f"S3 upload failed for {object_key}: unrecognized ARCHIVE_S3_MODE={mode!r} "
+            '(expected "wrapper" or "direct")',
+            fg="red",
+        )
+        return None
     return _upload_and_verify_via_wrapper(path, object_key, local_md5)
 
 
@@ -678,7 +690,7 @@ def _upload_and_verify_direct(
     already makes), so a `-N`-suffixed ETag is not expected in practice, but is still checked
     and still treated as unverified if one somehow appears.
     """
-    from botocore.exceptions import ClientError
+    from botocore.exceptions import BotoCoreError, ClientError
 
     working_tier_bucket = os.environ.get("WORKING_TIER_S3_BUCKET")
     if not working_tier_bucket:
@@ -707,7 +719,11 @@ def _upload_and_verify_direct(
             StorageClass="DEEP_ARCHIVE",
         )
         vault_head = client.head_object(Bucket=S3_BILL_ARCHIVE_BUCKET, Key=object_key)
-    except ClientError as e:
+    except (ClientError, BotoCoreError) as e:
+        # BotoCoreError alongside ClientError: a credential/config/connection failure (e.g. no
+        # credentials found, endpoint unreachable) isn't a ClientError at all -- it never got a
+        # response from S3 to wrap -- but this function's contract is "None on any failure,"
+        # not "None on any failure S3 itself reported."
         click.secho(f"S3 upload failed for {object_key}: {e}", fg="red")
         return None
 
@@ -722,7 +738,7 @@ def _upload_and_verify_direct(
             Body=body,
         )
         working_tier_head = client.head_object(Bucket=working_tier_bucket, Key=object_key)
-    except ClientError as e:
+    except (ClientError, BotoCoreError) as e:
         click.secho(
             f"Working-tier upload failed for {object_key} (vault write already succeeded, "
             f"leaving it unreadable for ~12h): {e}",

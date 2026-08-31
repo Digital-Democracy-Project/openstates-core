@@ -14,7 +14,7 @@ import os
 from unittest import mock
 
 import pytest  # type: ignore
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, EndpointConnectionError, NoCredentialsError
 
 from openstates.cli.text_extract import (
     _check_etag,
@@ -88,6 +88,23 @@ class TestUploadAndVerifyDispatch:
         assert result == "s3://direct-result"
         direct.assert_called_once_with("/tmp/x", "some/key", "abc123")
         wrapper.assert_not_called()
+
+    def test_unrecognized_mode_fails_closed_instead_of_falling_back_to_wrapper(
+        self, monkeypatch
+    ):
+        # A typo'd ARCHIVE_S3_MODE (e.g. "driect") must not silently invoke the sudo-gated Mac
+        # wrapper -- that binary doesn't exist in a cloud container, so falling back to it would
+        # trade one clear failure for a confusing one deeper in the stack.
+        monkeypatch.setenv("ARCHIVE_S3_MODE", "driect")
+        with mock.patch(
+            "openstates.cli.text_extract._upload_and_verify_via_wrapper"
+        ) as wrapper, mock.patch(
+            "openstates.cli.text_extract._upload_and_verify_direct"
+        ) as direct:
+            result = _upload_and_verify("/tmp/x", "some/key", "abc123")
+        assert result is None
+        wrapper.assert_not_called()
+        direct.assert_not_called()
 
 
 class TestUploadAndVerifyDirect:
@@ -204,6 +221,35 @@ class TestUploadAndVerifyDirect:
         client.head_object.side_effect = [
             {"ETag": f'"{md5}"'},  # vault: matches
             {"ETag": '"wrong"'},  # working tier: does not
+        ]
+        with mock.patch(
+            "openstates.cli.text_extract._get_s3_client", return_value=client
+        ):
+            result = _upload_and_verify_direct(path, "some/key", md5)
+        assert result is None
+
+    def test_vault_non_client_botocore_error_returns_none(self, tmp_path, monkeypatch):
+        # NoCredentialsError/EndpointConnectionError are BotoCoreError subclasses, not
+        # ClientError -- they never got a response from S3 to wrap at all. This function's
+        # contract is "None on any failure," so these must be caught too, not just ClientError.
+        monkeypatch.setenv("WORKING_TIER_S3_BUCKET", "ddp-openstates-scraper-memory")
+        path, md5 = self._write_temp_file(tmp_path, b"pdf bytes")
+        client = mock.Mock()
+        client.put_object.side_effect = NoCredentialsError()
+        with mock.patch(
+            "openstates.cli.text_extract._get_s3_client", return_value=client
+        ):
+            result = _upload_and_verify_direct(path, "some/key", md5)
+        assert result is None
+
+    def test_working_tier_non_client_botocore_error_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("WORKING_TIER_S3_BUCKET", "ddp-openstates-scraper-memory")
+        path, md5 = self._write_temp_file(tmp_path, b"pdf bytes")
+        client = mock.Mock()
+        client.head_object.return_value = {"ETag": f'"{md5}"'}
+        client.put_object.side_effect = [
+            None,
+            EndpointConnectionError(endpoint_url="https://s3.amazonaws.com"),
         ]
         with mock.patch(
             "openstates.cli.text_extract._get_s3_client", return_value=client
