@@ -78,6 +78,13 @@ S3_BILL_ARCHIVE_BUCKET = "ddp-bill-archive"
 # OPEN-237: how often archive()'s progress heartbeat fires (see its own comment at the call
 # site) -- frequent enough that a stalled-run detector polling every few minutes sees it,
 # infrequent enough not to flood the log on a large jurisdiction's run.
+#
+# Deploy ordering: this must ship before ddp-open-states's os-status starts reading the
+# heartbeat line it produces -- deployed the other way round, os-status finds no heartbeat
+# for any in-flight run and reports every archiver as stalled, even though nothing is
+# actually wrong. Same pairing requirement as cloud_archiver.py's OPEN-238 note. Rolling
+# back reverses the order: os-status's consumer change goes first, this producer change
+# second (or os-status simply tolerates a run of stale results in between).
 _ARCHIVE_HEARTBEAT_INTERVAL_S = 60
 
 # Found 2026-07-28: legislature.mi.gov started serving a CAPTCHA/rate-limit challenge page
@@ -2075,11 +2082,6 @@ def archive(state: str, session: str = None, n: int = None) -> None:
     last_heartbeat = time.monotonic()
     for bill in bills:
         bill_count += 1
-        now = time.monotonic()
-        if now - last_heartbeat >= _ARCHIVE_HEARTBEAT_INTERVAL_S:
-            ts = time.strftime("%Y-%m-%d %H:%M:%S")
-            click.echo(f"[{ts}] {state}: heartbeat, {bill_count} bills processed so far")
-            last_heartbeat = now
         try:
             bill_counters = archive_bill_versions(bill)
         except ScrapeError as e:
@@ -2090,6 +2092,14 @@ def archive(state: str, session: str = None, n: int = None) -> None:
             sys.exit(1)
         for key, value in bill_counters.items():
             totals[key] += value
+        # Checked after the bill is actually done, not before -- otherwise "N bills processed
+        # so far" would count a bill that's still mid-fetch as processed the moment its
+        # iteration starts, overstating progress by one entry for as long as that bill takes.
+        now = time.monotonic()
+        if now - last_heartbeat >= _ARCHIVE_HEARTBEAT_INTERVAL_S:
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            click.echo(f"[{ts}] {state}: heartbeat, {bill_count} bills processed so far")
+            last_heartbeat = now
 
     status_color = "green"
     if totals["conflicts"]:
