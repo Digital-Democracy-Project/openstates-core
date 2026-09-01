@@ -9,6 +9,7 @@ import csv
 import json
 import math
 import subprocess
+import tempfile
 import textwrap
 import warnings
 import click
@@ -574,10 +575,10 @@ def _check_etag(etag: typing.Optional[str], local_md5: str, object_key: str) -> 
 
 
 def _upload_and_verify(
-    path: str, object_key: str, local_md5: str
+    data: bytes, object_key: str, local_md5: str
 ) -> typing.Optional[str]:
     """
-    Upload one archived document to S3 Glacier Deep Archive and verify the upload via ETag
+    Upload one archived document to S3 and verify the upload via ETag
     (PLAN-bill-document-provenance.md, Phase 2 -- verification mechanism revised 2026-07-25).
 
     Dispatches on `ARCHIVE_S3_MODE` (OPEN-192, Phase 3 of the scraper-execution migration):
@@ -586,8 +587,7 @@ def _upload_and_verify(
     running this same code from a cloud container that has no sudo, no wrapper binary, and no
     Mac at all -- OPEN-192's own text names this exact transport swap as what the migration
     buys ("In the cloud that upload is an ordinary credentialed PutObject and the wrapper stops
-    being needed at all"). Nothing about the wrapper path below changed to make room for this;
-    it is the original function, untouched, just renamed and called from here.
+    being needed at all").
 
     Returns the s3:// URI on a verified match; None on any upload failure, ETag mismatch, or a
     multipart ETag -- the caller leaves `archive_location`/`archived_at` unset in every None
@@ -597,10 +597,15 @@ def _upload_and_verify(
     signal to fall back to wrapper mode -- a typo'd value (e.g. a container env with
     `ARCHIVE_S3_MODE=driect`) would otherwise silently invoke the sudo-gated Mac wrapper, which
     doesn't exist in a cloud container, rather than failing at this one obvious point.
+
+    OPEN-235: takes the already-fetched bytes directly, not a local path -- the caller
+    (archive_bill_versions()) no longer writes the document to local disk at all before
+    uploading it, on the Mac or in the cloud. DDP-HOT is a synced mirror of this bucket now
+    (OPEN-236's periodic sync job), not a staging area this function reads back from.
     """
     mode = os.environ.get("ARCHIVE_S3_MODE", "wrapper")
     if mode == "direct":
-        return _upload_and_verify_direct(path, object_key, local_md5)
+        return _upload_and_verify_direct(data, object_key, local_md5)
     if mode != "wrapper":
         click.secho(
             f"S3 upload failed for {object_key}: unrecognized ARCHIVE_S3_MODE={mode!r} "
@@ -608,45 +613,56 @@ def _upload_and_verify(
             fg="red",
         )
         return None
-    return _upload_and_verify_via_wrapper(path, object_key, local_md5)
+    return _upload_and_verify_via_wrapper(data, object_key, local_md5)
 
 
 def _upload_and_verify_via_wrapper(
-    path: str, object_key: str, local_md5: str
+    data: bytes, object_key: str, local_md5: str
 ) -> typing.Optional[str]:
     """The original, Mac-only upload path -- see `_upload_and_verify`'s own docstring for why
-    this exists as a separate function now. Behaviour is byte-for-byte what `_upload_and_verify`
-    itself used to do before OPEN-192 added a second mode; nothing here changed.
+    this exists as a separate function now.
+
+    OPEN-235: the wrapper binary (`S3_BILL_ARCHIVE_WRAPPER`) only accepts a local file path as
+    its upload source -- it's a separate, external CLI tool this repo doesn't control -- so this
+    still needs *a* file on disk to hand it. The difference is that file is now a throwaway
+    tempfile, written and deleted within this one call, never the bill's permanent DDP-HOT
+    path: this function no longer has any lasting effect on local disk at all, matching the
+    direct-mode path's behavior. `NamedTemporaryFile()`'s default `delete=True` cleans it up on
+    the way out of the `with` block regardless of which branch below returns.
 
     Open assumption, not yet independently confirmed (see plan's Risk Register): that the
     proxy's `put-stream` always performs a single-part PutObject regardless of file size. Bill
     documents (PDFs/HTML) are expected to stay well under any multipart threshold.
     """
-    try:
-        subprocess.run(
-            [S3_BILL_ARCHIVE_WRAPPER, "put", path, object_key],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except subprocess.CalledProcessError as e:
-        click.secho(f"S3 upload failed for {object_key}: {e.stderr.strip()}", fg="red")
-        return None
-    except OSError as e:
-        click.secho(f"S3 upload failed for {object_key}: {e}", fg="red")
-        return None
+    with tempfile.NamedTemporaryFile() as tmp:
+        tmp.write(data)
+        tmp.flush()
 
-    try:
-        info_proc = subprocess.run(
-            [S3_BILL_ARCHIVE_WRAPPER, "info", object_key],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        info = json.loads(info_proc.stdout)
-    except (subprocess.CalledProcessError, json.JSONDecodeError, OSError) as e:
-        click.secho(f"S3 verify failed for {object_key}: {e}", fg="red")
-        return None
+        try:
+            subprocess.run(
+                [S3_BILL_ARCHIVE_WRAPPER, "put", tmp.name, object_key],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as e:
+            click.secho(f"S3 upload failed for {object_key}: {e.stderr.strip()}", fg="red")
+            return None
+        except OSError as e:
+            click.secho(f"S3 upload failed for {object_key}: {e}", fg="red")
+            return None
+
+        try:
+            info_proc = subprocess.run(
+                [S3_BILL_ARCHIVE_WRAPPER, "info", object_key],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            info = json.loads(info_proc.stdout)
+        except (subprocess.CalledProcessError, json.JSONDecodeError, OSError) as e:
+            click.secho(f"S3 verify failed for {object_key}: {e}", fg="red")
+            return None
 
     etag = info.get("ETag", "").strip('"')
     if not _check_etag(etag, local_md5, object_key):
@@ -666,7 +682,7 @@ def _get_s3_client():
 
 
 def _upload_and_verify_direct(
-    path: str, object_key: str, local_md5: str
+    data: bytes, object_key: str, local_md5: str
 ) -> typing.Optional[str]:
     """OPEN-192's cloud upload path: an ordinary credentialed boto3 PutObject to
     `S3_BILL_ARCHIVE_BUCKET` (the same bucket the wrapper path writes), at `STANDARD_IA` instead
@@ -682,6 +698,12 @@ def _upload_and_verify_direct(
     at `STANDARD_IA` is both the archive and the readable copy at once, in the same bucket the
     historical Deep-Archive corpus already lives in. There is no bucket decision left to make and
     no second write to coordinate.
+
+    **OPEN-235: takes `data` directly, no local file at all.** This mode never had DDP-HOT's
+    sudo-gated write path to work around in the first place -- reading the bytes back from a
+    local file here was always a redundant round trip through disk for data already held in
+    memory by the caller. Removing it also removes a whole failure mode (a local-disk read
+    failure) that had nothing to do with S3 at all.
 
     Same verification contract as the wrapper path (`_check_etag`): a single-part PutObject's
     response ETag is the plain hex MD5 of exactly the bytes S3 stored, checked against the same
@@ -702,17 +724,10 @@ def _upload_and_verify_direct(
         return None
 
     try:
-        with open(path, "rb") as f:
-            body = f.read()
-    except OSError as e:
-        click.secho(f"S3 upload failed for {object_key}: {e}", fg="red")
-        return None
-
-    try:
         client.put_object(
             Bucket=S3_BILL_ARCHIVE_BUCKET,
             Key=object_key,
-            Body=body,
+            Body=data,
             StorageClass="STANDARD_IA",
         )
         head = client.head_object(Bucket=S3_BILL_ARCHIVE_BUCKET, Key=object_key)
@@ -1556,17 +1571,14 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
             local_md5 = hashlib.md5(data).hexdigest()
 
             ext = MIMETYPES.get(link.media_type, "bin")
+            # OPEN-235: _archive_path() is still the source of truth for the S3 key convention
+            # (bills/raw/<abbr>/<session>/<chamber>/<bill>/<filename>, ARCHIVE_ROOT_DIR-relative)
+            # -- only the write to that path on local disk is gone. DDP-HOT is a synced mirror
+            # of the bucket now (OPEN-236's periodic sync job), not written to directly by this
+            # function on the Mac or in the cloud; the bytes go straight to S3 from memory.
             path = _archive_path(bill, version.note, version.date, link.url, ext)
-            try:
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                with open(path, "wb") as f:
-                    f.write(data)
-            except OSError as e:
-                click.secho(f"failed to persist {link.url} to {path}: {e}", fg="red")
-                continue
-
             object_key = _s3_object_key(path)
-            archive_location = _upload_and_verify(path, object_key, local_md5)
+            archive_location = _upload_and_verify(data, object_key, local_md5)
             archived_at = timezone.now() if archive_location else None
             if archive_location:
                 counters["s3_verified"] += 1
