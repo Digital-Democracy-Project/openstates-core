@@ -139,6 +139,34 @@ class TestUploadAndVerifyDirect:
         # immediately readable, no ~12h restore, in the same bucket the historical Deep-Archive
         # corpus already lives in.
         assert put.kwargs["StorageClass"] == "STANDARD_IA"
+        # The verify call has to check the same object it just wrote, not some other one --
+        # a regression that verified the wrong key/bucket would otherwise still pass.
+        client.head_object.assert_called_once_with(
+            Bucket=S3_BILL_ARCHIVE_BUCKET, Key=object_key
+        )
+
+    def test_head_object_failure_returns_none(self, tmp_path):
+        # The write can succeed while the verification call itself fails (permissions,
+        # throttling, a transient network blip) -- this must return None exactly like a
+        # put_object failure does, not treat "the write didn't raise" as good enough.
+        path, md5 = self._write_temp_file(tmp_path, b"pdf bytes")
+        client = mock.Mock()
+        client.head_object.side_effect = _client_error("AccessDenied")
+        with mock.patch(
+            "openstates.cli.text_extract._get_s3_client", return_value=client
+        ):
+            result = _upload_and_verify_direct(path, "some/key", md5)
+        assert result is None
+
+    def test_head_object_non_client_botocore_error_returns_none(self, tmp_path):
+        path, md5 = self._write_temp_file(tmp_path, b"pdf bytes")
+        client = mock.Mock()
+        client.head_object.side_effect = NoCredentialsError()
+        with mock.patch(
+            "openstates.cli.text_extract._get_s3_client", return_value=client
+        ):
+            result = _upload_and_verify_direct(path, "some/key", md5)
+        assert result is None
 
     def test_put_object_failure_returns_none(self, tmp_path):
         path, md5 = self._write_temp_file(tmp_path, b"pdf bytes")
