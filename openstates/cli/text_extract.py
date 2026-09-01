@@ -668,20 +668,20 @@ def _get_s3_client():
 def _upload_and_verify_direct(
     path: str, object_key: str, local_md5: str
 ) -> typing.Optional[str]:
-    """OPEN-192's cloud upload path: an ordinary credentialed boto3 PutObject to the same
-    Glacier Deep Archive vault the wrapper writes, plus a second, plain-`STANDARD`-class copy
-    to a working tier bucket -- immediately readable, no ~12hr restore, which is the entire
-    reason Phase 3 exists to write it (`PLAN-scraper-execution-migration.md`, "the working tier
-    is the copy anything actually reads... do not treat the vault write as sufficient").
+    """OPEN-192's cloud upload path: an ordinary credentialed boto3 PutObject to
+    `S3_BILL_ARCHIVE_BUCKET` (the same bucket the wrapper path writes), at `STANDARD_IA` instead
+    of `DEEP_ARCHIVE` -- immediately readable, no ~12hr restore, which is the entire reason
+    Phase 3 exists to write it (`PLAN-scraper-execution-migration.md`, "do not treat the vault
+    write as sufficient").
 
-    **`WORKING_TIER_S3_BUCKET` is required in this mode, not optional, and its absence fails
-    the whole upload rather than silently degrading to vault-only.** That is deliberate, not a
-    missing feature: which bucket the working tier actually lives in is still an open operator
-    decision as of this writing (OPEN-192's own first acceptance criterion, blocked on AWS
-    console access this environment does not have) -- and archiving a document into Deep
-    Archive alone, unreadable for 12 hours, while quietly calling it "archived" would repeat
-    the exact mistake this phase exists to fix. Fail loud and unmistakable instead: nothing
-    gets marked archived until both writes are real and both are verified.
+    **Corrected 2026-08-31 (OPEN-238, Ramon's second storage-design correction): one write, not
+    two.** An earlier version of this function wrote a Deep Archive copy to this bucket plus a
+    second, `STANDARD`-class copy to a separate, configurable "working tier" bucket
+    (`WORKING_TIER_S3_BUCKET`), requiring both to succeed. That bucket doesn't exist any more, by
+    design: storage class is a property of each S3 object, not the bucket, so this single write
+    at `STANDARD_IA` is both the archive and the readable copy at once, in the same bucket the
+    historical Deep-Archive corpus already lives in. There is no bucket decision left to make and
+    no second write to coordinate.
 
     Same verification contract as the wrapper path (`_check_etag`): a single-part PutObject's
     response ETag is the plain hex MD5 of exactly the bytes S3 stored, checked against the same
@@ -691,16 +691,6 @@ def _upload_and_verify_direct(
     and still treated as unverified if one somehow appears.
     """
     from botocore.exceptions import BotoCoreError, ClientError
-
-    working_tier_bucket = os.environ.get("WORKING_TIER_S3_BUCKET")
-    if not working_tier_bucket:
-        click.secho(
-            f"S3 upload failed for {object_key}: ARCHIVE_S3_MODE=direct requires "
-            "WORKING_TIER_S3_BUCKET to be set (OPEN-192's own bucket decision is not made "
-            "yet) -- refusing to archive to Deep Archive alone",
-            fg="red",
-        )
-        return None
 
     try:
         client = _get_s3_client()
@@ -723,9 +713,9 @@ def _upload_and_verify_direct(
             Bucket=S3_BILL_ARCHIVE_BUCKET,
             Key=object_key,
             Body=body,
-            StorageClass="DEEP_ARCHIVE",
+            StorageClass="STANDARD_IA",
         )
-        vault_head = client.head_object(Bucket=S3_BILL_ARCHIVE_BUCKET, Key=object_key)
+        head = client.head_object(Bucket=S3_BILL_ARCHIVE_BUCKET, Key=object_key)
     except (ClientError, BotoCoreError) as e:
         # BotoCoreError alongside ClientError: a credential/config/connection failure (e.g. no
         # credentials found, endpoint unreachable) isn't a ClientError at all -- it never got a
@@ -734,27 +724,8 @@ def _upload_and_verify_direct(
         click.secho(f"S3 upload failed for {object_key}: {e}", fg="red")
         return None
 
-    vault_etag = vault_head.get("ETag", "").strip('"')
-    if not _check_etag(vault_etag, local_md5, object_key):
-        return None
-
-    try:
-        client.put_object(
-            Bucket=working_tier_bucket,
-            Key=object_key,
-            Body=body,
-        )
-        working_tier_head = client.head_object(Bucket=working_tier_bucket, Key=object_key)
-    except (ClientError, BotoCoreError) as e:
-        click.secho(
-            f"Working-tier upload failed for {object_key} (vault write already succeeded, "
-            f"leaving it unreadable for ~12h): {e}",
-            fg="red",
-        )
-        return None
-
-    working_tier_etag = working_tier_head.get("ETag", "").strip('"')
-    if not _check_etag(working_tier_etag, local_md5, f"{object_key} (working tier)"):
+    etag = head.get("ETag", "").strip('"')
+    if not _check_etag(etag, local_md5, object_key):
         return None
 
     return f"s3://{S3_BILL_ARCHIVE_BUCKET}/{object_key}"
