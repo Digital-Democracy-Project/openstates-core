@@ -108,32 +108,19 @@ class TestUploadAndVerifyDispatch:
 
 
 class TestUploadAndVerifyDirect:
-    """OPEN-192's new cloud transport. Every test supplies its own real bytes on disk and its
-    own real MD5 of them -- matching how the caller (`archive_bill_versions`) actually computes
-    `local_md5` -- rather than asserting against a hand-typed hash string."""
+    """OPEN-192's cloud transport, corrected 2026-08-31 (OPEN-238) to a single write: no more
+    separate "working tier" bucket -- one `put_object` to `S3_BILL_ARCHIVE_BUCKET` at
+    `STANDARD_IA` instead of `DEEP_ARCHIVE` is both the archive and the readable copy at once.
+    Every test supplies its own real bytes on disk and its own real MD5 of them -- matching how
+    the caller (`archive_bill_versions`) actually computes `local_md5` -- rather than asserting
+    against a hand-typed hash string."""
 
     def _write_temp_file(self, tmp_path, content: bytes):
         path = tmp_path / "document.pdf"
         path.write_bytes(content)
         return str(path), hashlib.md5(content).hexdigest()
 
-    def test_missing_working_tier_bucket_fails_closed_without_any_s3_call(
-        self, tmp_path, monkeypatch
-    ):
-        """The one thing this test file exists to prove above all the others: as long as
-        OPEN-192's own bucket decision is unmade, direct mode must refuse to archive rather
-        than silently writing Deep-Archive-only and calling it done."""
-        monkeypatch.delenv("WORKING_TIER_S3_BUCKET", raising=False)
-        path, md5 = self._write_temp_file(tmp_path, b"pdf bytes")
-        with mock.patch("openstates.cli.text_extract._get_s3_client") as get_client:
-            result = _upload_and_verify_direct(path, "bills/raw/fl/2026/lower/x.pdf", md5)
-        assert result is None
-        get_client.assert_not_called()
-
-    def test_successful_upload_writes_both_buckets_and_returns_vault_uri(
-        self, tmp_path, monkeypatch
-    ):
-        monkeypatch.setenv("WORKING_TIER_S3_BUCKET", "ddp-openstates-scraper-memory")
+    def test_successful_upload_writes_standard_ia_and_returns_uri(self, tmp_path):
         path, md5 = self._write_temp_file(tmp_path, b"pdf bytes")
         object_key = "bills/raw/fl/2026/lower/x.pdf"
         client = mock.Mock()
@@ -144,21 +131,16 @@ class TestUploadAndVerifyDirect:
             result = _upload_and_verify_direct(path, object_key, md5)
 
         assert result == f"s3://{S3_BILL_ARCHIVE_BUCKET}/{object_key}"
+        assert client.put_object.call_count == 1  # exactly one write, not two
+        put = client.put_object.call_args
+        assert put.kwargs["Bucket"] == S3_BILL_ARCHIVE_BUCKET
+        assert put.kwargs["Key"] == object_key
+        # STANDARD_IA, not DEEP_ARCHIVE -- OPEN-238's whole point is that this single write is
+        # immediately readable, no ~12h restore, in the same bucket the historical Deep-Archive
+        # corpus already lives in.
+        assert put.kwargs["StorageClass"] == "STANDARD_IA"
 
-        vault_put, working_tier_put = client.put_object.call_args_list
-        assert vault_put.kwargs["Bucket"] == S3_BILL_ARCHIVE_BUCKET
-        assert vault_put.kwargs["Key"] == object_key
-        assert vault_put.kwargs["StorageClass"] == "DEEP_ARCHIVE"
-        assert working_tier_put.kwargs["Bucket"] == "ddp-openstates-scraper-memory"
-        assert working_tier_put.kwargs["Key"] == object_key
-        # The working-tier copy is deliberately NOT Deep Archive -- OPEN-192's whole point is
-        # that this copy is immediately readable, no ~12h restore.
-        assert "StorageClass" not in working_tier_put.kwargs
-
-    def test_vault_put_object_failure_returns_none_and_never_attempts_working_tier(
-        self, tmp_path, monkeypatch
-    ):
-        monkeypatch.setenv("WORKING_TIER_S3_BUCKET", "ddp-openstates-scraper-memory")
+    def test_put_object_failure_returns_none(self, tmp_path):
         path, md5 = self._write_temp_file(tmp_path, b"pdf bytes")
         client = mock.Mock()
         client.put_object.side_effect = _client_error("AccessDenied")
@@ -167,12 +149,8 @@ class TestUploadAndVerifyDirect:
         ):
             result = _upload_and_verify_direct(path, "some/key", md5)
         assert result is None
-        assert client.put_object.call_count == 1  # only the vault attempt
 
-    def test_vault_etag_mismatch_returns_none_and_never_attempts_working_tier(
-        self, tmp_path, monkeypatch
-    ):
-        monkeypatch.setenv("WORKING_TIER_S3_BUCKET", "ddp-openstates-scraper-memory")
+    def test_etag_mismatch_returns_none(self, tmp_path):
         path, md5 = self._write_temp_file(tmp_path, b"pdf bytes")
         client = mock.Mock()
         client.head_object.return_value = {"ETag": '"not-the-real-md5"'}
@@ -181,10 +159,8 @@ class TestUploadAndVerifyDirect:
         ):
             result = _upload_and_verify_direct(path, "some/key", md5)
         assert result is None
-        assert client.put_object.call_count == 1  # only the vault attempt
 
-    def test_vault_multipart_etag_returns_none(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKING_TIER_S3_BUCKET", "ddp-openstates-scraper-memory")
+    def test_multipart_etag_returns_none(self, tmp_path):
         path, md5 = self._write_temp_file(tmp_path, b"pdf bytes")
         client = mock.Mock()
         client.head_object.return_value = {"ETag": f'"{md5}-2"'}
@@ -194,45 +170,10 @@ class TestUploadAndVerifyDirect:
             result = _upload_and_verify_direct(path, "some/key", md5)
         assert result is None
 
-    def test_working_tier_put_object_failure_returns_none_even_though_vault_already_succeeded(
-        self, tmp_path, monkeypatch
-    ):
-        """The vault write is real and durable at this point -- this test exists to document
-        that fact, not to claim it gets rolled back. `archive_location`/`archived_at` still
-        must not be set, per this function's own contract: a document unreadable from the
-        working tier is not "archived" as OPEN-192 defines the word, even though it exists in
-        Deep Archive."""
-        monkeypatch.setenv("WORKING_TIER_S3_BUCKET", "ddp-openstates-scraper-memory")
-        path, md5 = self._write_temp_file(tmp_path, b"pdf bytes")
-        client = mock.Mock()
-        client.head_object.return_value = {"ETag": f'"{md5}"'}
-        client.put_object.side_effect = [None, _client_error("AccessDenied")]
-        with mock.patch(
-            "openstates.cli.text_extract._get_s3_client", return_value=client
-        ):
-            result = _upload_and_verify_direct(path, "some/key", md5)
-        assert result is None
-        assert client.put_object.call_count == 2  # vault succeeded, working tier attempted
-
-    def test_working_tier_etag_mismatch_returns_none(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKING_TIER_S3_BUCKET", "ddp-openstates-scraper-memory")
-        path, md5 = self._write_temp_file(tmp_path, b"pdf bytes")
-        client = mock.Mock()
-        client.head_object.side_effect = [
-            {"ETag": f'"{md5}"'},  # vault: matches
-            {"ETag": '"wrong"'},  # working tier: does not
-        ]
-        with mock.patch(
-            "openstates.cli.text_extract._get_s3_client", return_value=client
-        ):
-            result = _upload_and_verify_direct(path, "some/key", md5)
-        assert result is None
-
-    def test_client_construction_failure_returns_none(self, tmp_path, monkeypatch):
+    def test_client_construction_failure_returns_none(self, tmp_path):
         # _get_s3_client() itself can raise (e.g. ProfileNotFound from a misconfigured
         # AWS_PROFILE) before any put_object/head_object call is even reachable -- this must
         # be caught too, not just failures from calls made on an already-constructed client.
-        monkeypatch.setenv("WORKING_TIER_S3_BUCKET", "ddp-openstates-scraper-memory")
         path, md5 = self._write_temp_file(tmp_path, b"pdf bytes")
         with mock.patch(
             "openstates.cli.text_extract._get_s3_client",
@@ -241,11 +182,10 @@ class TestUploadAndVerifyDirect:
             result = _upload_and_verify_direct(path, "some/key", md5)
         assert result is None
 
-    def test_vault_non_client_botocore_error_returns_none(self, tmp_path, monkeypatch):
+    def test_non_client_botocore_error_returns_none(self, tmp_path):
         # NoCredentialsError/EndpointConnectionError are BotoCoreError subclasses, not
         # ClientError -- they never got a response from S3 to wrap at all. This function's
         # contract is "None on any failure," so these must be caught too, not just ClientError.
-        monkeypatch.setenv("WORKING_TIER_S3_BUCKET", "ddp-openstates-scraper-memory")
         path, md5 = self._write_temp_file(tmp_path, b"pdf bytes")
         client = mock.Mock()
         client.put_object.side_effect = NoCredentialsError()
@@ -255,26 +195,22 @@ class TestUploadAndVerifyDirect:
             result = _upload_and_verify_direct(path, "some/key", md5)
         assert result is None
 
-    def test_working_tier_non_client_botocore_error_returns_none(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("WORKING_TIER_S3_BUCKET", "ddp-openstates-scraper-memory")
+    def test_endpoint_connection_error_returns_none(self, tmp_path):
         path, md5 = self._write_temp_file(tmp_path, b"pdf bytes")
         client = mock.Mock()
-        client.head_object.return_value = {"ETag": f'"{md5}"'}
-        client.put_object.side_effect = [
-            None,
-            EndpointConnectionError(endpoint_url="https://s3.amazonaws.com"),
-        ]
+        client.put_object.side_effect = EndpointConnectionError(
+            endpoint_url="https://s3.amazonaws.com"
+        )
         with mock.patch(
             "openstates.cli.text_extract._get_s3_client", return_value=client
         ):
             result = _upload_and_verify_direct(path, "some/key", md5)
         assert result is None
 
-    def test_unreadable_local_file_returns_none_without_attempting_a_put(self, monkeypatch):
+    def test_unreadable_local_file_returns_none_without_attempting_a_put(self):
         # _get_s3_client() itself is just object construction (no network call), so it's fine
         # for this to run before the file read fails -- what matters is that no S3 *API call*
         # (put_object) is ever attempted for bytes that were never successfully read.
-        monkeypatch.setenv("WORKING_TIER_S3_BUCKET", "ddp-openstates-scraper-memory")
         client = mock.Mock()
         with mock.patch(
             "openstates.cli.text_extract._get_s3_client", return_value=client
