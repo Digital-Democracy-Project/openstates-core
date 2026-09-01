@@ -75,6 +75,11 @@ MIMETYPES = {
 S3_BILL_ARCHIVE_WRAPPER = "/Users/agentsmith/bin/ddp-prod-s3-bill-archive"
 S3_BILL_ARCHIVE_BUCKET = "ddp-bill-archive"
 
+# OPEN-237: how often archive()'s progress heartbeat fires (see its own comment at the call
+# site) -- frequent enough that a stalled-run detector polling every few minutes sees it,
+# infrequent enough not to flood the log on a large jurisdiction's run.
+_ARCHIVE_HEARTBEAT_INTERVAL_S = 60
+
 # Found 2026-07-28: legislature.mi.gov started serving a CAPTCHA/rate-limit challenge page
 # (HTTP 200, "Validation request" title) in place of every requested document mid-run. Nothing
 # about that response looks wrong at the transport layer, so it was archived and S3-uploaded as
@@ -2054,8 +2059,27 @@ def archive(state: str, session: str = None, n: int = None) -> None:
         "s3_unverified": 0,
     }
     bill_count = 0
+    # OPEN-237: this loop otherwise prints nothing at all for a bill that archives cleanly --
+    # every click.secho above is on an error/warning path only, and the one line that always
+    # prints (the run's own summary) only appears once, at the very end. That leaves no way to
+    # tell "still running, making progress" apart from "still running, stuck" from the log
+    # alone, which is exactly what a stalled-run detector needs. A plain, timestamped heartbeat
+    # at most once per interval -- not once per bill, which would flood the log on a large
+    # jurisdiction -- is the minimal fix: cheap, always fires regardless of error/success mix,
+    # and needs no state kept between runs.
+    #
+    # The bracketed "[YYYY-MM-DD HH:MM:SS]" prefix matches run-archive.sh's own log() format
+    # exactly (local time, same strftime pattern) even though it's written here in Python, not
+    # bash -- os-status already greps that exact bracket shape for other lines (last_log_ts()),
+    # so this heartbeat is parseable with the same existing pattern, not a new one.
+    last_heartbeat = time.monotonic()
     for bill in bills:
         bill_count += 1
+        now = time.monotonic()
+        if now - last_heartbeat >= _ARCHIVE_HEARTBEAT_INTERVAL_S:
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            click.echo(f"[{ts}] {state}: heartbeat, {bill_count} bills processed so far")
+            last_heartbeat = now
         try:
             bill_counters = archive_bill_versions(bill)
         except ScrapeError as e:
