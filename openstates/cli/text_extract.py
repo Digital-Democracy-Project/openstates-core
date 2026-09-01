@@ -633,36 +633,54 @@ def _upload_and_verify_via_wrapper(
     Open assumption, not yet independently confirmed (see plan's Risk Register): that the
     proxy's `put-stream` always performs a single-part PutObject regardless of file size. Bill
     documents (PDFs/HTML) are expected to stay well under any multipart threshold.
+
+    pm-review, real: the previous local-disk write this replaced was itself wrapped in
+    `except OSError` -- one document's write failure (e.g. a full disk) logged and skipped that
+    document, it never crashed the whole `archive()` run. The tempfile's own create/write/flush
+    (and its automatic delete on the way out of the `with` block) can raise OSError too, for the
+    same underlying reasons (disk full, `/tmp` unwritable) -- wrapping the whole tempfile
+    lifecycle here preserves that same per-document failure isolation, rather than letting a
+    `/tmp` problem propagate all the way out and abort every other bill still queued.
     """
-    with tempfile.NamedTemporaryFile() as tmp:
-        tmp.write(data)
-        tmp.flush()
+    try:
+        with tempfile.NamedTemporaryFile() as tmp:
+            tmp.write(data)
+            tmp.flush()
 
-        try:
-            subprocess.run(
-                [S3_BILL_ARCHIVE_WRAPPER, "put", tmp.name, object_key],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-        except subprocess.CalledProcessError as e:
-            click.secho(f"S3 upload failed for {object_key}: {e.stderr.strip()}", fg="red")
-            return None
-        except OSError as e:
-            click.secho(f"S3 upload failed for {object_key}: {e}", fg="red")
-            return None
+            try:
+                subprocess.run(
+                    [S3_BILL_ARCHIVE_WRAPPER, "put", tmp.name, object_key],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            except subprocess.CalledProcessError as e:
+                click.secho(f"S3 upload failed for {object_key}: {e.stderr.strip()}", fg="red")
+                return None
+            except OSError as e:
+                click.secho(f"S3 upload failed for {object_key}: {e}", fg="red")
+                return None
 
-        try:
-            info_proc = subprocess.run(
-                [S3_BILL_ARCHIVE_WRAPPER, "info", object_key],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            info = json.loads(info_proc.stdout)
-        except (subprocess.CalledProcessError, json.JSONDecodeError, OSError) as e:
-            click.secho(f"S3 verify failed for {object_key}: {e}", fg="red")
-            return None
+            try:
+                info_proc = subprocess.run(
+                    [S3_BILL_ARCHIVE_WRAPPER, "info", object_key],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                info = json.loads(info_proc.stdout)
+            except (subprocess.CalledProcessError, json.JSONDecodeError, OSError) as e:
+                click.secho(f"S3 verify failed for {object_key}: {e}", fg="red")
+                return None
+    except OSError as e:
+        # The two inner blocks above already catch every OSError a subprocess.run() call can
+        # raise (e.g. the wrapper binary missing/unexecutable) -- this outer catch is only for
+        # the tempfile lifecycle itself: create/write/flush before the first inner try, or
+        # deletion on the way out of the `with` block after the second inner try falls through
+        # successfully. Same failure class as the local-disk write this replaced (disk full,
+        # `/tmp` unwritable) -- one document's upload failing, not the whole run crashing.
+        click.secho(f"S3 upload failed for {object_key}: {e}", fg="red")
+        return None
 
     etag = info.get("ETag", "").strip('"')
     if not _check_etag(etag, local_md5, object_key):

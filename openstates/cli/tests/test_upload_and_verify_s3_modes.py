@@ -360,3 +360,20 @@ class TestUploadAndVerifyViaWrapper:
         ):
             result = _upload_and_verify_via_wrapper(b"data", "some/key", "abc123")
         assert result is None
+
+    def test_tempfile_write_failure_returns_none_without_crashing(self):
+        # pm-review: the local-disk write this replaced was itself wrapped in `except OSError`
+        # -- one document's write failure (e.g. a full /tmp) logged and skipped that document,
+        # it never crashed the whole archive() run. The tempfile this function writes to instead
+        # must fail the same graceful way, not propagate an unhandled OSError out of this call
+        # and abort every other bill still queued behind it.
+        fake_tmp = mock.MagicMock()
+        fake_tmp.__enter__.return_value.write.side_effect = OSError(
+            "No space left on device"
+        )
+        with mock.patch(
+            "openstates.cli.text_extract.tempfile.NamedTemporaryFile",
+            return_value=fake_tmp,
+        ):
+            result = _upload_and_verify_via_wrapper(b"data", "some/key", "abc123")
+        assert result is None
