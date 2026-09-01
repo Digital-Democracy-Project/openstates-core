@@ -245,15 +245,40 @@ def version_sort_key(note: str, date: typing.Optional[str]) -> tuple:
 # own audit standard: each entry below is backed by a real document-length distribution pulled
 # from this project's own archived data (2026-09-01), not asserted from the note text alone.
 #
-# Virginia (exact note match -- a small, closed, real vocabulary, not a pattern):
-#   "Conference Report"           n=168  max=6,381 chars   (vs. "Enrolled" max=3,926,387)
-#   "Governor's Recommendation"   n=180  max=2,655 chars
-#   "Governor's Recommendations"  n=1    max=979 chars     (the same document type; VA's own
-#                                                            data has both a singular and a
-#                                                            plural spelling across sessions)
-#   "Governor's Veto Explanation" n=31   max=2,052 chars
-# Every one of these is at least two orders of magnitude smaller than any real Virginia bill
-# text in the same sample, with no exception across the full real-data sample pulled.
+# Audit query (against ddp_bill_version_document, is_error=false, non-empty raw_text; run per
+# jurisdiction against real archived data, not a sample):
+#   SELECT b.classification, d.version_note, length(d.raw_text)
+#   FROM ddp_bill_version_document d
+#   JOIN opencivicdata_bill b ON b.id = d.bill_id
+#   JOIN opencivicdata_legislativesession ls ON b.legislative_session_id = ls.id
+#   JOIN opencivicdata_jurisdiction j ON ls.jurisdiction_id = j.id
+#   WHERE j.name = '<jurisdiction>' AND d.is_error = false
+#     AND d.raw_text IS NOT NULL AND d.raw_text != '';
+# Grouped by (version_note), restricted to notes note_stage() classifies into a real stage
+# (STAGE_UNKNOWN notes are already excluded and out of this ticket's scope).
+#
+# Virginia (exact note match -- a small, closed, real vocabulary, not a pattern). Every real
+# instance sampled of each note below (not just its max) stays under Virginia's own real
+# full-text medians -- "Introduced"/"Enrolled"/"Chaptered" each median in the 7,700-13,300 char
+# range across thousands of real documents, and Michigan's own "Conference Report" separately
+# confirms these note types CAN legitimately be full documents (see is_procedural_document()'s
+# own docstring) -- this is a claim about these specific note values in Virginia specifically,
+# not a universal "short text is always a stub" rule; a genuinely tiny real bill (e.g. a
+# one-line resolution) is not claimed to be ruled out by size alone anywhere in this module:
+#   "Conference Report"           n=168  min=622    median=750     max=6,381
+#   "Governor's Recommendation"   n=180  min=77     median=222     max=2,655
+#   "Governor's Recommendations"  n=1    (979 chars -- the same document type; VA's own data
+#                                          has both a singular and a plural spelling across
+#                                          sessions)
+#   "Governor's Veto Explanation" n=31   min=457    median=1,374   max=2,052
+# Population: 380 rows, {bill} classification only for this note set in the real sample pulled
+# (no resolutions carry these four notes in the data audited).
+#
+# Measured reduction (AC5), same audit date: 380 of these Virginia rows currently carry a
+# non-null diff_from_previous_version today -- every one becomes None after this fix (a real
+# "no diff" state, not a degenerate one), and the real version immediately following one of
+# these in the sort order gets a corrected diff against the true previous full text on the next
+# recompute-diff-order pass, rather than the degenerate one it has today.
 _PROCEDURAL_DOCUMENT_NOTES: dict[str, frozenset] = {
     "Virginia": frozenset(
         {
@@ -267,11 +292,19 @@ _PROCEDURAL_DOCUMENT_NOTES: dict[str, frozenset] = {
 
 # Utah (pattern match -- an open-ended numbered series, not a fixed list): "House Amendment
 # <N>" / "Senate Amendment <N>" are each a short excerpt of just that specific amendment, not
-# a re-typeset full bill. Confirmed for N=1 through 6 (House) and 1 through 5 (Senate) against
-# real archived data (2026-09-01) -- every one of the 11 real note values sampled stays under
-# 13,300 chars at its real observed max (most under 2,000), against "Introduced"/"Enrolled"
-# maxes over 980,000 chars in the same jurisdiction. A fixed list would silently miss a future
-# "House Amendment 7"; the pattern is the more durable representation of the same evidence.
+# a re-typeset full bill -- the naming convention itself ("Amendment <ordinal>", the same
+# ordinal-suffix shape note_stage()'s own extract_ordinal() already generalizes across
+# jurisdictions rather than enumerating every observed number) is the structural reason a
+# pattern is the right representation here, not just an extrapolation from the sizes sampled.
+# The size evidence confirms the convention holds in practice: real archived data (2026-09-01),
+# every one of the 11 real note values sampled (House 1-6, Senate 1-5) stays under 13,300 chars
+# at its real observed max (most under 2,000), against "Introduced"/"Enrolled" maxes over
+# 980,000 chars in the same jurisdiction. Population: 547 {bill} + 16 {resolution}/
+# {"concurrent resolution"}/{"joint resolution"} = 563 rows total, confirmed the pattern holds
+# for the resolution rows too (max 1,870 chars among them) rather than assumed. A fixed list
+# would silently miss a future "House Amendment 7"; the pattern is the more durable
+# representation of the same evidence. Measured reduction (AC5): all 563 of these currently
+# carry a non-null diff today and become None after this fix, same reasoning as Virginia above.
 _PROCEDURAL_DOCUMENT_NOTE_PATTERNS: dict[str, "re.Pattern"] = {
     "Utah": re.compile(r"\A(house|senate) amendment \d+\Z", re.IGNORECASE),
 }

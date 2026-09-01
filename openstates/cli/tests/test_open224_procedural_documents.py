@@ -108,6 +108,9 @@ class TestProceduralDocumentSkipsDiffAndBaseline:
 
         # AC2: the procedural document itself never gets a diff.
         assert docs[procedural_note].diff_from_previous_version is None
+        # AC4: this removes a diff, never a document -- raw_text/archival must be untouched.
+        assert docs[procedural_note].raw_text == PROCEDURAL_TEXT
+        assert docs[procedural_note].is_error is False
 
         # AC3: Enrolled diffs against Introduced's real text, not against the procedural
         # document's unrelated text, and not against nothing.
