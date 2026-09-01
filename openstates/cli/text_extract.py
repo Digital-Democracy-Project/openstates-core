@@ -544,6 +544,35 @@ def _s3_object_key(archive_path: str) -> str:
     return os.path.relpath(archive_path, settings.ARCHIVE_ROOT_DIR)
 
 
+def _check_etag(etag: typing.Optional[str], local_md5: str, object_key: str) -> bool:
+    """Shared verification rule for both upload paths below (OPEN-192): a single-part upload's
+    ETag is the plain hex MD5 of exactly the bytes S3 received, so it's a real, independent,
+    server-computed check -- weaker than a full read-after-write, but the only kind available
+    against Deep Archive, which has no download command at all (a real object needs a ~12hr
+    restore request before it's readable). A multipart-style ETag (a "-N" suffix -- a hash of
+    hashes) can't be compared this way and is treated the same as a verification failure, not
+    silently accepted. Factored out so the wrapper path and OPEN-192's new direct path can't
+    drift on what "verified" means -- the transport differs, this does not.
+    """
+    if not etag:
+        click.secho(f"S3 verify failed for {object_key}: no ETag returned", fg="red")
+        return False
+    if "-" in etag:
+        click.secho(
+            f"S3 upload for {object_key} used multipart (ETag={etag}); cannot verify via "
+            "ETag-as-MD5, treating as unverified",
+            fg="yellow",
+        )
+        return False
+    if etag != local_md5:
+        click.secho(
+            f"S3 ETag mismatch for {object_key}: local md5={local_md5} etag={etag}",
+            fg="red",
+        )
+        return False
+    return True
+
+
 def _upload_and_verify(
     path: str, object_key: str, local_md5: str
 ) -> typing.Optional[str]:
@@ -551,23 +580,47 @@ def _upload_and_verify(
     Upload one archived document to S3 Glacier Deep Archive and verify the upload via ETag
     (PLAN-bill-document-provenance.md, Phase 2 -- verification mechanism revised 2026-07-25).
 
-    The bill-archive proxy (`ddp-prod-s3-bill-archive`, sudo-gated -- see
-    ddp-infra/Production_S3_Wrappers.md) uploads directly to DEEP_ARCHIVE with no normal-class
-    staging step, and has no download command at all: a real Deep Archive object needs a ~12hr
-    restore request before it's readable, so "upload, read back, recompute hash" (the original
-    Phase 2 design) is structurally unavailable here, not just slow. Instead: for a single-part
-    upload, S3 guarantees ETag is the plain hex MD5 of exactly the bytes it received and stored
-    -- a real, independent, server-computed check, just a weaker one than a full read-after-write.
-    A multipart-style ETag (a "-N" suffix -- a hash of hashes, not a plain MD5) can't be compared
-    this way at all and is treated the same as a verification failure, not silently accepted.
+    Dispatches on `ARCHIVE_S3_MODE` (OPEN-192, Phase 3 of the scraper-execution migration):
+    `"wrapper"` (default, unchanged) shells out to the sudo-gated Mac proxy, exactly as before
+    this dispatch existed. `"direct"` is new: an ordinary credentialed boto3 PutObject, for
+    running this same code from a cloud container that has no sudo, no wrapper binary, and no
+    Mac at all -- OPEN-192's own text names this exact transport swap as what the migration
+    buys ("In the cloud that upload is an ordinary credentialed PutObject and the wrapper stops
+    being needed at all"). Nothing about the wrapper path below changed to make room for this;
+    it is the original function, untouched, just renamed and called from here.
+
+    Returns the s3:// URI on a verified match; None on any upload failure, ETag mismatch, or a
+    multipart ETag -- the caller leaves `archive_location`/`archived_at` unset in every None
+    case, so an unverified upload is never recorded as archived. Same contract, either mode.
+
+    An explicitly-set but unrecognized `ARCHIVE_S3_MODE` value is a configuration error, not a
+    signal to fall back to wrapper mode -- a typo'd value (e.g. a container env with
+    `ARCHIVE_S3_MODE=driect`) would otherwise silently invoke the sudo-gated Mac wrapper, which
+    doesn't exist in a cloud container, rather than failing at this one obvious point.
+    """
+    mode = os.environ.get("ARCHIVE_S3_MODE", "wrapper")
+    if mode == "direct":
+        return _upload_and_verify_direct(path, object_key, local_md5)
+    if mode != "wrapper":
+        click.secho(
+            f"S3 upload failed for {object_key}: unrecognized ARCHIVE_S3_MODE={mode!r} "
+            '(expected "wrapper" or "direct")',
+            fg="red",
+        )
+        return None
+    return _upload_and_verify_via_wrapper(path, object_key, local_md5)
+
+
+def _upload_and_verify_via_wrapper(
+    path: str, object_key: str, local_md5: str
+) -> typing.Optional[str]:
+    """The original, Mac-only upload path -- see `_upload_and_verify`'s own docstring for why
+    this exists as a separate function now. Behaviour is byte-for-byte what `_upload_and_verify`
+    itself used to do before OPEN-192 added a second mode; nothing here changed.
 
     Open assumption, not yet independently confirmed (see plan's Risk Register): that the
     proxy's `put-stream` always performs a single-part PutObject regardless of file size. Bill
     documents (PDFs/HTML) are expected to stay well under any multipart threshold.
-
-    Returns the s3:// URI on a verified match; None on any upload failure, ETag mismatch, or a
-    multipart ETag -- the caller leaves `archive_location`/`archived_at` unset in every None
-    case, so an unverified upload is never recorded as archived.
     """
     try:
         subprocess.run(
@@ -596,23 +649,112 @@ def _upload_and_verify(
         return None
 
     etag = info.get("ETag", "").strip('"')
-    if not etag:
-        click.secho(
-            f"S3 verify failed for {object_key}: no ETag in info response", fg="red"
-        )
+    if not _check_etag(etag, local_md5, object_key):
         return None
-    if "-" in etag:
+
+    return f"s3://{S3_BILL_ARCHIVE_BUCKET}/{object_key}"
+
+
+def _get_s3_client():
+    """Isolated so tests can monkeypatch this one function rather than reaching into boto3
+    itself -- mirrors cloud_collector.py's own `s3_client=None` injection convention, adapted
+    to this module's plain-function (not argument-threaded) shape. Lazy import: boto3 stays an
+    optional dependency for every caller that only ever runs in wrapper mode (the Mac, today)."""
+    import boto3
+
+    return boto3.client("s3")
+
+
+def _upload_and_verify_direct(
+    path: str, object_key: str, local_md5: str
+) -> typing.Optional[str]:
+    """OPEN-192's cloud upload path: an ordinary credentialed boto3 PutObject to the same
+    Glacier Deep Archive vault the wrapper writes, plus a second, plain-`STANDARD`-class copy
+    to a working tier bucket -- immediately readable, no ~12hr restore, which is the entire
+    reason Phase 3 exists to write it (`PLAN-scraper-execution-migration.md`, "the working tier
+    is the copy anything actually reads... do not treat the vault write as sufficient").
+
+    **`WORKING_TIER_S3_BUCKET` is required in this mode, not optional, and its absence fails
+    the whole upload rather than silently degrading to vault-only.** That is deliberate, not a
+    missing feature: which bucket the working tier actually lives in is still an open operator
+    decision as of this writing (OPEN-192's own first acceptance criterion, blocked on AWS
+    console access this environment does not have) -- and archiving a document into Deep
+    Archive alone, unreadable for 12 hours, while quietly calling it "archived" would repeat
+    the exact mistake this phase exists to fix. Fail loud and unmistakable instead: nothing
+    gets marked archived until both writes are real and both are verified.
+
+    Same verification contract as the wrapper path (`_check_etag`): a single-part PutObject's
+    response ETag is the plain hex MD5 of exactly the bytes S3 stored, checked against the same
+    local hash the wrapper path checks -- multipart uploads are not attempted here (bill
+    documents are well under any multipart threshold, the same assumption the wrapper path
+    already makes), so a `-N`-suffixed ETag is not expected in practice, but is still checked
+    and still treated as unverified if one somehow appears.
+    """
+    from botocore.exceptions import BotoCoreError, ClientError
+
+    working_tier_bucket = os.environ.get("WORKING_TIER_S3_BUCKET")
+    if not working_tier_bucket:
         click.secho(
-            f"S3 upload for {object_key} used multipart (ETag={etag}); cannot verify via "
-            "ETag-as-MD5, treating as unverified",
-            fg="yellow",
-        )
-        return None
-    if etag != local_md5:
-        click.secho(
-            f"S3 ETag mismatch for {object_key}: local md5={local_md5} etag={etag}",
+            f"S3 upload failed for {object_key}: ARCHIVE_S3_MODE=direct requires "
+            "WORKING_TIER_S3_BUCKET to be set (OPEN-192's own bucket decision is not made "
+            "yet) -- refusing to archive to Deep Archive alone",
             fg="red",
         )
+        return None
+
+    try:
+        client = _get_s3_client()
+    except BotoCoreError as e:
+        # Client construction itself can raise (e.g. ProfileNotFound from a misconfigured
+        # AWS_PROFILE) even though it makes no network call -- this function's contract is
+        # "None on any failure," not "None on any failure after the client exists."
+        click.secho(f"S3 upload failed for {object_key}: {e}", fg="red")
+        return None
+
+    try:
+        with open(path, "rb") as f:
+            body = f.read()
+    except OSError as e:
+        click.secho(f"S3 upload failed for {object_key}: {e}", fg="red")
+        return None
+
+    try:
+        client.put_object(
+            Bucket=S3_BILL_ARCHIVE_BUCKET,
+            Key=object_key,
+            Body=body,
+            StorageClass="DEEP_ARCHIVE",
+        )
+        vault_head = client.head_object(Bucket=S3_BILL_ARCHIVE_BUCKET, Key=object_key)
+    except (ClientError, BotoCoreError) as e:
+        # BotoCoreError alongside ClientError: a credential/config/connection failure (e.g. no
+        # credentials found, endpoint unreachable) isn't a ClientError at all -- it never got a
+        # response from S3 to wrap -- but this function's contract is "None on any failure,"
+        # not "None on any failure S3 itself reported."
+        click.secho(f"S3 upload failed for {object_key}: {e}", fg="red")
+        return None
+
+    vault_etag = vault_head.get("ETag", "").strip('"')
+    if not _check_etag(vault_etag, local_md5, object_key):
+        return None
+
+    try:
+        client.put_object(
+            Bucket=working_tier_bucket,
+            Key=object_key,
+            Body=body,
+        )
+        working_tier_head = client.head_object(Bucket=working_tier_bucket, Key=object_key)
+    except (ClientError, BotoCoreError) as e:
+        click.secho(
+            f"Working-tier upload failed for {object_key} (vault write already succeeded, "
+            f"leaving it unreadable for ~12h): {e}",
+            fg="red",
+        )
+        return None
+
+    working_tier_etag = working_tier_head.get("ETag", "").strip('"')
+    if not _check_etag(working_tier_etag, local_md5, f"{object_key} (working tier)"):
         return None
 
     return f"s3://{S3_BILL_ARCHIVE_BUCKET}/{object_key}"
