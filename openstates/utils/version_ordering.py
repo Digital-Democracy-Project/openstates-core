@@ -223,3 +223,137 @@ def version_sort_key(note: str, date: typing.Optional[str]) -> tuple:
     stage, ordinal = note_stage(note)
     has_date = bool(date) and bool(_DATE_RE.match(date))
     return (stage, date if has_date else "", ordinal)
+
+
+# OPEN-224: some jurisdictions attach short procedural documents (a governor's specific
+# recommended changes, a conference committee's own report, a numbered floor-amendment
+# excerpt) to the same diff lineage as real full-text bill versions. note_stage() correctly
+# classifies these into a real stage today -- that part of the OPEN-34 audit is unaffected --
+# but diffing a full bill against one of these produces a degenerate "replace the whole
+# document" hunk in both directions (the full text reads as entirely deleted, then entirely
+# re-added at the next real version), not a real changelog. On a large bill this is not just
+# noise: the resulting single-hunk diff can exceed a downstream consumer's own prompt-length
+# ceiling outright (confirmed live, AGENTS-87 -- Virginia's HB 30 special-session budget bill,
+# three of five real transitions failed this way).
+#
+# This is deliberately NOT a keyword regex over "amendment" or "governor" applied globally --
+# the ticket's own named regression case (Virginia's "Amendment in the Nature of a Substitute")
+# is a full replacement text and must keep its diff, and this module's own real-data audit
+# found the same is true of "Governor Substitute" (median ~11.7K chars, max ~686K across 152
+# real Virginia documents) and "Conference Report Substitute" (median ~13.7K, max ~752K across
+# 262) -- both stay out of this table. Exclusion is evidence-led per jurisdiction, per OPEN-34's
+# own audit standard: each entry below is backed by a real document-length distribution pulled
+# from this project's own archived data (2026-09-01), not asserted from the note text alone.
+#
+# Length-distribution audit query (against ddp_bill_version_document, is_error=false,
+# non-empty raw_text; run per jurisdiction against the full real archived population, not a
+# sample):
+#   SELECT b.classification, d.version_note, length(d.raw_text)
+#   FROM ddp_bill_version_document d
+#   JOIN opencivicdata_bill b ON b.id = d.bill_id
+#   JOIN opencivicdata_legislativesession ls ON b.legislative_session_id = ls.id
+#   JOIN opencivicdata_jurisdiction j ON ls.jurisdiction_id = j.id
+#   WHERE j.name = '<jurisdiction>' AND d.is_error = false
+#     AND d.raw_text IS NOT NULL AND d.raw_text != '';
+# Grouped by (version_note), restricted to notes note_stage() classifies into a real stage
+# (STAGE_UNKNOWN notes are already excluded and out of this ticket's scope).
+#
+# Separate AC5 measured-reduction query (this one DOES select diff_from_previous_version --
+# the length-distribution query above intentionally does not, since document length and
+# current diff status are two different questions):
+#   SELECT j.name, d.version_note, count(*)
+#   FROM ddp_bill_version_document d
+#   JOIN opencivicdata_bill b ON b.id = d.bill_id
+#   JOIN opencivicdata_legislativesession ls ON b.legislative_session_id = ls.id
+#   JOIN opencivicdata_jurisdiction j ON ls.jurisdiction_id = j.id
+#   WHERE j.name = '<jurisdiction>' AND d.diff_from_previous_version IS NOT NULL
+#     AND d.version_note IN (<the exact notes below>)  -- or ~* the Utah pattern below
+#   GROUP BY j.name, d.version_note;
+# This is the query the 380/563 counts further down actually come from.
+#
+# Virginia (exact note match -- a small, closed, real vocabulary, not a pattern). Every real
+# instance audited of each note below (not just its max) stays under Virginia's own real
+# full-text medians -- "Introduced"/"Enrolled"/"Chaptered" each median in the 7,700-13,300 char
+# range across thousands of real documents, and Michigan's own "Conference Report" separately
+# confirms these note types CAN legitimately be full documents (see is_procedural_document()'s
+# own docstring) -- this is a claim about these specific note values in Virginia specifically,
+# not a universal "short text is always a stub" rule; a genuinely tiny real bill (e.g. a
+# one-line resolution) is not claimed to be ruled out by size alone anywhere in this module:
+#   "Conference Report"           n=168  min=622    median=750     max=6,381
+#   "Governor's Recommendation"   n=180  min=77     median=222     max=2,655
+#   "Governor's Recommendations"  n=1    (979 chars -- the same document type; VA's own data
+#                                          has both a singular and a plural spelling across
+#                                          sessions)
+#   "Governor's Veto Explanation" n=31   min=457    median=1,374   max=2,052
+# Population: 380 rows, {bill} classification only for this note set in the real archived data
+# (no resolutions carry these four notes).
+#
+# Measured reduction (AC5), same audit date, via the second query above: 380 of these Virginia
+# rows currently carry a non-null diff_from_previous_version today. Merging this fix does NOT
+# retroactively touch those already-persisted rows by itself -- it only changes behavior going
+# forward: a newly archived bill of this shape gets the correct (no-diff) treatment
+# immediately, and each of the 380 becomes None only once someone runs `recompute-diff-order
+# --commit` for Virginia, a separate, already-existing, explicitly-authorized operator action
+# (out of this PR's scope by design). Until that recompute runs, the AC5 count query above will
+# keep returning 380/563, not 0 -- that is expected, not a sign this fix didn't work.
+_PROCEDURAL_DOCUMENT_NOTES: dict[str, frozenset] = {
+    "Virginia": frozenset(
+        {
+            "Conference Report",
+            "Governor's Recommendation",
+            "Governor's Recommendations",
+            "Governor's Veto Explanation",
+        }
+    ),
+}
+
+# Utah (pattern match -- an open-ended numbered series, not a fixed list): "House Amendment
+# <N>" / "Senate Amendment <N>" are each a short excerpt of just that specific amendment, not
+# a re-typeset full bill -- the naming convention itself ("Amendment <ordinal>", the same
+# ordinal-suffix shape note_stage()'s own extract_ordinal() already generalizes across
+# jurisdictions rather than enumerating every observed number) is the structural reason a
+# pattern is the right representation here, not just an extrapolation from the sizes audited.
+# The size evidence confirms the convention holds in practice: real archived data (2026-09-01),
+# every one of the 11 real note values audited (House 1-6, Senate 1-5) stays under 13,300 chars
+# at its real observed max (most under 2,000), against "Introduced"/"Enrolled" maxes over
+# 980,000 chars in the same jurisdiction. Population: 547 {bill} + 16 {resolution}/
+# {"concurrent resolution"}/{"joint resolution"} = 563 rows total, confirmed the pattern holds
+# for the resolution rows too (max 1,870 chars among them) rather than assumed -- 16 of 16
+# resolution rows also currently carry a non-null diff, same as the bill rows. `[1-9]\d*`
+# (not `\d+`) deliberately excludes a hypothetical "Amendment 0" -- real amendment numbering
+# starts at 1 in every real note observed; this is a zero-cost tightening, not a behavior this
+# module has evidence would otherwise occur. Measured reduction (AC5), via the second query
+# above: all 563 of these currently carry a non-null diff today -- same prospective-only
+# reasoning as Virginia's own comment above (merging alone does not retroactively touch them;
+# a separate, explicitly-authorized `recompute-diff-order --commit` for Utah does).
+_PROCEDURAL_DOCUMENT_NOTE_PATTERNS: dict[str, "re.Pattern"] = {
+    "Utah": re.compile(r"\A(house|senate) amendment [1-9]\d*\Z", re.IGNORECASE),
+}
+
+
+def is_procedural_document(jurisdiction_name: str, note: str) -> bool:
+    """
+    True if `note` (for `jurisdiction_name`) is a known short procedural document rather than
+    a full bill text, per the real-data audit above -- callers should treat this the same way
+    they already treat `note_stage(note)[0] == STAGE_UNKNOWN` (OPEN-34): the version neither
+    takes a diff nor becomes the baseline the next version diffs against, so the diff lineage
+    closes over the gap and the next real version diffs against the previous real one.
+
+    Deliberately separate from `note_stage()` rather than folded into it: `note_stage()` has
+    other callers (this module's own docstring names api-v3's bill-detail endpoint) that want
+    a jurisdiction-independent stage classification for display/ordering purposes regardless
+    of diffability, and "Conference Report" genuinely IS a real STAGE_CHAMBER_PASSAGE document
+    in Michigan (median ~1.5M chars there) while being a short stub in Virginia -- collapsing
+    that into a single global function would force every caller to become jurisdiction-aware
+    whether or not diff-lineage exclusion is what they actually need.
+
+    `jurisdiction_name` is matched exactly against `Jurisdiction.name` (e.g. "Virginia"), the
+    same value `archive_bill_versions`/`recomputed_diffs_for_documents` already read and pass
+    to `apply_prediff_cleaning` -- no new lookup needed at any call site.
+    """
+    if note in _PROCEDURAL_DOCUMENT_NOTES.get(jurisdiction_name, ()):
+        return True
+    pattern = _PROCEDURAL_DOCUMENT_NOTE_PATTERNS.get(jurisdiction_name)
+    if pattern is not None and pattern.match(note):
+        return True
+    return False
