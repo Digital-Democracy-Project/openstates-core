@@ -289,11 +289,13 @@ def version_sort_key(note: str, date: typing.Optional[str]) -> tuple:
 # (no resolutions carry these four notes).
 #
 # Measured reduction (AC5), same audit date, via the second query above: 380 of these Virginia
-# rows currently carry a non-null diff_from_previous_version today -- every one becomes None
-# after this fix (a real "no diff" state, not a degenerate one), and the real version
-# immediately following one of these in the sort order gets a corrected diff against the true
-# previous full text on the next recompute-diff-order pass, rather than the degenerate one it
-# has today.
+# rows currently carry a non-null diff_from_previous_version today. Merging this fix does NOT
+# retroactively touch those already-persisted rows by itself -- it only changes behavior going
+# forward: a newly archived bill of this shape gets the correct (no-diff) treatment
+# immediately, and each of the 380 becomes None only once someone runs `recompute-diff-order
+# --commit` for Virginia, a separate, already-existing, explicitly-authorized operator action
+# (out of this PR's scope by design). Until that recompute runs, the AC5 count query above will
+# keep returning 380/563, not 0 -- that is expected, not a sign this fix didn't work.
 _PROCEDURAL_DOCUMENT_NOTES: dict[str, frozenset] = {
     "Virginia": frozenset(
         {
@@ -321,8 +323,9 @@ _PROCEDURAL_DOCUMENT_NOTES: dict[str, frozenset] = {
 # (not `\d+`) deliberately excludes a hypothetical "Amendment 0" -- real amendment numbering
 # starts at 1 in every real note observed; this is a zero-cost tightening, not a behavior this
 # module has evidence would otherwise occur. Measured reduction (AC5), via the second query
-# above: all 563 of these currently carry a non-null diff today and become None after this fix,
-# same reasoning as Virginia above.
+# above: all 563 of these currently carry a non-null diff today -- same prospective-only
+# reasoning as Virginia's own comment above (merging alone does not retroactively touch them;
+# a separate, explicitly-authorized `recompute-diff-order --commit` for Utah does).
 _PROCEDURAL_DOCUMENT_NOTE_PATTERNS: dict[str, "re.Pattern"] = {
     "Utah": re.compile(r"\A(house|senate) amendment [1-9]\d*\Z", re.IGNORECASE),
 }
