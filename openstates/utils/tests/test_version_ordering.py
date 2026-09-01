@@ -18,6 +18,7 @@ from openstates.utils.version_ordering import (
     STAGE_INTRODUCED,
     STAGE_UNKNOWN,
     extract_ordinal,
+    is_procedural_document,
     note_stage,
     version_sort_key,
 )
@@ -86,3 +87,77 @@ def test_version_sort_key_date_is_only_a_same_stage_tiebreaker():
 
 def test_version_sort_key_unparseable_date_is_ignored():
     assert version_sort_key("Introduced", "not-a-date") == version_sort_key("Introduced", None)
+
+
+# --- OPEN-224: is_procedural_document() -------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        "Conference Report",
+        "Governor's Recommendation",
+        "Governor's Recommendations",
+        "Governor's Veto Explanation",
+    ],
+)
+def test_is_procedural_document_virginia_known_stubs(note):
+    assert is_procedural_document("Virginia", note) is True
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        # AC6's named regression case -- a genuine full-replacement text, not a stub.
+        "Amendment in the Nature of a Substitute",
+        # This module's own audit found these are real, large documents too (median tens of
+        # thousands of characters) -- despite "Substitute"/"Report" sharing a word with an
+        # excluded note above, exact-match only, no substring/regex over those words.
+        "Governor Substitute",
+        "Conference Report Substitute",
+        # A real Virginia full-text stage, unaffected.
+        "Enrolled",
+        "Introduced",
+    ],
+)
+def test_is_procedural_document_virginia_does_not_exclude_real_text(note):
+    assert is_procedural_document("Virginia", note) is False
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        "House Amendment 1",
+        "house amendment 1",  # case-insensitive
+        "Senate Amendment 2",
+        "House Amendment 12",  # not limited to the specific numbers sampled by the audit
+    ],
+)
+def test_is_procedural_document_utah_amendment_pattern(note):
+    assert is_procedural_document("Utah", note) is True
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        "Introduced",
+        "Enrolled",
+        # Must not match as a substring inside a longer, different note.
+        "House Amendment 1 to Substitute",
+        "House Amendment",  # no trailing number at all
+    ],
+)
+def test_is_procedural_document_utah_does_not_exclude_real_text(note):
+    assert is_procedural_document("Utah", note) is False
+
+
+def test_is_procedural_document_jurisdiction_specific():
+    """"Conference Report" is a Virginia stub (median ~813 chars) but a real, large Michigan
+    document (median well over 1M chars) -- this module's own real-data audit found both, and
+    the exclusion table is per-jurisdiction specifically because of this."""
+    assert is_procedural_document("Virginia", "Conference Report") is True
+    assert is_procedural_document("Michigan", "Conference Report") is False
+
+
+def test_is_procedural_document_unknown_jurisdiction_excludes_nothing():
+    assert is_procedural_document("Some Never-Onboarded State", "Conference Report") is False

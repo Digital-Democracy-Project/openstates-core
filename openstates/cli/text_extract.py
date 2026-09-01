@@ -40,6 +40,7 @@ from ..utils.resilience_profiles import profile_for_netloc
 from ..utils.waf_circuit_breaker import raise_if_waf_block_threshold_reached
 from ..utils.version_ordering import (
     STAGE_UNKNOWN as _STAGE_UNKNOWN,
+    is_procedural_document as _is_procedural_document,
     note_stage as _note_stage,
     version_sort_key as _version_sort_key,
 )
@@ -1429,7 +1430,10 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
     reset its lineage — only the types present are updated. A version whose note doesn't match
     any known stage (_STAGE_UNKNOWN) never updates or reads a baseline at all — its documents
     always get `diff_from_previous_version=None` rather than risk placing an unrecognized
-    version at the wrong point in the lineage.
+    version at the wrong point in the lineage. OPEN-224: a version whose note IS recognized but
+    is a known short procedural document for this jurisdiction (`is_procedural_document()`) gets
+    the identical treatment — see that function's own docstring for why diffing a full bill
+    against one of these is worse than not diffing it at all.
 
     OPEN-10: for Arizona only, `prior_text`/`raw_text` are reflowed (see
     `_reflow_paragraphs()`) into local variables just before the `difflib.unified_diff()`
@@ -1504,7 +1508,14 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
         bill.versions.all(), key=lambda v: _version_sort_key(v.note, v.date)
     )
     for version in ordered_versions:
-        is_unknown_position = _note_stage(version.note)[0] == _STAGE_UNKNOWN
+        # OPEN-224: a short procedural document (e.g. Virginia's "Governor's Recommendation",
+        # a numbered "House Amendment N" excerpt in Utah) gets the same treatment as an
+        # unrecognized stage -- see is_procedural_document()'s own docstring for why this
+        # can't be folded into note_stage() itself.
+        is_unknown_position = (
+            _note_stage(version.note)[0] == _STAGE_UNKNOWN
+            or _is_procedural_document(jurisdiction_name, version.note)
+        )
         this_version_texts: dict[str, str] = {}
 
         # OPEN-217 (review round 1): 3,744 production versions have more than one
@@ -2119,9 +2130,10 @@ def recompute_bill_diff_order(bill: typing.Any) -> dict[str, list]:
 
     Returns {"unchanged": [doc, ...], "changed": [(doc, new_diff_or_None), ...]} — "changed"
     covers both correcting a wrong diff and nulling out a version whose note doesn't match any
-    known stage (_STAGE_UNKNOWN), mirroring archive_bill_versions()'s own skip-diffing behavior
-    for those. Callers decide whether to persist "changed" (see `recompute_diff_order` CLI
-    command's --dry-run/--commit).
+    known stage (_STAGE_UNKNOWN) or is a known short procedural document for this jurisdiction
+    (OPEN-224, `is_procedural_document()`), mirroring archive_bill_versions()'s own skip-diffing
+    behavior for those. Callers decide whether to persist "changed" (see `recompute_diff_order`
+    CLI command's --dry-run/--commit).
     """
     from openstates.data.models import BillVersionDocument
 
@@ -2179,7 +2191,11 @@ def recomputed_diffs_for_documents(
     # are updated -- so a version that happens to ship PDF-only does not orphan the XML chain.
     prior_by_media: dict[str, str] = {}
     for note, date in ordered_keys:
-        is_unknown_position = _note_stage(note)[0] == _STAGE_UNKNOWN
+        # OPEN-224: parity with archive_bill_versions() above -- same helper, same inputs.
+        is_unknown_position = (
+            _note_stage(note)[0] == _STAGE_UNKNOWN
+            or _is_procedural_document(jurisdiction_name, note)
+        )
         group_texts: dict[str, str] = {}
         for doc in groups[(note, date)]:
             new_diff = None
