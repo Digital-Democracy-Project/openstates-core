@@ -143,6 +143,39 @@ class TestProceduralDocumentSkipsDiffAndBaseline:
         # does show the procedural document's own line being removed wholesale.
         assert "-Amend by striking 'may' and inserting 'shall' in Section 1." in naive_diff
 
+    def test_utah_resolution_classification_is_excluded_too(self):
+        """16 of Utah's 563 real audited rows matching this pattern are resolutions, not
+        bills (version_ordering.py's own module comment records this) -- is_procedural_document
+        only looks at jurisdiction_name/note, never bill.classification, so this must behave
+        identically to the bill case above. Real resolution classifications from the audited
+        data: {resolution}/{concurrent resolution}/{joint resolution}."""
+        bill = _make_bill(
+            jid="ocd-jurisdiction/country:us/state:ut/government", jurisdiction_name="Utah"
+        )
+        bill.classification = ["resolution"]
+        bill.save()
+        v1 = bill.versions.create(note="Introduced", date="")
+        v1.links.create(url=INTRODUCED_URL, media_type="application/pdf")
+        v2 = bill.versions.create(note="House Amendment 1", date="")
+        v2.links.create(url=PROCEDURAL_URL, media_type="application/pdf")
+        v3 = bill.versions.create(note="Enrolled", date="")
+        v3.links.create(url=ENROLLED_URL, media_type="application/pdf")
+
+        _archive(
+            bill,
+            {
+                INTRODUCED_URL: INTRODUCED_TEXT,
+                PROCEDURAL_URL: PROCEDURAL_TEXT,
+                ENROLLED_URL: ENROLLED_TEXT,
+            },
+        )
+        docs = {
+            d.version_note: d for d in BillVersionDocument.objects.filter(bill=bill)
+        }
+        assert docs["House Amendment 1"].diff_from_previous_version is None
+        assert docs["Enrolled"].diff_from_previous_version is not None
+        assert "striking" not in docs["Enrolled"].diff_from_previous_version
+
 
 @pytest.mark.django_db
 class TestProceduralDocumentBothDiffPathsAgree:

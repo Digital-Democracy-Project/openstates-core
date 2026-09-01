@@ -245,8 +245,9 @@ def version_sort_key(note: str, date: typing.Optional[str]) -> tuple:
 # own audit standard: each entry below is backed by a real document-length distribution pulled
 # from this project's own archived data (2026-09-01), not asserted from the note text alone.
 #
-# Audit query (against ddp_bill_version_document, is_error=false, non-empty raw_text; run per
-# jurisdiction against real archived data, not a sample):
+# Length-distribution audit query (against ddp_bill_version_document, is_error=false,
+# non-empty raw_text; run per jurisdiction against the full real archived population, not a
+# sample):
 #   SELECT b.classification, d.version_note, length(d.raw_text)
 #   FROM ddp_bill_version_document d
 #   JOIN opencivicdata_bill b ON b.id = d.bill_id
@@ -257,8 +258,21 @@ def version_sort_key(note: str, date: typing.Optional[str]) -> tuple:
 # Grouped by (version_note), restricted to notes note_stage() classifies into a real stage
 # (STAGE_UNKNOWN notes are already excluded and out of this ticket's scope).
 #
+# Separate AC5 measured-reduction query (this one DOES select diff_from_previous_version --
+# the length-distribution query above intentionally does not, since document length and
+# current diff status are two different questions):
+#   SELECT j.name, d.version_note, count(*)
+#   FROM ddp_bill_version_document d
+#   JOIN opencivicdata_bill b ON b.id = d.bill_id
+#   JOIN opencivicdata_legislativesession ls ON b.legislative_session_id = ls.id
+#   JOIN opencivicdata_jurisdiction j ON ls.jurisdiction_id = j.id
+#   WHERE j.name = '<jurisdiction>' AND d.diff_from_previous_version IS NOT NULL
+#     AND d.version_note IN (<the exact notes below>)  -- or ~* the Utah pattern below
+#   GROUP BY j.name, d.version_note;
+# This is the query the 380/563 counts further down actually come from.
+#
 # Virginia (exact note match -- a small, closed, real vocabulary, not a pattern). Every real
-# instance sampled of each note below (not just its max) stays under Virginia's own real
+# instance audited of each note below (not just its max) stays under Virginia's own real
 # full-text medians -- "Introduced"/"Enrolled"/"Chaptered" each median in the 7,700-13,300 char
 # range across thousands of real documents, and Michigan's own "Conference Report" separately
 # confirms these note types CAN legitimately be full documents (see is_procedural_document()'s
@@ -271,14 +285,15 @@ def version_sort_key(note: str, date: typing.Optional[str]) -> tuple:
 #                                          has both a singular and a plural spelling across
 #                                          sessions)
 #   "Governor's Veto Explanation" n=31   min=457    median=1,374   max=2,052
-# Population: 380 rows, {bill} classification only for this note set in the real sample pulled
-# (no resolutions carry these four notes in the data audited).
+# Population: 380 rows, {bill} classification only for this note set in the real archived data
+# (no resolutions carry these four notes).
 #
-# Measured reduction (AC5), same audit date: 380 of these Virginia rows currently carry a
-# non-null diff_from_previous_version today -- every one becomes None after this fix (a real
-# "no diff" state, not a degenerate one), and the real version immediately following one of
-# these in the sort order gets a corrected diff against the true previous full text on the next
-# recompute-diff-order pass, rather than the degenerate one it has today.
+# Measured reduction (AC5), same audit date, via the second query above: 380 of these Virginia
+# rows currently carry a non-null diff_from_previous_version today -- every one becomes None
+# after this fix (a real "no diff" state, not a degenerate one), and the real version
+# immediately following one of these in the sort order gets a corrected diff against the true
+# previous full text on the next recompute-diff-order pass, rather than the degenerate one it
+# has today.
 _PROCEDURAL_DOCUMENT_NOTES: dict[str, frozenset] = {
     "Virginia": frozenset(
         {
@@ -295,18 +310,21 @@ _PROCEDURAL_DOCUMENT_NOTES: dict[str, frozenset] = {
 # a re-typeset full bill -- the naming convention itself ("Amendment <ordinal>", the same
 # ordinal-suffix shape note_stage()'s own extract_ordinal() already generalizes across
 # jurisdictions rather than enumerating every observed number) is the structural reason a
-# pattern is the right representation here, not just an extrapolation from the sizes sampled.
+# pattern is the right representation here, not just an extrapolation from the sizes audited.
 # The size evidence confirms the convention holds in practice: real archived data (2026-09-01),
-# every one of the 11 real note values sampled (House 1-6, Senate 1-5) stays under 13,300 chars
+# every one of the 11 real note values audited (House 1-6, Senate 1-5) stays under 13,300 chars
 # at its real observed max (most under 2,000), against "Introduced"/"Enrolled" maxes over
 # 980,000 chars in the same jurisdiction. Population: 547 {bill} + 16 {resolution}/
 # {"concurrent resolution"}/{"joint resolution"} = 563 rows total, confirmed the pattern holds
-# for the resolution rows too (max 1,870 chars among them) rather than assumed. A fixed list
-# would silently miss a future "House Amendment 7"; the pattern is the more durable
-# representation of the same evidence. Measured reduction (AC5): all 563 of these currently
-# carry a non-null diff today and become None after this fix, same reasoning as Virginia above.
+# for the resolution rows too (max 1,870 chars among them) rather than assumed -- 16 of 16
+# resolution rows also currently carry a non-null diff, same as the bill rows. `[1-9]\d*`
+# (not `\d+`) deliberately excludes a hypothetical "Amendment 0" -- real amendment numbering
+# starts at 1 in every real note observed; this is a zero-cost tightening, not a behavior this
+# module has evidence would otherwise occur. Measured reduction (AC5), via the second query
+# above: all 563 of these currently carry a non-null diff today and become None after this fix,
+# same reasoning as Virginia above.
 _PROCEDURAL_DOCUMENT_NOTE_PATTERNS: dict[str, "re.Pattern"] = {
-    "Utah": re.compile(r"\A(house|senate) amendment \d+\Z", re.IGNORECASE),
+    "Utah": re.compile(r"\A(house|senate) amendment [1-9]\d*\Z", re.IGNORECASE),
 }
 
 

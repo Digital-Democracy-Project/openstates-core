@@ -151,6 +151,13 @@ def test_is_procedural_document_utah_does_not_exclude_real_text(note):
     assert is_procedural_document("Utah", note) is False
 
 
+def test_is_procedural_document_utah_amendment_zero_is_not_matched():
+    """Real amendment numbering starts at 1 in every real note this module's own audit
+    observed -- `[1-9]\\d*` deliberately excludes the hypothetical "Amendment 0" rather than
+    accepting it via a bare `\\d+`, at zero cost."""
+    assert is_procedural_document("Utah", "House Amendment 0") is False
+
+
 def test_is_procedural_document_jurisdiction_specific():
     """"Conference Report" is a Virginia stub (median ~813 chars) but a real, large Michigan
     document (median well over 1M chars) -- this module's own real-data audit found both, and
