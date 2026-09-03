@@ -326,8 +326,50 @@ _PROCEDURAL_DOCUMENT_NOTES: dict[str, frozenset] = {
 # above: all 563 of these currently carry a non-null diff today -- same prospective-only
 # reasoning as Virginia's own comment above (merging alone does not retroactively touch them;
 # a separate, explicitly-authorized `recompute-diff-order --commit` for Utah does).
+# Virginia (pattern match -- committee/subcommittee/legislator names, not a fixed list; OPEN-246):
+# a floor amendment offered by a specific committee ("Courts of Justice Amendment"), subcommittee
+# ("Subcommittee #2 Subcommittee Amendment"), or individual legislator ("Senator Sturtevant
+# Amendments") is a short excerpt of just that one proposed change, not a re-typeset full bill --
+# the same shape as Utah's numbered "House/Senate Amendment <N>" above, just named by committee or
+# person instead of by number, and just as open-ended: 133 distinct committee/subcommittee/
+# legislator names observed in the real archived data (2026-09-02), with a new one appearing every
+# time committee assignments or membership change, so a fixed list would need re-auditing every
+# General Assembly session. This is the exact family OPEN-224's own original problem description
+# named as in-scope ("Commerce and Labor Amendment") but never actually added to the exclusion
+# table -- SB 542's "Courts of Justice Amendment" (9,229 chars) diffed against the full prior bill
+# into a 660,649-char degenerate diff, which directly triggered a real MLX worker wedge
+# (AGENTS-95, surfaced by AGENTS-91's 1,000-bill dry run).
+#
+# The size evidence confirms this is a distinct, clean population from real full-text versions --
+# not just an extrapolation from the naming convention alone: every one of the 133 real note values
+# ending in "Amendment"/"Amendments" tops out at 11,098 chars at its single largest real instance --
+# two full orders of magnitude below Virginia's own real full-text maxes (904,438-980,000+ chars,
+# see the Substitute/Utah entries in this same table). This population's max (11,098) does sit
+# inside the low end of Virginia's real full-text *median* range (7,700-13,300 chars) -- medians
+# describe the typical case, not the floor, and a real full document routinely runs far larger
+# (see below); the max-vs-max comparison is the one that cleanly separates the two populations,
+# not max-vs-median. Critically, this module's own audit also found a lexically-adjacent but
+# structurally different family that must NOT be excluded: "<Committee/Legislator> Substitute"
+# (e.g. "Courts of Justice Substitute", "Commerce and Labor Substitute") IS real committee-
+# substitute full text -- median 6,810 chars, max 904,438 chars across 5,968 real documents, the
+# same shape as "Governor Substitute" and "Conference Report Substitute" above. The two families
+# share a committee-name prefix but never overlap in the real archived data (nothing matches both
+# "amendment" and "substitute" in the same note) -- this pattern only matches notes ending in the
+# word "Amendment"/"Amendments" specifically, which is what keeps it from also catching
+# "Substitute" or the ticket's own named regression case, "Amendment in the Nature of a
+# Substitute" (ends in "Substitute", not "Amendment"). Also checked directly against the real
+# archived data: no bare, non-committee/non-legislator-prefixed note ending in "Amendment"/
+# "Amendments" (e.g. a hypothetical "Constitutional Amendment") exists anywhere in Virginia's
+# real archive as of this audit -- every one of the 133 real values has a real committee,
+# subcommittee, or legislator name as its prefix. Population: 1,447 real documents (1,436 {bill}
+# + 11 {constitutional amendment} -- a bill *classification*, not a note value; their real notes
+# are still committee/legislator-prefixed, e.g. "Senator Jordan, Emily M. Amendment"), all of
+# which currently carry a non-null diff_from_previous_version today -- same prospective-only
+# reasoning as the Virginia/Utah entries above (merging this fix does not retroactively touch
+# them; a separate, explicitly-authorized `recompute-diff-order --commit` for Virginia does).
 _PROCEDURAL_DOCUMENT_NOTE_PATTERNS: dict[str, "re.Pattern"] = {
     "Utah": re.compile(r"\A(house|senate) amendment [1-9]\d*\Z", re.IGNORECASE),
+    "Virginia": re.compile(r"\A.+\bamendments?\Z", re.IGNORECASE),
 }
 
 

@@ -168,3 +168,42 @@ def test_is_procedural_document_jurisdiction_specific():
 
 def test_is_procedural_document_unknown_jurisdiction_excludes_nothing():
     assert is_procedural_document("Some Never-Onboarded State", "Conference Report") is False
+
+
+# --- OPEN-246: Virginia's committee/subcommittee/legislator "Amendment" family ----------
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        # SB 542's own real note -- the live incident that prompted this ticket.
+        "Courts of Justice Amendment",
+        "courts of justice amendment",  # case-insensitive
+        "Commerce and Labor Amendment",  # OPEN-224's own original named example, never added
+        "Senator Sturtevant Amendments",  # legislator-named, plural, the largest real instance
+        "Subcommittee #2 Subcommittee Amendment",
+        "Delegate Price                Amendment",  # real multi-space formatting from the scraper
+    ],
+)
+def test_is_procedural_document_virginia_committee_amendment_pattern(note):
+    assert is_procedural_document("Virginia", note) is True
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        # The critical regression: a lexically-adjacent, same-committee-prefix family that is
+        # real committee-substitute full text, not a stub (median 6,810 chars / max 904,438
+        # chars across 5,968 real Virginia documents) -- must not be caught by a pattern aimed
+        # at the "Amendment" family just because it shares a committee-name prefix.
+        "Courts of Justice Substitute",
+        "Commerce and Labor Substitute",
+        # Still the ticket's own named regression case for Virginia generally -- ends in
+        # "Substitute", not "Amendment", so this pattern must not touch it either.
+        "Amendment in the Nature of a Substitute",
+        # Does not end in the word "Amendment"/"Amendments".
+        "Amendment",  # no committee/legislator prefix at all -- not observed in real data
+    ],
+)
+def test_is_procedural_document_virginia_committee_amendment_does_not_exclude_real_text(note):
+    assert is_procedural_document("Virginia", note) is False
