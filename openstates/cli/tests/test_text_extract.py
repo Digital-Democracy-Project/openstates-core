@@ -1416,6 +1416,55 @@ class TestReextractDocument:
         assert "AccessDenied" in result["reason"]
         assert "systemic" in result["reason"]
 
+    def test_glacier_deep_archive_object_reports_its_own_distinct_reason(
+        self, tmp_path, monkeypatch
+    ):
+        """The archive has two storage tiers -- historical documents (uploaded via the
+        original wrapper path) sit in Glacier Deep Archive and need an explicit restore before
+        a plain GetObject works at all. This is a real, expected, per-document condition, not a
+        systemic S3 problem -- it must get its own reason, not fold into either "not found" or
+        "may be systemic" (which would send an operator chasing credentials for something that
+        just needs a restore request)."""
+        monkeypatch.setattr("openstates.settings.ARCHIVE_ROOT_DIR", str(tmp_path))
+        from botocore.exceptions import ClientError
+
+        fake_client = mock.Mock()
+        fake_client.get_object.side_effect = ClientError(
+            {
+                "Error": {
+                    "Code": "InvalidObjectState",
+                    "Message": "The operation is not valid for the object's storage class",
+                }
+            },
+            "GetObject",
+        )
+        bill = _make_bill()
+        doc = BillVersionDocument.objects.create(
+            bill=bill,
+            version_note="Introduced",
+            version_date="",
+            source_url="https://example.test/old.pdf",
+            media_type="application/pdf",
+            raw_text="",
+            is_error=True,
+            archive_location=f"s3://{S3_BILL_ARCHIVE_BUCKET}/bills/raw/ak/old.pdf",
+        )
+        with mock.patch(
+            "openstates.cli.text_extract._get_s3_client", return_value=fake_client
+        ):
+            result = _reextract_document(doc)
+        assert result["attempted"] is False
+        assert result["reason"] == (
+            "archived in Glacier Deep Archive, needs restore (~12h) first"
+        )
+        # Distinct from both other failure reasons, so all three group separately in
+        # refresh_extraction's own skip_reasons report.
+        assert result["reason"] != "not found locally or in S3"
+        assert "systemic" not in result["reason"]
+        fake_client.get_object.assert_called_once_with(
+            Bucket=S3_BILL_ARCHIVE_BUCKET, Key="bills/raw/ak/old.pdf"
+        )
+
     def test_missing_local_file_falls_back_to_s3_and_succeeds(
         self, tmp_path, monkeypatch
     ):

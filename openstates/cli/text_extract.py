@@ -2334,9 +2334,18 @@ def _fetch_archive_bytes(
     and a reason unique to every document, however descriptive, can never group with anything,
     so a systemic failure -- wrong credentials, network down -- would report as dozens of
     "different" one-count reasons instead of one big, visible one). A genuinely-missing object
-    (`NoSuchKey`/404) and any other S3-side failure (auth, throttling, network) are reported
-    under different, still-poolable strings, so a systemic failure's own error code dominates
-    the report's existing top-10-by-count display instead of hiding among real 404s.
+    (`NoSuchKey`/404), an object sitting unrestored in Glacier Deep Archive
+    (`InvalidObjectState` -- see below), and any other S3-side failure (auth, throttling,
+    network) are each reported under their own, still-poolable string, so any one class
+    dominates the report's existing top-10-by-count display on its own rather than blurring
+    together.
+
+    Deliberately does not call `RestoreObject` or retry after one for a Deep-Archive object:
+    the archive has two storage tiers (`_upload_and_verify_via_wrapper`'s original path writes
+    to Glacier Deep Archive; only `_upload_and_verify_direct`'s newer cloud path, OPEN-192,
+    writes at STANDARD_IA specifically to be immediately readable), and a ~12h asynchronous
+    restore-then-reprocess workflow is a different, stateful feature this function should not
+    attempt silently as a side effect of a read.
     """
     try:
         with open(local_path, "rb") as f:
@@ -2357,6 +2366,18 @@ def _fetch_archive_bytes(
             code = ""
         if code in ("NoSuchKey", "404"):
             return None, "not found locally or in S3"
+        if code == "InvalidObjectState":
+            # A real, expected, per-document condition, not a systemic problem -- the archive
+            # has two storage tiers (`_upload_and_verify_via_wrapper`'s original path writes to
+            # Glacier Deep Archive; only `_upload_and_verify_direct`'s newer cloud path,
+            # OPEN-192, writes at STANDARD_IA specifically to be immediately readable). A plain
+            # GetObject against a Deep Archive object that was never explicitly restored raises
+            # exactly this code -- distinct from both "genuinely missing" and "systemic S3
+            # trouble," so it gets its own poolable reason rather than folding into either.
+            # This function deliberately does NOT call RestoreObject or retry after one --
+            # a ~12h asynchronous restore-then-reprocess workflow is a different, stateful
+            # feature, not something a synchronous per-document read should attempt silently.
+            return None, "archived in Glacier Deep Archive, needs restore (~12h) first"
         reason = (
             f"S3 error ({code or 'ClientError'}) -- may be systemic, not per-document"
         )
