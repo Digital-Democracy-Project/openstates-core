@@ -1334,8 +1334,30 @@ class TestReextractDocument:
         assert result["attempted"] is False
         assert "no archive_location" in result["reason"]
 
-    def test_missing_local_file_is_not_attempted(self, tmp_path, monkeypatch):
+    @pytest.fixture(autouse=True)
+    def _reset_s3_client_cache(self):
+        """`_cached_s3_client()` caches its client in a module-level variable so a real bulk
+        run doesn't reconstruct one per document -- reset it around every test in this class so
+        one test's mock client can't leak into the next's."""
+        import openstates.cli.text_extract as text_extract_module
+
+        text_extract_module._s3_client_cache = None
+        yield
+        text_extract_module._s3_client_cache = None
+
+    def test_missing_local_file_and_missing_s3_object_is_not_attempted(
+        self, tmp_path, monkeypatch
+    ):
+        """OPEN-49 (2026-09-04 correction): a local miss now falls back to S3 before giving up
+        -- this test confirms the "not attempted" outcome only when BOTH are genuinely absent,
+        not merely local."""
         monkeypatch.setattr("openstates.settings.ARCHIVE_ROOT_DIR", str(tmp_path))
+        from botocore.exceptions import ClientError
+
+        fake_client = mock.Mock()
+        fake_client.get_object.side_effect = ClientError(
+            {"Error": {"Code": "NoSuchKey", "Message": "Not Found"}}, "GetObject"
+        )
         bill = _make_bill()
         doc = BillVersionDocument.objects.create(
             bill=bill,
@@ -1347,9 +1369,194 @@ class TestReextractDocument:
             is_error=True,
             archive_location=f"s3://{S3_BILL_ARCHIVE_BUCKET}/bills/raw/ak/nope.pdf",
         )
-        result = _reextract_document(doc)
+        with mock.patch(
+            "openstates.cli.text_extract._get_s3_client", return_value=fake_client
+        ):
+            result = _reextract_document(doc)
         assert result["attempted"] is False
-        assert "local file missing" in result["reason"]
+        # Deliberately poolable across documents (pm-review, round 1) -- no local_path in the
+        # string, or refresh_extraction's own skip_reasons grouping could never group two of
+        # these together.
+        assert result["reason"] == "not found locally or in S3"
+        fake_client.get_object.assert_called_once_with(
+            Bucket=S3_BILL_ARCHIVE_BUCKET, Key="bills/raw/ak/nope.pdf"
+        )
+
+    def test_systemic_s3_failure_reports_a_distinct_poolable_reason(
+        self, tmp_path, monkeypatch
+    ):
+        """pm-review, round 1: a genuine 404 and a systemic failure (bad credentials, network
+        down, throttling) must NOT collapse into the same reason -- a systemic failure affecting
+        every document in a run needs to visibly dominate refresh_extraction's own top-10
+        skip_reasons report, not hide as 404-shaped noise."""
+        monkeypatch.setattr("openstates.settings.ARCHIVE_ROOT_DIR", str(tmp_path))
+        from botocore.exceptions import ClientError
+
+        fake_client = mock.Mock()
+        fake_client.get_object.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "denied"}}, "GetObject"
+        )
+        bill = _make_bill()
+        doc = BillVersionDocument.objects.create(
+            bill=bill,
+            version_note="Introduced",
+            version_date="",
+            source_url="https://example.test/gone.pdf",
+            media_type="application/pdf",
+            raw_text="",
+            is_error=True,
+            archive_location=f"s3://{S3_BILL_ARCHIVE_BUCKET}/bills/raw/ak/nope.pdf",
+        )
+        with mock.patch(
+            "openstates.cli.text_extract._get_s3_client", return_value=fake_client
+        ):
+            result = _reextract_document(doc)
+        assert result["attempted"] is False
+        assert result["reason"] != "not found locally or in S3"
+        assert "AccessDenied" in result["reason"]
+        assert "systemic" in result["reason"]
+
+    def test_glacier_deep_archive_object_reports_its_own_distinct_reason(
+        self, tmp_path, monkeypatch
+    ):
+        """The archive has two storage tiers -- historical documents (uploaded via the
+        original wrapper path) sit in Glacier Deep Archive and need an explicit restore before
+        a plain GetObject works at all. This is a real, expected, per-document condition, not a
+        systemic S3 problem -- it must get its own reason, not fold into either "not found" or
+        "may be systemic" (which would send an operator chasing credentials for something that
+        just needs a restore request)."""
+        monkeypatch.setattr("openstates.settings.ARCHIVE_ROOT_DIR", str(tmp_path))
+        from botocore.exceptions import ClientError
+
+        fake_client = mock.Mock()
+        fake_client.get_object.side_effect = ClientError(
+            {
+                "Error": {
+                    "Code": "InvalidObjectState",
+                    "Message": "The operation is not valid for the object's storage class",
+                }
+            },
+            "GetObject",
+        )
+        bill = _make_bill()
+        doc = BillVersionDocument.objects.create(
+            bill=bill,
+            version_note="Introduced",
+            version_date="",
+            source_url="https://example.test/old.pdf",
+            media_type="application/pdf",
+            raw_text="",
+            is_error=True,
+            archive_location=f"s3://{S3_BILL_ARCHIVE_BUCKET}/bills/raw/ak/old.pdf",
+        )
+        with mock.patch(
+            "openstates.cli.text_extract._get_s3_client", return_value=fake_client
+        ):
+            result = _reextract_document(doc)
+        assert result["attempted"] is False
+        assert result["reason"] == (
+            "archived in Glacier Deep Archive, needs restore (~12h) first"
+        )
+        # Distinct from both other failure reasons, so all three group separately in
+        # refresh_extraction's own skip_reasons report.
+        assert result["reason"] != "not found locally or in S3"
+        assert "systemic" not in result["reason"]
+        fake_client.get_object.assert_called_once_with(
+            Bucket=S3_BILL_ARCHIVE_BUCKET, Key="bills/raw/ak/old.pdf"
+        )
+
+    def test_missing_local_file_falls_back_to_s3_and_succeeds(
+        self, tmp_path, monkeypatch
+    ):
+        """The actual OPEN-49 fix (2026-09-04): a host with no local archive mirror at all --
+        confirmed live on EC2 running against RDS -- must still be able to re-extract, by
+        fetching the one object it needs from S3 instead of requiring a bulk local sync."""
+        monkeypatch.setattr("openstates.settings.ARCHIVE_ROOT_DIR", str(tmp_path))
+        content = b'<html><body><div class="WordSection1">Real bill text here.</div></body></html>'
+        fake_body = mock.Mock()
+        fake_body.read.return_value = content
+        fake_client = mock.Mock()
+        fake_client.get_object.return_value = {"Body": fake_body}
+
+        bill = _make_bill(jid="ocd-jurisdiction/country:us/state:mi/government")
+        doc = BillVersionDocument.objects.create(
+            bill=bill,
+            version_note="Introduced",
+            version_date="",
+            source_url="https://example.test/bill.html",
+            media_type="text/html",
+            raw_text="",
+            is_error=True,
+            archive_location=f"s3://{S3_BILL_ARCHIVE_BUCKET}/bills/raw/mi/bill.html",
+        )
+        with mock.patch(
+            "openstates.cli.text_extract._get_s3_client", return_value=fake_client
+        ):
+            result = _reextract_document(doc)
+        assert result["attempted"] is True
+        assert result["new_is_error"] is False
+        assert "Real bill text here." in result["new_raw_text"]
+        fake_client.get_object.assert_called_once_with(
+            Bucket=S3_BILL_ARCHIVE_BUCKET, Key="bills/raw/mi/bill.html"
+        )
+
+    def test_s3_client_is_cached_across_multiple_documents(self, tmp_path, monkeypatch):
+        """pm-review, round 1: `_get_s3_client()` builds a fresh boto3 client (real credential
+        resolution) on every call -- a run with thousands of stale documents on a host with no
+        local mirror must not pay that cost per document."""
+        monkeypatch.setattr("openstates.settings.ARCHIVE_ROOT_DIR", str(tmp_path))
+        content = b'<html><body><div class="WordSection1">Real bill text here.</div></body></html>'
+        fake_body_1, fake_body_2 = mock.Mock(), mock.Mock()
+        fake_body_1.read.return_value = content
+        fake_body_2.read.return_value = content
+        fake_client = mock.Mock()
+        fake_client.get_object.side_effect = [
+            {"Body": fake_body_1},
+            {"Body": fake_body_2},
+        ]
+
+        bill = _make_bill(jid="ocd-jurisdiction/country:us/state:mi/government")
+        docs = [
+            BillVersionDocument.objects.create(
+                bill=bill,
+                version_note="Introduced",
+                version_date="",
+                source_url=f"https://example.test/bill{i}.html",
+                media_type="text/html",
+                raw_text="",
+                is_error=True,
+                archive_location=f"s3://{S3_BILL_ARCHIVE_BUCKET}/bills/raw/mi/bill{i}.html",
+            )
+            for i in (1, 2)
+        ]
+        with mock.patch(
+            "openstates.cli.text_extract._get_s3_client", return_value=fake_client
+        ) as mock_get_client:
+            for doc in docs:
+                result = _reextract_document(doc)
+                assert result["attempted"] is True
+        mock_get_client.assert_called_once()
+        assert fake_client.get_object.call_count == 2
+
+    def test_local_file_present_never_calls_s3(self, tmp_path, monkeypatch):
+        """S3 is a fallback, not a first choice -- a host with a real local archive (the Mac)
+        must not pay for an S3 round-trip on every document it already has on disk."""
+        bill = _make_bill(jid="ocd-jurisdiction/country:us/state:mi/government")
+        doc = self._make_doc(
+            bill,
+            tmp_path,
+            monkeypatch,
+            media_type="text/html",
+            filename="bill.html",
+            content=b'<html><body><div class="WordSection1">Real bill text here.</div></body></html>',
+        )
+        with mock.patch(
+            "openstates.cli.text_extract._get_s3_client"
+        ) as mock_get_client:
+            result = _reextract_document(doc)
+        assert result["attempted"] is True
+        assert result["new_is_error"] is False
+        mock_get_client.assert_not_called()
 
     def test_successful_reextraction_reports_fixed(self, tmp_path, monkeypatch):
         # Use a real registered jurisdiction (mi, text/html mapped in CONVERSION_FUNCTIONS)

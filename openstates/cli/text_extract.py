@@ -2294,16 +2294,110 @@ def recompute_diff_order(state: str, session: str = None, commit: bool = False) 
     )
 
 
+_s3_client_cache = None
+
+
+def _cached_s3_client():
+    """`_get_s3_client()` builds a fresh `boto3.client("s3")` (real credential resolution,
+    config file reads) on every call -- fine for `_upload_and_verify_direct()`'s one-call-per-
+    document-at-archive-time use, but `_fetch_archive_bytes()` below can call it once per stale
+    document in a single run, potentially thousands of times on a host with no local mirror.
+    Cached here, scoped to this module's own read path only; `_upload_and_verify_direct()` is
+    left calling `_get_s3_client()` directly, unchanged -- fixing its own call pattern is a
+    separate concern this PR isn't taking on."""
+    global _s3_client_cache
+    if _s3_client_cache is None:
+        _s3_client_cache = _get_s3_client()
+    return _s3_client_cache
+
+
+def _fetch_archive_bytes(
+    rel_path: str, local_path: str
+) -> typing.Tuple[typing.Optional[bytes], typing.Optional[str]]:
+    """Read one archived document's raw bytes, local disk first, S3 GetObject on a local miss.
+
+    Found needing this 2026-09-04: the EC2 host running `refresh-extraction` against RDS has no
+    local `ARCHIVE_ROOT_DIR` mirror at all (`cloud_archiver.py` writes locally on the Mac and
+    only mirrors to S3 -- nothing ever populated a copy on this host), so local-only reads
+    reported every single document "not attempted" for three whole jurisdictions rather than
+    genuinely finding them clean. `_get_s3_client()`/`S3_BILL_ARCHIVE_BUCKET` already exist for
+    the archive *write* side (`_upload_and_verify_direct`) -- this reuses both rather than
+    requiring a bulk local sync or moving the run to a different host, since only the
+    documents genuinely stale need fetching at all, not the whole archive up front.
+
+    Returns `(data, None)` on success from either source, or `(None, reason)` if both the
+    local file and the S3 object are unavailable.
+
+    `reason` deliberately does NOT include `local_path` or any other per-document detail
+    (pm-review, round 1: an earlier version did, which defeats `refresh_extraction`'s own
+    `skip_reasons` dict -- it groups by exact string match to surface the most common failure,
+    and a reason unique to every document, however descriptive, can never group with anything,
+    so a systemic failure -- wrong credentials, network down -- would report as dozens of
+    "different" one-count reasons instead of one big, visible one). A genuinely-missing object
+    (`NoSuchKey`/404), an object sitting unrestored in Glacier Deep Archive
+    (`InvalidObjectState` -- see below), and any other S3-side failure (auth, throttling,
+    network) are each reported under their own, still-poolable string, so any one class
+    dominates the report's existing top-10-by-count display on its own rather than blurring
+    together.
+
+    Deliberately does not call `RestoreObject` or retry after one for a Deep-Archive object:
+    the archive has two storage tiers (`_upload_and_verify_via_wrapper`'s original path writes
+    to Glacier Deep Archive; only `_upload_and_verify_direct`'s newer cloud path, OPEN-192,
+    writes at STANDARD_IA specifically to be immediately readable), and a ~12h asynchronous
+    restore-then-reprocess workflow is a different, stateful feature this function should not
+    attempt silently as a side effect of a read.
+    """
+    try:
+        with open(local_path, "rb") as f:
+            return f.read(), None
+    except FileNotFoundError:
+        pass
+
+    from botocore.exceptions import BotoCoreError, ClientError
+
+    try:
+        client = _cached_s3_client()
+        obj = client.get_object(Bucket=S3_BILL_ARCHIVE_BUCKET, Key=rel_path)
+        return obj["Body"].read(), None
+    except ClientError as e:
+        if hasattr(e, "response"):
+            code = e.response.get("Error", {}).get("Code", "")
+        else:
+            code = ""
+        if code in ("NoSuchKey", "404"):
+            return None, "not found locally or in S3"
+        if code == "InvalidObjectState":
+            # A real, expected, per-document condition, not a systemic problem -- the archive
+            # has two storage tiers (`_upload_and_verify_via_wrapper`'s original path writes to
+            # Glacier Deep Archive; only `_upload_and_verify_direct`'s newer cloud path,
+            # OPEN-192, writes at STANDARD_IA specifically to be immediately readable). A plain
+            # GetObject against a Deep Archive object that was never explicitly restored raises
+            # exactly this code -- distinct from both "genuinely missing" and "systemic S3
+            # trouble," so it gets its own poolable reason rather than folding into either.
+            # This function deliberately does NOT call RestoreObject or retry after one --
+            # a ~12h asynchronous restore-then-reprocess workflow is a different, stateful
+            # feature, not something a synchronous per-document read should attempt silently.
+            return None, "archived in Glacier Deep Archive, needs restore (~12h) first"
+        reason = (
+            f"S3 error ({code or 'ClientError'}) -- may be systemic, not per-document"
+        )
+        return None, reason
+    except BotoCoreError as e:
+        reason = f"S3 connection/config error ({type(e).__name__}) -- may be systemic"
+        return None, reason
+
+
 def _reextract_document(doc: typing.Any) -> dict[str, typing.Any]:
     """
     Re-run text extraction for one already-archived `BillVersionDocument`, reading its raw
-    bytes directly from the local archive copy on `/Volumes/DDP-HOT` -- no re-fetching from
-    the live site, no S3 involvement. Same "reprocess in place" approach OPEN-33 used for its
-    VA backfill, generalized here (OPEN-49) so it isn't a one-off script per jurisdiction.
+    bytes from the local archive copy on `/Volumes/DDP-HOT` where one exists, falling back to
+    the S3 archive (`_fetch_archive_bytes`) where it doesn't -- no re-fetching from the live
+    site regardless. Same "reprocess in place" approach OPEN-33 used for its VA backfill,
+    generalized here (OPEN-49) so it isn't a one-off script per jurisdiction.
 
-    Returns a dict with keys: "attempted" (bool -- False means the local file couldn't be
-    found, so the row wasn't touched at all), "new_raw_text", "new_is_error", "reason" (set on
-    any non-fatal skip/failure, for the dry-run report).
+    Returns a dict with keys: "attempted" (bool -- False means neither local disk nor S3 had
+    the bytes, so the row wasn't touched at all), "new_raw_text", "new_is_error", "reason" (set
+    on any non-fatal skip/failure, for the dry-run report).
     """
     from openstates import settings
 
@@ -2320,11 +2414,9 @@ def _reextract_document(doc: typing.Any) -> dict[str, typing.Any]:
         }
     rel_path = doc.archive_location[len(prefix) :]
     local_path = os.path.join(settings.ARCHIVE_ROOT_DIR, rel_path)
-    if not os.path.exists(local_path):
-        return {"attempted": False, "reason": f"local file missing: {local_path}"}
-
-    with open(local_path, "rb") as f:
-        data = f.read()
+    data, fetch_failure = _fetch_archive_bytes(rel_path, local_path)
+    if data is None:
+        return {"attempted": False, "reason": fetch_failure}
 
     metadata: Metadata = {
         "url": doc.source_url,
@@ -2355,8 +2447,9 @@ def _reextract_document(doc: typing.Any) -> dict[str, typing.Any]:
 
 
 @main.command(
-    help="re-run text extraction for already-archived (but errored) bill documents, "
-    "reading the already-downloaded raw file off disk -- no re-fetching, no S3 (OPEN-49)"
+    help="re-run text extraction for already-archived (but errored) bill documents, reading "
+    "the local archive copy where one exists, S3 on a local miss -- never re-fetches from the "
+    "live site (OPEN-49)"
 )
 @click.argument("state")
 @click.option("--session", default=None)
@@ -2460,8 +2553,9 @@ def refresh_extraction(
     The ordering is structural rather than a rule to remember -- recomputing while any version
     of the bill still holds stale text simply reproduces the problem for that hop.
 
-    Reads bytes from the local archive copy (`_reextract_document`), so there is no re-fetching
-    from any legislature's site and no S3 traffic.
+    Reads bytes via `_reextract_document` (local archive copy first, S3 on a local miss --
+    `_fetch_archive_bytes`), so there is no re-fetching from any legislature's site regardless
+    of which of those two sources actually has the bytes.
 
     Idempotent: a second run finds nothing stale and rewrites nothing.
 
