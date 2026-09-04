@@ -2294,6 +2294,23 @@ def recompute_diff_order(state: str, session: str = None, commit: bool = False) 
     )
 
 
+_s3_client_cache = None
+
+
+def _cached_s3_client():
+    """`_get_s3_client()` builds a fresh `boto3.client("s3")` (real credential resolution,
+    config file reads) on every call -- fine for `_upload_and_verify_direct()`'s one-call-per-
+    document-at-archive-time use, but `_fetch_archive_bytes()` below can call it once per stale
+    document in a single run, potentially thousands of times on a host with no local mirror.
+    Cached here, scoped to this module's own read path only; `_upload_and_verify_direct()` is
+    left calling `_get_s3_client()` directly, unchanged -- fixing its own call pattern is a
+    separate concern this PR isn't taking on."""
+    global _s3_client_cache
+    if _s3_client_cache is None:
+        _s3_client_cache = _get_s3_client()
+    return _s3_client_cache
+
+
 def _fetch_archive_bytes(
     rel_path: str, local_path: str
 ) -> typing.Tuple[typing.Optional[bytes], typing.Optional[str]]:
@@ -2309,27 +2326,44 @@ def _fetch_archive_bytes(
     documents genuinely stale need fetching at all, not the whole archive up front.
 
     Returns `(data, None)` on success from either source, or `(None, reason)` if both the
-    local file and the S3 object are unavailable -- the same "not attempted, here's why" shape
-    the local-only version returned, so `_reextract_document`'s own return contract doesn't
-    change.
+    local file and the S3 object are unavailable.
+
+    `reason` deliberately does NOT include `local_path` or any other per-document detail
+    (pm-review, round 1: an earlier version did, which defeats `refresh_extraction`'s own
+    `skip_reasons` dict -- it groups by exact string match to surface the most common failure,
+    and a reason unique to every document, however descriptive, can never group with anything,
+    so a systemic failure -- wrong credentials, network down -- would report as dozens of
+    "different" one-count reasons instead of one big, visible one). A genuinely-missing object
+    (`NoSuchKey`/404) and any other S3-side failure (auth, throttling, network) are reported
+    under different, still-poolable strings, so a systemic failure's own error code dominates
+    the report's existing top-10-by-count display instead of hiding among real 404s.
     """
-    if os.path.exists(local_path):
+    try:
         with open(local_path, "rb") as f:
             return f.read(), None
+    except FileNotFoundError:
+        pass
 
     from botocore.exceptions import BotoCoreError, ClientError
 
     try:
-        client = _get_s3_client()
+        client = _cached_s3_client()
         obj = client.get_object(Bucket=S3_BILL_ARCHIVE_BUCKET, Key=rel_path)
         return obj["Body"].read(), None
-    except (ClientError, BotoCoreError) as e:
-        # Covers a genuine 404/NoSuchKey (the object was never archived at all) and any other
-        # failure (credentials, network, throttling) identically -- both mean this function
-        # could not get bytes from anywhere, which is what the caller's "not attempted" case
-        # already exists to report; a caller retrying later after a transient failure gets
-        # exactly the same safe no-op it would have gotten from a real 404.
-        return None, f"local file missing: {local_path}; S3 fetch also failed: {e}"
+    except ClientError as e:
+        if hasattr(e, "response"):
+            code = e.response.get("Error", {}).get("Code", "")
+        else:
+            code = ""
+        if code in ("NoSuchKey", "404"):
+            return None, "not found locally or in S3"
+        reason = (
+            f"S3 error ({code or 'ClientError'}) -- may be systemic, not per-document"
+        )
+        return None, reason
+    except BotoCoreError as e:
+        reason = f"S3 connection/config error ({type(e).__name__}) -- may be systemic"
+        return None, reason
 
 
 def _reextract_document(doc: typing.Any) -> dict[str, typing.Any]:
