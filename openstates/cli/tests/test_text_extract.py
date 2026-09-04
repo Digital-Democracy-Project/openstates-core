@@ -1334,8 +1334,19 @@ class TestReextractDocument:
         assert result["attempted"] is False
         assert "no archive_location" in result["reason"]
 
-    def test_missing_local_file_is_not_attempted(self, tmp_path, monkeypatch):
+    def test_missing_local_file_and_missing_s3_object_is_not_attempted(
+        self, tmp_path, monkeypatch
+    ):
+        """OPEN-49 (2026-09-04 correction): a local miss now falls back to S3 before giving up
+        -- this test confirms the "not attempted" outcome only when BOTH are genuinely absent,
+        not merely local."""
         monkeypatch.setattr("openstates.settings.ARCHIVE_ROOT_DIR", str(tmp_path))
+        from botocore.exceptions import ClientError
+
+        fake_client = mock.Mock()
+        fake_client.get_object.side_effect = ClientError(
+            {"Error": {"Code": "NoSuchKey", "Message": "Not Found"}}, "GetObject"
+        )
         bill = _make_bill()
         doc = BillVersionDocument.objects.create(
             bill=bill,
@@ -1347,9 +1358,67 @@ class TestReextractDocument:
             is_error=True,
             archive_location=f"s3://{S3_BILL_ARCHIVE_BUCKET}/bills/raw/ak/nope.pdf",
         )
-        result = _reextract_document(doc)
+        with mock.patch(
+            "openstates.cli.text_extract._get_s3_client", return_value=fake_client
+        ):
+            result = _reextract_document(doc)
         assert result["attempted"] is False
         assert "local file missing" in result["reason"]
+        assert "S3 fetch also failed" in result["reason"]
+        fake_client.get_object.assert_called_once_with(
+            Bucket=S3_BILL_ARCHIVE_BUCKET, Key="bills/raw/ak/nope.pdf"
+        )
+
+    def test_missing_local_file_falls_back_to_s3_and_succeeds(self, tmp_path, monkeypatch):
+        """The actual OPEN-49 fix (2026-09-04): a host with no local archive mirror at all --
+        confirmed live on EC2 running against RDS -- must still be able to re-extract, by
+        fetching the one object it needs from S3 instead of requiring a bulk local sync."""
+        monkeypatch.setattr("openstates.settings.ARCHIVE_ROOT_DIR", str(tmp_path))
+        content = b'<html><body><div class="WordSection1">Real bill text here.</div></body></html>'
+        fake_body = mock.Mock()
+        fake_body.read.return_value = content
+        fake_client = mock.Mock()
+        fake_client.get_object.return_value = {"Body": fake_body}
+
+        bill = _make_bill(jid="ocd-jurisdiction/country:us/state:mi/government")
+        doc = BillVersionDocument.objects.create(
+            bill=bill,
+            version_note="Introduced",
+            version_date="",
+            source_url="https://example.test/bill.html",
+            media_type="text/html",
+            raw_text="",
+            is_error=True,
+            archive_location=f"s3://{S3_BILL_ARCHIVE_BUCKET}/bills/raw/mi/bill.html",
+        )
+        with mock.patch(
+            "openstates.cli.text_extract._get_s3_client", return_value=fake_client
+        ):
+            result = _reextract_document(doc)
+        assert result["attempted"] is True
+        assert result["new_is_error"] is False
+        assert "Real bill text here." in result["new_raw_text"]
+        fake_client.get_object.assert_called_once_with(
+            Bucket=S3_BILL_ARCHIVE_BUCKET, Key="bills/raw/mi/bill.html"
+        )
+
+    def test_local_file_present_never_calls_s3(self, tmp_path, monkeypatch):
+        """S3 is a fallback, not a first choice -- a host with a real local archive (the Mac)
+        must not pay for an S3 round-trip on every document it already has on disk."""
+        bill = _make_bill(jid="ocd-jurisdiction/country:us/state:mi/government")
+        doc = self._make_doc(
+            bill,
+            tmp_path,
+            monkeypatch,
+            media_type="text/html",
+            filename="bill.html",
+            content=b'<html><body><div class="WordSection1">Real bill text here.</div></body></html>',
+        )
+        with mock.patch("openstates.cli.text_extract._get_s3_client") as mock_get_client:
+            result = _reextract_document(doc)
+        assert result["attempted"] is True
+        assert result["new_is_error"] is False
+        mock_get_client.assert_not_called()
 
     def test_successful_reextraction_reports_fixed(self, tmp_path, monkeypatch):
         # Use a real registered jurisdiction (mi, text/html mapped in CONVERSION_FUNCTIONS)
