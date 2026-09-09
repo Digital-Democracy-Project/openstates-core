@@ -1318,6 +1318,49 @@ class TestReextractDocument:
             archive_location=f"s3://{S3_BILL_ARCHIVE_BUCKET}/{rel_path}",
         )
 
+    def test_refresh_extraction_reports_reason_for_refused_documents(
+        self, tmp_path, monkeypatch
+    ):
+        """OPEN-258 follow-up: refresh_extraction's dry-run report used to reduce every refused
+        document to a bare count, discarding _reextract_document's own `reason` entirely -- the
+        one piece of information that would tell an operator whether a spike in docs_refused is
+        a real extractor regression or something benign. This asserts the reason survives into
+        the printed report, the same way skip_reasons already does."""
+        from openstates.cli.text_extract import refresh_extraction
+        from click.testing import CliRunner
+
+        bill = _make_bill(jid="ocd-jurisdiction/country:us/state:mi/government")
+        monkeypatch.setattr("openstates.settings.ARCHIVE_ROOT_DIR", str(tmp_path))
+        rel_path = "bills/raw/mi/2026/lower/HB1--x/bad.html"
+        full_path = tmp_path / rel_path
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        # Real MI extractor raises AssertionError on this -- confirmed directly, not assumed --
+        # so this reproduces a genuine "currently good, now worse" refusal, not a synthetic one.
+        full_path.write_bytes(b"<html><body>no matching element here</body></html>")
+        BillVersionDocument.objects.create(
+            bill=bill,
+            version_note="Introduced",
+            version_date="",
+            source_url="https://example.test/bad.html",
+            media_type="text/html",
+            raw_text="Good, already-stored text.",
+            is_error=False,
+            archive_location=f"s3://{S3_BILL_ARCHIVE_BUCKET}/{rel_path}",
+        )
+
+        with mock.patch("openstates.cli.text_extract.init_django"), mock.patch(
+            "openstates.cli.text_extract.abbr_to_jid",
+            return_value=bill.legislative_session.jurisdiction_id,
+        ):
+            runner = CliRunner()
+            result = runner.invoke(refresh_extraction, ["mi", "--dry-run"])
+        assert result.exit_code == 0, result.output
+        assert "docs_refused=1" in result.output
+        assert (
+            'refused 1: extraction raised: 0 matches for .//*[@class="WordSection1"]'
+            in result.output
+        )
+
     def test_no_archive_location_is_not_attempted(self):
         bill = _make_bill()
         doc = BillVersionDocument.objects.create(
