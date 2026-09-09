@@ -7,6 +7,7 @@ import typing
 import sys
 import csv
 import json
+import logging
 import math
 import subprocess
 import textwrap
@@ -45,6 +46,16 @@ from ..utils.version_ordering import (
     version_sort_key as _version_sort_key,
 )
 from openstates.exceptions import ScrapeError
+
+# OPEN-258: Django's root logger (openstates/settings.py) is DEBUG with propagate=True, and
+# PR #40's S3 GetObject fallback (_read_bill_document_bytes) inherits it -- without this, every
+# S3 call logs the full signed request, including the live credential (STS session token or a
+# long-lived key, whichever this process is running as), to stdout/wherever that's captured.
+# people.py already guards its own S3 calls the same way; this module had no equivalent.
+logging.getLogger("boto3").setLevel(logging.WARNING)
+logging.getLogger("botocore").setLevel(logging.WARNING)
+logging.getLogger("s3transfer").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 stats = Instrumentation()
 # disable SSL validation and ignore warnings
@@ -2602,6 +2613,7 @@ def refresh_extraction(
     diffs_corrected = 0
     diffs_would_change = 0
     skip_reasons: dict[str, int] = {}
+    refused_reasons: dict[str, int] = {}
 
     class _Proposed:
         """Stand-in carrying a document's PROPOSED text, for simulating the diff recompute in a
@@ -2652,6 +2664,11 @@ def refresh_extraction(
             now_worse = new_is_error or not new_raw_text
             if currently_good and now_worse:
                 docs_refused += 1
+                # result["reason"] is None on the non-exception "extracted to empty" path (see
+                # _reextract_document) -- distinguished from an actual raised exception so the
+                # two don't silently merge into one bucket and hide which one actually dominates.
+                reason = result.get("reason") or "extraction returned empty, no exception raised"
+                refused_reasons[reason] = refused_reasons.get(reason, 0) + 1
                 continue
 
             if new_raw_text == doc.raw_text and new_is_error == doc.is_error:
@@ -2706,6 +2723,8 @@ def refresh_extraction(
             "extractor returns empty/errored output -- not overwritten, worth investigating",
             fg="red",
         )
+        for reason, count in sorted(refused_reasons.items(), key=lambda kv: -kv[1])[:10]:
+            click.secho(f"  refused {count}: {reason}", fg="red")
     if skip_reasons:
         for reason, count in sorted(skip_reasons.items(), key=lambda kv: -kv[1])[:10]:
             click.secho(f"  skipped {count}: {reason}", fg="yellow")
