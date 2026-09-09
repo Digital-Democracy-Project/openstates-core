@@ -17,6 +17,13 @@ either tool to resolve this module's DSN instead and use it in place of whatever
 was set to -- for the specific case this ticket exists for: a human running an ad-hoc RDS
 backfill or dry-run command who wants the current credential without first having to know
 whether someone else's cached `.env` is stale.
+
+**Corrected 2026-09-09 (post-merge, found live on the ddp-sync host):** the actual secret only
+carries `username`/`password` -- confirmed directly against the real secret's keys, not assumed.
+No `host`/`port`/`dbname` fields exist in it at all. This matches `render-env.sh`'s own existing
+behavior, which already hardcodes `RDS_HOST`/`RDS_PORT`/`RDS_DBNAME` as separate constants
+rather than reading them from the secret -- this module now does the same via env vars, since
+those three values are fixed per-database, not part of what actually rotates.
 """
 
 from __future__ import annotations
@@ -40,6 +47,12 @@ def resolve_rds_database_url(secretsmanager_client=None) -> tuple[str | None, st
     if not secret_arn:
         return None, "RDS_CREDENTIALS_SECRET_ARN not set -- refusing to guess which secret to read"
 
+    host = os.environ.get("RDS_HOST")
+    port = os.environ.get("RDS_PORT")
+    dbname = os.environ.get("RDS_DBNAME")
+    if not all([host, port, dbname]):
+        return None, "RDS_HOST/RDS_PORT/RDS_DBNAME must all be set -- the secret itself only carries username/password"
+
     try:
         if secretsmanager_client is None:
             import boto3
@@ -58,13 +71,10 @@ def resolve_rds_database_url(secretsmanager_client=None) -> tuple[str | None, st
         secret = json.loads(response["SecretString"])
         username = secret["username"]
         password = secret["password"]
-        host = secret["host"]
-        port = secret["port"]
-        dbname = secret["dbname"]
-        # pm-review: a JSON null for any of these would otherwise stringify to the literal
-        # text "None" and silently produce a garbage-but-well-formed DSN instead of an error.
-        if not all([username, password, host, port, dbname]):
-            raise ValueError("one or more required fields is null or empty")
+        # pm-review: a JSON null for either would otherwise stringify to the literal text
+        # "None" and silently produce a garbage-but-well-formed DSN instead of an error.
+        if not all([username, password]):
+            raise ValueError("username or password is null or empty")
     except (KeyError, ValueError, TypeError) as e:
         return None, f"RDS credential secret has an unexpected shape: {e}"
 

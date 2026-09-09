@@ -22,15 +22,28 @@ class FakeSecretsManagerClient:
 
 
 def _real_shaped_secret(**overrides):
+    # 2026-09-09 (found live): the real RDS-managed secret only ever carries these two keys.
+    # host/port/dbname come from their own env vars instead, set separately below.
     secret = {
         "username": "openstates_admin",
         "password": "correct horse battery staple",
-        "host": "ddp-openstates.cvxdhm1ogxug.us-east-1.rds.amazonaws.com",
-        "port": 5432,
-        "dbname": "openstates",
     }
     secret.update(overrides)
     return json.dumps(secret)
+
+
+def _set_connection_details(monkeypatch, **overrides):
+    values = {
+        "RDS_HOST": "ddp-openstates.cvxdhm1ogxug.us-east-1.rds.amazonaws.com",
+        "RDS_PORT": "5432",
+        "RDS_DBNAME": "openstates",
+    }
+    values.update(overrides)
+    for key, value in values.items():
+        if value is None:
+            monkeypatch.delenv(key, raising=False)
+        else:
+            monkeypatch.setenv(key, value)
 
 
 # ── resolve_rds_database_url ────────────────────────────────────────────────────────────────
@@ -38,14 +51,31 @@ def _real_shaped_secret(**overrides):
 
 def test_missing_secret_arn_refuses_without_calling_secrets_manager(monkeypatch):
     monkeypatch.delenv("RDS_CREDENTIALS_SECRET_ARN", raising=False)
+    _set_connection_details(monkeypatch)
     url, error = resolve_rds_database_url(secretsmanager_client=FakeSecretsManagerClient())
 
     assert url is None
     assert "RDS_CREDENTIALS_SECRET_ARN not set" in error
 
 
+def test_missing_connection_details_refuses_without_calling_secrets_manager(monkeypatch):
+    """The secret alone was never enough (it only has username/password) -- RDS_HOST/RDS_PORT/
+    RDS_DBNAME must all be set too, checked up front rather than discovered as a KeyError deep
+    inside DSN assembly."""
+    monkeypatch.setenv("RDS_CREDENTIALS_SECRET_ARN", "arn:secret")
+    _set_connection_details(monkeypatch, RDS_HOST=None)
+    client = FakeSecretsManagerClient(secret_string=_real_shaped_secret())
+
+    url, error = resolve_rds_database_url(secretsmanager_client=client)
+
+    assert url is None
+    assert "RDS_HOST/RDS_PORT/RDS_DBNAME" in error
+    assert client.get_secret_value_calls == []
+
+
 def test_successful_fetch_assembles_a_valid_postgres_url(monkeypatch):
     monkeypatch.setenv("RDS_CREDENTIALS_SECRET_ARN", "arn:aws:secretsmanager:us-east-1:1:secret:rds!x")
+    _set_connection_details(monkeypatch)
     client = FakeSecretsManagerClient(secret_string=_real_shaped_secret())
 
     url, error = resolve_rds_database_url(secretsmanager_client=client)
@@ -59,6 +89,7 @@ def test_successful_fetch_assembles_a_valid_postgres_url(monkeypatch):
 
 def test_password_with_url_special_characters_is_percent_encoded(monkeypatch):
     monkeypatch.setenv("RDS_CREDENTIALS_SECRET_ARN", "arn:secret")
+    _set_connection_details(monkeypatch)
     client = FakeSecretsManagerClient(secret_string=_real_shaped_secret(password="p@ss:w/rd%25"))
 
     url, error = resolve_rds_database_url(secretsmanager_client=client)
@@ -72,6 +103,7 @@ def test_password_with_url_special_characters_is_percent_encoded(monkeypatch):
 
 def test_secrets_manager_api_error_fails_loudly_not_silently(monkeypatch):
     monkeypatch.setenv("RDS_CREDENTIALS_SECRET_ARN", "arn:secret")
+    _set_connection_details(monkeypatch)
     client = FakeSecretsManagerClient(error=RuntimeError("AccessDeniedException"))
 
     url, error = resolve_rds_database_url(secretsmanager_client=client)
@@ -82,6 +114,7 @@ def test_secrets_manager_api_error_fails_loudly_not_silently(monkeypatch):
 
 def test_malformed_secret_shape_fails_cleanly_instead_of_raising(monkeypatch):
     monkeypatch.setenv("RDS_CREDENTIALS_SECRET_ARN", "arn:secret")
+    _set_connection_details(monkeypatch)
     client = FakeSecretsManagerClient(secret_string=json.dumps({"username": "x"}))
 
     url, error = resolve_rds_database_url(secretsmanager_client=client)
@@ -94,6 +127,7 @@ def test_boto3_client_construction_failure_fails_cleanly_instead_of_raising(monk
     """pm-review: boto3.client() itself can raise, not just get_secret_value() -- both must
     land in the same (None, error) tuple contract."""
     monkeypatch.setenv("RDS_CREDENTIALS_SECRET_ARN", "arn:secret")
+    _set_connection_details(monkeypatch)
 
     from unittest.mock import patch
 
@@ -106,7 +140,8 @@ def test_boto3_client_construction_failure_fails_cleanly_instead_of_raising(monk
 
 def test_dbname_with_url_special_characters_is_percent_encoded(monkeypatch):
     monkeypatch.setenv("RDS_CREDENTIALS_SECRET_ARN", "arn:secret")
-    client = FakeSecretsManagerClient(secret_string=_real_shaped_secret(dbname="weird/db?name"))
+    _set_connection_details(monkeypatch, RDS_DBNAME="weird/db?name")
+    client = FakeSecretsManagerClient(secret_string=_real_shaped_secret())
 
     url, error = resolve_rds_database_url(secretsmanager_client=client)
 
@@ -119,6 +154,7 @@ def test_dbname_with_url_special_characters_is_percent_encoded(monkeypatch):
 
 def test_null_field_in_secret_fails_cleanly_instead_of_producing_a_garbage_dsn(monkeypatch):
     monkeypatch.setenv("RDS_CREDENTIALS_SECRET_ARN", "arn:secret")
+    _set_connection_details(monkeypatch)
     client = FakeSecretsManagerClient(secret_string=_real_shaped_secret(password=None))
 
     url, error = resolve_rds_database_url(secretsmanager_client=client)
