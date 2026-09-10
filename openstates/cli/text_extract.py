@@ -1492,6 +1492,13 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
         "concurrent_writes": 0,
         "s3_verified": 0,
         "s3_unverified": 0,
+        # OPEN-263: local-persist failures used to increment no counter at all -- fetched was
+        # already incremented above, but neither this nor any other counter recorded the
+        # failure, so a systemic write failure (e.g. a container permission bug) looked
+        # identical to "nothing new to archive" in the summary line. Confirmed live
+        # 2026-09-09: every fetched document in four jurisdictions hit this on every attempt,
+        # invisibly.
+        "persist_errors": 0,
     }
 
     jurisdiction_name = bill.legislative_session.jurisdiction.name
@@ -1553,11 +1560,31 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                 version_date=version.date,
                 source_url=link.url,
             ).first()
-            if existing:
+            # OPEN-263: a row existing is not the same as "already handled." is_error=True is
+            # a confirmed extraction failure, deliberately left for OPEN-33/OPEN-229's own
+            # reprocess-in-place mechanism rather than retried automatically here -- retrying
+            # every is_error row on every run would repeat the exact live-traffic cost that
+            # mechanism exists to avoid. But a row with is_error=False and no archive_location
+            # means extraction succeeded and the S3 upload never completed (an IAM/network
+            # failure at the PutObject step, found live 2026-09-09) -- that was being treated
+            # as permanently done, silently, with no path back to a retry, ever.
+            if existing and (existing.is_error or existing.archive_location):
                 counters["skipped"] += 1
                 if not existing.is_error and existing.raw_text:
                     this_version_texts[existing.media_type] = existing.raw_text
                 continue
+            if existing:
+                # Retrying this link below means redoing the fetch/extract/upload and
+                # creating a fresh, complete row -- but the natural key is a real unique
+                # constraint, and leaving the stale row in place would make that INSERT
+                # collide with it. The IntegrityError handler further down exists for a
+                # genuinely different case (two concurrent archive runs racing each other)
+                # and would misclassify this collision as "another run already archived it,"
+                # silently keeping the stale (still-unarchived) row instead of this attempt's
+                # real result. Deleting it first is correct specifically because we are about
+                # to create its complete replacement in this same iteration -- unlike the real
+                # concurrent-writer path below, which must never delete a row it didn't create.
+                existing.delete()
 
             metadata: Metadata = {
                 "url": link.url,
@@ -1609,6 +1636,7 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                     f.write(data)
             except OSError as e:
                 click.secho(f"failed to persist {link.url} to {path}: {e}", fg="red")
+                counters["persist_errors"] += 1
                 continue
 
             object_key = _s3_object_key(path)
@@ -2069,6 +2097,7 @@ def archive(state: str, session: str = None, n: int = None) -> None:
         "concurrent_writes": 0,
         "s3_verified": 0,
         "s3_unverified": 0,
+        "persist_errors": 0,
     }
     bill_count = 0
     # OPEN-237: this loop otherwise prints nothing at all for a bill that archives cleanly --
@@ -2117,6 +2146,11 @@ def archive(state: str, session: str = None, n: int = None) -> None:
         # OPEN-107: worth seeing, not worth failing over. Every affected document is
         # archived; the only cost is this run having done redundant fetching.
         or totals["concurrent_writes"]
+        # OPEN-263: a local-persist failure used to increment nothing at all, so a systemic
+        # write failure (e.g. a container permission bug -- confirmed live 2026-09-09) looked
+        # identical to "nothing new to archive." Same severity class as fetch_errors: a real
+        # per-document failure, not a run-invalidating uniqueness violation.
+        or totals["persist_errors"]
     ):
         status_color = "yellow"
 
@@ -2127,7 +2161,8 @@ def archive(state: str, session: str = None, n: int = None) -> None:
         f"blocked={totals['blocked']} "
         f"extract_errors={totals['extract_errors']} conflicts={totals['conflicts']} "
         f"concurrent_writes={totals['concurrent_writes']} "
-        f"s3_verified={totals['s3_verified']} s3_unverified={totals['s3_unverified']}",
+        f"s3_verified={totals['s3_verified']} s3_unverified={totals['s3_unverified']} "
+        f"persist_errors={totals['persist_errors']}",
         fg=status_color,
     )
     if totals["conflicts"]:

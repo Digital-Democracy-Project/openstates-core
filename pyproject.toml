@@ -1,3 +1,12 @@
+[tool.pytest.ini_options]
+# Found live 2026-09-10: pytest-django's own DJANGO_SETTINGS_MODULE was never set anywhere in
+# this repo (no pytest.ini, no conftest.py, nothing here), so every @pytest.mark.django_db test
+# failed to even collect with no working invocation documented anywhere -- openstates.
+# test_settings already existed as exactly the right target, just never wired up. Still needs
+# OVERRIDE_DATABASE_URL (or the module's own localhost:5432 test/test default) pointed at a
+# reachable Postgres to actually run; this only fixes the "which settings module" half.
+DJANGO_SETTINGS_MODULE = "openstates.test_settings"
+
 [tool.poetry]
 name = "openstates"
 version = "6.25.5"
