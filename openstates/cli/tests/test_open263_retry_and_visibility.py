@@ -205,12 +205,17 @@ class TestFailedUploadIsRetryable:
         test_archive_concurrent_writes.py's own docstring gives: a hand-raised error would
         hide whether the savepoint still lets the recovery SELECT run afterward.
 
-        The competing writer's own delete-then-create is committed from the `_upload_and_
-        verify` hook -- deliberately BEFORE our own `with transaction.atomic():` block opens,
-        not from inside it. Committing it from inside our own create()'s savepoint (tried
-        first, and wrong) gets undone by that savepoint's own rollback along with our failed
-        attempt, silently restoring the stale row instead of leaving the winner's in place --
-        exactly the kind of failure a hand-raised IntegrityError would have hidden."""
+        The competing writer's own delete-then-create runs from the `_upload_and_verify` hook
+        -- deliberately BEFORE our own `with transaction.atomic():` block opens, not from
+        inside it. This test runs inside pytest-django's single outer per-test transaction
+        (no `transaction=True`), so nothing here crosses a real second connection -- but what
+        matters is durability relative to OUR OWN inner savepoint, and code that runs before
+        that savepoint opens is exactly as safe from its rollback as a genuinely separate
+        connection's prior commit would be. Placing the competing writer's INSERT inside our
+        own create()'s savepoint instead (tried first, and wrong) gets undone by that
+        savepoint's own rollback along with our failed attempt, silently restoring the stale
+        row instead of leaving the winner's in place -- exactly the kind of failure a
+        hand-raised IntegrityError would have hidden."""
         bill = _one_link_bill()
         BillVersionDocument.objects.create(
             bill=bill,
@@ -225,8 +230,9 @@ class TestFailedUploadIsRetryable:
 
         def _competing_writer_commits_first(*args, **kwargs):
             # The other archiver reached this same point first: it also saw the stale row
-            # as retryable, deleted it, and committed its own replacement -- all for real,
-            # all before our own run gets anywhere near its own delete+create.
+            # as retryable, deleted it, and inserted its own replacement -- all before our
+            # own run gets anywhere near its own delete+create, and (see the class docstring
+            # above) outside our own savepoint's ability to undo it.
             BillVersionDocument.objects.filter(
                 bill=bill, version_note="Introduced", version_date="", source_url=URL
             ).delete()
