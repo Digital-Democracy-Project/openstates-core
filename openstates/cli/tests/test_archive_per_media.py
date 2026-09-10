@@ -42,7 +42,13 @@ def _archive(bill, texts_by_url):
     ), mock.patch(
         "openstates.cli.text_extract.get_extract_func", side_effect=fake_extract_func
     ), mock.patch(
-        "openstates.cli.text_extract._upload_and_verify", return_value=None
+        # OPEN-263: a real successful upload, not None -- this file's tests are about
+        # per-media diff/baseline logic, not archive success, and a None archive_location
+        # now means "retryable, not yet archived" (see test_archive_263_retry.py), which
+        # would make this helper's own already-archived-and-skipped assertions exercise the
+        # wrong path. A truthy location matches what a genuinely successful upload returns.
+        "openstates.cli.text_extract._upload_and_verify",
+        return_value="s3://ddp-bill-archive/fake/path",
     ), mock.patch(
         "openstates.cli.text_extract._block_page_reason", return_value=None
     ), mock.patch(
