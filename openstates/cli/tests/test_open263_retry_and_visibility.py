@@ -152,6 +152,121 @@ class TestFailedUploadIsRetryable:
         assert counters["skipped"] == 1
         assert counters["archived"] == 0
 
+    def test_an_empty_string_archive_location_is_also_retryable(self):
+        """Truthiness, not `is not None`, is what the retry condition actually checks --
+        confirming an empty string (which a real S3 URI never is, but which is a cheaper,
+        more explicit case to lock in than relying on `None` alone) is treated the same as
+        no location at all, not mistaken for a real one."""
+        bill = _one_link_bill()
+        BillVersionDocument.objects.create(
+            bill=bill,
+            version_note="Introduced",
+            version_date="",
+            source_url=URL,
+            media_type="application/pdf",
+            raw_text=TEXT,
+            is_error=False,
+            archive_location="",
+        )
+
+        counters = _run_with(_patches(), lambda: archive_bill_versions(bill))
+        assert counters["skipped"] == 0
+        assert counters["archived"] == 1
+
+    def test_a_stale_rows_raw_text_survives_a_retry_that_itself_fails(self):
+        """OPEN-263 (review round 1): the delete that makes room for a retry's replacement
+        row is deferred until the replacement is actually ready to insert -- this is what
+        proves it. If the retry's own fetch fails, the stale row (and its already-extracted
+        raw_text, which the NEXT version's diff baseline depends on) must still be there
+        afterward, not deleted on a promise this attempt didn't keep."""
+        bill = _one_link_bill()
+        _run_with(_patches(upload_result=None), lambda: archive_bill_versions(bill))
+        stuck = BillVersionDocument.objects.get(bill=bill, source_url=URL)
+        assert stuck.raw_text == TEXT
+
+        with mock.patch(
+            "openstates.cli.text_extract._fetch_bytes", side_effect=Exception("network blip")
+        ):
+            second = archive_bill_versions(bill)
+
+        assert second["fetch_errors"] == 1
+        assert second["skipped"] == 0
+        still_stuck = BillVersionDocument.objects.get(bill=bill, source_url=URL)
+        assert still_stuck.raw_text == TEXT
+        assert still_stuck.archive_location is None
+        assert BillVersionDocument.objects.filter(bill=bill, source_url=URL).count() == 1
+
+    def test_two_runs_retrying_the_same_stale_row_do_not_duplicate_or_conflict(self):
+        """The OPEN-107 concurrent-write recovery path was proven against a fresh insert
+        (test_archive_concurrent_writes.py); this is the same real-constraint-violation
+        proof starting from a retry instead, since the delete-then-create this fix adds is a
+        new way to reach that same INSERT. The race is simulated by causing a REAL Postgres
+        duplicate-key violation, not a hand-raised IntegrityError, for the same reason
+        test_archive_concurrent_writes.py's own docstring gives: a hand-raised error would
+        hide whether the savepoint still lets the recovery SELECT run afterward.
+
+        The competing writer's own delete-then-create is committed from the `_upload_and_
+        verify` hook -- deliberately BEFORE our own `with transaction.atomic():` block opens,
+        not from inside it. Committing it from inside our own create()'s savepoint (tried
+        first, and wrong) gets undone by that savepoint's own rollback along with our failed
+        attempt, silently restoring the stale row instead of leaving the winner's in place --
+        exactly the kind of failure a hand-raised IntegrityError would have hidden."""
+        bill = _one_link_bill()
+        BillVersionDocument.objects.create(
+            bill=bill,
+            version_note="Introduced",
+            version_date="",
+            source_url=URL,
+            media_type="application/pdf",
+            raw_text="stale text from an interrupted run",
+            is_error=False,
+            archive_location=None,
+        )
+
+        def _competing_writer_commits_first(*args, **kwargs):
+            # The other archiver reached this same point first: it also saw the stale row
+            # as retryable, deleted it, and committed its own replacement -- all for real,
+            # all before our own run gets anywhere near its own delete+create.
+            BillVersionDocument.objects.filter(
+                bill=bill, version_note="Introduced", version_date="", source_url=URL
+            ).delete()
+            BillVersionDocument.objects.create(
+                bill=bill,
+                version_note="Introduced",
+                version_date="",
+                source_url=URL,
+                media_type="application/pdf",
+                raw_text="the winner's text",
+                is_error=False,
+                archive_location="s3://ddp-bill-archive/winner/path",
+            )
+            return "s3://ddp-bill-archive/ours/path"  # our own upload also succeeded
+
+        non_upload_patches = [
+            mock.patch(
+                "openstates.cli.text_extract._fetch_bytes",
+                return_value=TEXT.encode("utf-8"),
+            ),
+            mock.patch(
+                "openstates.cli.text_extract.get_extract_func",
+                return_value=(lambda data, meta: data.decode("utf-8")),
+            ),
+            mock.patch(
+                "openstates.cli.text_extract._upload_and_verify",
+                side_effect=_competing_writer_commits_first,
+            ),
+            mock.patch("openstates.cli.text_extract._block_page_reason", return_value=None),
+            mock.patch("os.makedirs"),
+            mock.patch("builtins.open", mock.mock_open()),
+        ]
+        counters = _run_with(non_upload_patches, lambda: archive_bill_versions(bill))
+
+        assert counters["concurrent_writes"] == 1
+        assert counters["conflicts"] == 0
+        remaining = BillVersionDocument.objects.filter(bill=bill, source_url=URL)
+        assert remaining.count() == 1, "the stale row must not survive alongside the winner"
+        assert remaining.first().archive_location == "s3://ddp-bill-archive/winner/path"
+
 
 @pytest.mark.django_db
 class TestPersistFailureIsVisible:
@@ -208,13 +323,22 @@ class TestArchiveCommandSummaryLine:
 
         return archive.callback(state="ak")
 
-    def test_persist_errors_turn_the_summary_yellow_not_green(self, capsys):
+    def test_persist_errors_turn_the_summary_yellow_not_green(self):
+        """click only emits real ANSI color codes to a tty, so capturing printed text via
+        capsys can't distinguish yellow from green/uncolored -- a test asserting only
+        "persist_errors=1" appeared would pass even if status_color were wrong or unused.
+        Patching click.secho and inspecting the fg kwarg of the actual summary-line call is
+        what proves the color, not just the text, is correct."""
         _one_link_bill()
 
-        _run_with(_patches(persist_raises=True), self._run)
+        with mock.patch("openstates.cli.text_extract.click.secho") as secho:
+            _run_with(_patches(persist_raises=True), self._run)
 
-        out = capsys.readouterr().out
-        assert "persist_errors=1" in out
+        summary_calls = [
+            call for call in secho.call_args_list if "persist_errors=1" in call.args[0]
+        ]
+        assert len(summary_calls) == 1
+        assert summary_calls[0].kwargs["fg"] == "yellow"
 
     def test_persist_errors_do_not_fail_the_run(self):
         """Yellow, not red -- a persist failure is recoverable (the doc gets retried next

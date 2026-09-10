@@ -1573,18 +1573,19 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                 if not existing.is_error and existing.raw_text:
                     this_version_texts[existing.media_type] = existing.raw_text
                 continue
-            if existing:
-                # Retrying this link below means redoing the fetch/extract/upload and
-                # creating a fresh, complete row -- but the natural key is a real unique
-                # constraint, and leaving the stale row in place would make that INSERT
-                # collide with it. The IntegrityError handler further down exists for a
-                # genuinely different case (two concurrent archive runs racing each other)
-                # and would misclassify this collision as "another run already archived it,"
-                # silently keeping the stale (still-unarchived) row instead of this attempt's
-                # real result. Deleting it first is correct specifically because we are about
-                # to create its complete replacement in this same iteration -- unlike the real
-                # concurrent-writer path below, which must never delete a row it didn't create.
-                existing.delete()
+            # OPEN-263 (review round 1): `existing` here, if present, is a stale row from a
+            # prior run whose upload never completed -- retryable, not done. Deleting it is
+            # still necessary before the INSERT below (see the comment at the create() call),
+            # but doing it eagerly, here, before the fetch/persist/upload that can itself fail,
+            # would throw away the stale row's own raw_text for nothing if THIS attempt also
+            # fails -- turning "one stuck row" into "zero rows and no diff baseline" instead of
+            # leaving the prior attempt's result in place to retry again next run. So the
+            # delete is deferred to happen atomically with the create it makes room for, and
+            # every early-exit below that skips the create falls back to the stale row's own
+            # raw_text, matching what the skip branch above and the concurrent-write recovery
+            # branch below both already do.
+            if existing and not existing.is_error and existing.raw_text:
+                this_version_texts[existing.media_type] = existing.raw_text
 
             metadata: Metadata = {
                 "url": link.url,
@@ -1698,7 +1699,20 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                 # function safe to call from inside a caller's own transaction.atomic(),
                 # which it previously was not. A savepoint per document is negligible
                 # against the network fetch that precedes it.
+                #
+                # OPEN-263 (review round 1): `existing`'s delete (a stale, unarchived retry
+                # candidate -- see the skip-check above) happens in this same atomic block,
+                # immediately before the create it makes room for, not eagerly back when it
+                # was first identified as retryable. That means a fetch/persist/upload
+                # failure between there and here leaves the stale row untouched for the next
+                # run to retry, instead of deleting it on a promise this attempt then failed
+                # to keep. Doing the delete+create together also still avoids the natural-key
+                # collision the delete exists for in the first place: two racing runs are
+                # exactly the pre-existing IntegrityError case below, just one INSERT away
+                # from the delete instead of several.
                 with transaction.atomic():
+                    if existing:
+                        existing.delete()
                     BillVersionDocument.objects.create(
                         bill=bill,
                         version_note=version.note,
