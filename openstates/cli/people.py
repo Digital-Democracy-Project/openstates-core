@@ -10,7 +10,7 @@ import boto3  # type: ignore
 import logging
 import time
 import yaml
-from django.db import transaction, connection  # type: ignore
+from django.db import transaction  # type: ignore
 from ..utils import abbr_to_jid
 from ..utils.django import init_django  # type: ignore
 from ..models.people import Person, Role, Party, Link
@@ -298,7 +298,7 @@ def _echo_org_status(org: typing.Any, created: bool, updated: bool) -> None:
         click.secho(f"{org} updated", fg="yellow")
 
 
-def load_directory_to_database(files: list[Path], purge: bool) -> None:
+def load_directory_to_database(files: list[Path]) -> None:
     from openstates.data.models import Person as DjangoPerson
     from openstates.data.models import BillSponsorship, PersonVote, Jurisdiction
 
@@ -352,38 +352,34 @@ def load_directory_to_database(files: list[Path], purge: bool) -> None:
         click.secho(f"{len(merged)} removed via merge", fg="yellow")
         for old, new in merged.items():
             click.secho(f"   {old} => {new}", fg="yellow")
-            # first we do some raw SQL updates because the appropriate Django apps are part of
-            # openstates.org and therefore not installed, but not updating these tables
-            # causes foreign key constraint issues
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    "UPDATE people_admin_unmatchedname SET matched_person_id = %s WHERE matched_person_id = %s",
-                    [new, old],
-                )
-                cursor.execute(
-                    "DELETE FROM people_admin_persondelta WHERE person_id = %s", [old]
-                )
-                cursor.execute(
-                    "DELETE FROM people_admin_personretirement WHERE person_id = %s",
-                    [old],
-                )
+            # OPEN-285: upstream's own comment here said these raw SQL updates exist because
+            # "the appropriate Django apps are part of openstates.org and therefore not
+            # installed" -- i.e. this was always written assuming openstates.org's own SaaS-
+            # only admin app, which this DDP fork has never installed anywhere (confirmed
+            # directly: people_admin_unmatchedname/persondelta/personretirement don't exist in
+            # any DDP Postgres -- Mac, RDS, or the old pre-migration checkout). Not a migration
+            # gap to fix by creating these tables -- they were never DDP's tables to have.
+            # Skipped entirely for this fork; the FK-constraint concern the original comment
+            # raises doesn't apply when the referencing tables don't exist in the first place.
             BillSponsorship.objects.filter(person_id=old).update(person_id=new)
             PersonVote.objects.filter(voter_id=old).update(voter_id=new)
             DjangoPerson.objects.filter(id=old).delete()
             missing_ids.remove(old)
 
-    # ids that are still missing would need to be purged
-    if missing_ids and not purge:
+    # OPEN-285: no reason to ever purge -- a person missing from this run's source YAML is
+    # reported and left alone, never deleted, regardless of --purge. This used to raise
+    # CancelTransaction() (failing os-people to-database's ENTIRE run) unless --purge was
+    # explicitly passed, which meant a real once-a-week job could never complete cleanly for a
+    # jurisdiction with any legitimate roster turnover -- and the "then delete them" alternative
+    # is the thing there's no reason to ever want.
+    if missing_ids:
         click.secho(
-            f"{len(missing_ids)} went missing, run with --purge to remove", fg="red"
+            f"{len(missing_ids)} went missing from source data, left in database unchanged",
+            fg="yellow",
         )
         for id in missing_ids:
             mobj = DjangoPerson.objects.get(pk=id)
             click.secho(f"  {id}: {mobj}")
-        raise CancelTransaction()
-    elif missing_ids and purge:
-        click.secho(f"{len(missing_ids)} purged", fg="yellow")
-        DjangoPerson.objects.filter(id__in=missing_ids).delete()
 
     if created_count or updated_count:
         Jurisdiction.objects.filter(id__in=updated_jurisdictions).update(
@@ -672,16 +668,11 @@ def lint(
 @main.command()
 @click.argument("abbreviations", nargs=-1)
 @click.option(
-    "--purge/--no-purge",
-    default=False,
-    help="Purge all legislators from DB that aren't in YAML.",
-)
-@click.option(
     "--safe/--no-safe",
     default=False,
     help="Operate in safe mode, no changes will be written to database.",
 )
-def to_database(abbreviations: list[str], purge: bool, safe: bool) -> None:
+def to_database(abbreviations: list[str], safe: bool) -> None:
     """
     Sync YAML files to DB.
     """
@@ -714,7 +705,7 @@ def to_database(abbreviations: list[str], purge: bool, safe: bool) -> None:
 
         try:
             with transaction.atomic():
-                load_directory_to_database(person_files, purge=purge)
+                load_directory_to_database(person_files)
 
                 if safe:
                     click.secho("ran in safe mode, no changes were made", fg="magenta")

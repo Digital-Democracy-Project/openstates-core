@@ -141,12 +141,18 @@ def update(
     logger.info(
         f"Begin Openstates People Repo to Database for {jurisdictions_to_ingest}."
     )
+    # OPEN-285: people_to_database no longer takes purge at all -- it never deletes a person
+    # missing from source data, regardless of this command's own --purge flag, so it's no
+    # longer passed through. committee_to_database's own call below is untouched -- it already
+    # hardcoded purge=True unconditionally before this change (never actually read this
+    # command's own `purge` variable either), a separate, pre-existing decision out of scope
+    # here.
     if people and not committees:
-        ctx.invoke(people_to_database, abbreviations=abbreviations, purge=purge)
+        ctx.invoke(people_to_database, abbreviations=abbreviations)
     elif committees and not people:
         ctx.invoke(committee_to_database, abbreviations=abbreviations, purge=True)
     else:
-        ctx.invoke(people_to_database, abbreviations=abbreviations, purge=purge)
+        ctx.invoke(people_to_database, abbreviations=abbreviations)
         ctx.invoke(committee_to_database, abbreviations=abbreviations, purge=True)
     return 0
 
