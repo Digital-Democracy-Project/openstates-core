@@ -101,6 +101,19 @@ class TestConsecutiveConnectFailures:
         assert outcome["fetch_errors"] == LIMIT + 3
         assert fetch.call_count == LIMIT + 3
 
+    def test_an_http_error_between_timeouts_resets_the_count(self):
+        """A 404 means the site answered; four timeouts, a 404, then four more is not a run of
+        LIMIT connection failures."""
+        bill = _bill_with_links(2 * (LIMIT - 1) + 1)
+        timeout = requests.exceptions.ConnectTimeout("timed out")
+        dead_link = scrapelib.HTTPError(mock.Mock(status_code=404))
+        effects = [timeout] * (LIMIT - 1) + [dead_link] + [timeout] * (LIMIT - 1)
+
+        outcome, _ = _run(bill, effects)
+
+        assert not isinstance(outcome, Exception)
+        assert outcome["fetch_errors"] == len(effects)
+
     def test_the_count_carries_across_bills_in_one_run(self):
         """The run is the unit, not the bill: one failing document each across several bills
         still adds up (MA's crawl was spread across thousands of bills)."""

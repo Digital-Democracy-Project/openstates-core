@@ -157,10 +157,14 @@ def _note_fetch_failure(exc: Exception, url: str) -> None:
 
     Raises ScrapeError (the same abort `archive()` already turns into exit 1 for OPEN-52's WAF
     breaker, which `cloud_archiver.py` reports as a failed run) after
-    `_MAX_CONSECUTIVE_CONNECT_FAILURES` in a row. Any other exception resets nothing and counts
-    nothing -- only a successful fetch resets the count (`_note_fetch_success`).
+    `_MAX_CONSECUTIVE_CONNECT_FAILURES` in a row. A successful fetch resets the count
+    (`_note_fetch_success`), and so does an HTTP error response (a dead link's 404): the site
+    answered, so it says nothing about connectivity. Any other exception leaves the count alone.
     """
     global _consecutive_connect_failures
+    if isinstance(exc, scrapelib.HTTPError):
+        _consecutive_connect_failures = 0
+        return
     if not isinstance(
         exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
     ):
