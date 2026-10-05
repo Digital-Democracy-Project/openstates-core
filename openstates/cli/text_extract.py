@@ -139,6 +139,44 @@ _profile_scrapers: typing.Dict[str, scrapelib.Scraper] = {}
 # Per-profile consecutive-WAF-block counters (OPEN-52), same reasoning.
 _profile_consecutive_blocks: typing.Dict[str, int] = {}
 
+# OPEN-323: consecutive connect/timeout failures on the plain (non-WAF-profiled) fetch path. MA's
+# archive spent 12 hours on ~1 bill per 16 minutes once malegislature.gov stopped accepting
+# connections: scrapelib's 5 retries (~14 min per document) end in a ConnectTimeout that lands
+# in the per-document `fetch_errors` count, and nothing ever looked at the run as a whole until
+# ECS's 12-hour wait expired. Counts only connection-level failures -- an HTTP 404 on one dead
+# link is routine (MI has plenty) and says nothing about the site. 5 is small on purpose: at
+# MA's observed pace it is already over an hour, and fast failures reach it in seconds. WAF-
+# profiled jurisdictions (MI, FL) turn ConnectionError into WafBlockDetected above and have
+# their own breaker (OPEN-52), so they never reach this one.
+_MAX_CONSECUTIVE_CONNECT_FAILURES = 5
+_consecutive_connect_failures = 0
+
+
+def _note_fetch_failure(exc: Exception, url: str) -> None:
+    """Count a failed plain fetch; abort the whole run once connection failures pile up.
+
+    Raises ScrapeError (the same abort `archive()` already turns into exit 1 for OPEN-52's WAF
+    breaker, which `cloud_archiver.py` reports as a failed run) after
+    `_MAX_CONSECUTIVE_CONNECT_FAILURES` in a row. Any other exception resets nothing and counts
+    nothing -- only a successful fetch resets the count (`_note_fetch_success`).
+    """
+    global _consecutive_connect_failures
+    if not isinstance(
+        exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
+    ):
+        return
+    _consecutive_connect_failures += 1
+    if _consecutive_connect_failures >= _MAX_CONSECUTIVE_CONNECT_FAILURES:
+        raise ScrapeError(
+            f"archive aborted: {_consecutive_connect_failures} consecutive connection "
+            f"failures, last fetching {url}: {exc}"
+        ) from exc
+
+
+def _note_fetch_success() -> None:
+    global _consecutive_connect_failures
+    _consecutive_connect_failures = 0
+
 
 def _scraper_for_profile(profile) -> scrapelib.Scraper:
     if profile.name not in _profile_scrapers:
@@ -1615,8 +1653,10 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
             except Exception as e:
                 click.secho(f"failed to fetch {link.url}: {e}", fg="yellow")
                 counters["fetch_errors"] += 1
+                _note_fetch_failure(e, link.url)  # OPEN-323: may abort the run
                 continue
 
+            _note_fetch_success()
             block_reason = _block_page_reason(data, link.media_type)
             if block_reason:
                 click.secho(
