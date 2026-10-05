@@ -125,3 +125,24 @@ class TestConsecutiveConnectFailures:
                 raised = outcome
 
         assert raised is not None
+
+
+@pytest.mark.django_db
+def test_each_archive_run_starts_counting_from_zero():
+    """The count spans bills but belongs to one run: failures left over from an earlier archive()
+    call in the same process must not push a later, healthy run toward the abort."""
+    from click.testing import CliRunner
+
+    from openstates.cli.text_extract import archive
+
+    bill = _make_bill(jid="ocd-jurisdiction/country:us/state:ma/government")
+    text_extract._consecutive_connect_failures = LIMIT - 1
+
+    with mock.patch("openstates.cli.text_extract.init_django"), mock.patch(
+        "openstates.cli.text_extract.abbr_to_jid",
+        return_value=bill.legislative_session.jurisdiction_id,
+    ), mock.patch("openstates.cli.text_extract.archive_bill_versions", return_value={}):
+        result = CliRunner().invoke(archive, ["ma"])
+
+    assert result.exit_code == 0
+    assert text_extract._consecutive_connect_failures == 0

@@ -158,7 +158,7 @@ def _note_fetch_failure(exc: Exception, url: str) -> None:
     Raises ScrapeError (the same abort `archive()` already turns into exit 1 for OPEN-52's WAF
     breaker, which `cloud_archiver.py` reports as a failed run) after
     `_MAX_CONSECUTIVE_CONNECT_FAILURES` in a row. A successful fetch resets the count
-    (`_note_fetch_success`), and so does an HTTP error response (a dead link's 404): the site
+    (`_reset_connect_failure_count`), and so does an HTTP error response (a dead link's 404): the site
     answered, so it says nothing about connectivity. Any other exception leaves the count alone.
     """
     global _consecutive_connect_failures
@@ -177,7 +177,7 @@ def _note_fetch_failure(exc: Exception, url: str) -> None:
         ) from exc
 
 
-def _note_fetch_success() -> None:
+def _reset_connect_failure_count() -> None:
     global _consecutive_connect_failures
     _consecutive_connect_failures = 0
 
@@ -1660,7 +1660,7 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                 _note_fetch_failure(e, link.url)  # OPEN-323: may abort the run
                 continue
 
-            _note_fetch_success()
+            _reset_connect_failure_count()
             block_reason = _block_page_reason(data, link.media_type)
             if block_reason:
                 click.secho(
@@ -2125,6 +2125,9 @@ def update(
 @click.option("--session", default=None)
 @click.option("-n", default=None, help="limit number of bills processed, for testing")
 def archive(state: str, session: str = None, n: int = None) -> None:
+    # OPEN-323: the connection-failure count is per RUN (it spans bills), so a run starts at zero
+    # rather than inheriting whatever an earlier archive() call in this process left behind.
+    _reset_connect_failure_count()
     init_django()
     from openstates.data.models import Bill
 
