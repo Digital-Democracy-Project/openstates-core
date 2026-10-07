@@ -42,12 +42,22 @@ BLOCK_PAGE_MARKERS = (
 )
 
 
+def matched_block_marker(data: bytes) -> typing.Optional[str]:
+    """The first BLOCK_PAGE_MARKERS entry found in `data`'s first 2 KiB, as text (for example
+    "captcha_resp" or "user validation required"), or None if `data` looks like real content.
+    OPEN-334: lets a log line say which kind of challenge page came back."""
+    if not data:
+        return None
+    sniff = data[:2048].lower()
+    for marker in BLOCK_PAGE_MARKERS:
+        if marker in sniff:
+            return marker.decode()
+    return None
+
+
 def content_matches_block_markers(data: bytes) -> bool:
     """True if `data` looks like a known WAF challenge/block page rather than real content."""
-    if not data:
-        return False
-    sniff = data[:2048].lower()
-    return any(marker in sniff for marker in BLOCK_PAGE_MARKERS)
+    return matched_block_marker(data) is not None
 
 
 # legislature.mi.gov's WAF can also block a request behind a genuine HTTP 404 status, serving
@@ -158,9 +168,11 @@ class CookieProvider:
         user_agent = self.get_user_agent()
         try:
             return do_request(cookies, user_agent)
-        except WafBlockDetected:
+        except WafBlockDetected as e:
+            # OPEN-334: say what the block looked like (the do_request callable puts the
+            # matched marker / HTTP status / path in the exception message).
             logger.warning(
-                f"{self.name}: block detected despite cached cookies; "
+                f"{self.name}: block detected despite cached cookies ({e}); "
                 "invalidating cache and re-warming once"
             )
             self.invalidate()
@@ -220,6 +232,16 @@ class CookieProvider:
             data[c["name"]] = {"value": c["value"], "expires": expires}
             cookies[c["name"]] = c["value"]
         data[_META_KEY] = {"user_agent": user_agent}
+
+        # OPEN-334: record what the warm-up page actually received. Names only, never values.
+        # Info, not a warning: not being issued the required cookies is the normal state while
+        # the site is not challenging us, and says nothing about whether a challenge appears later.
+        held = sorted({c.get("name") for c in raw_cookies if c.get("name")})
+        missing = [n for n in self.cookie_names if n not in cookies]
+        logger.info(
+            f"{self.name}: warm-up page set cookies {held}"
+            + (f"; required cookies not issued: {missing}" if missing else "")
+        )
 
         os.makedirs(os.path.dirname(self.cache_path) or ".", exist_ok=True)
         with open(self.cache_path, "w") as f:
