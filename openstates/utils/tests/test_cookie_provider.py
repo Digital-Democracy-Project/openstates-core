@@ -5,9 +5,11 @@ import pytest
 
 from openstates.utils.cookie_provider import (
     CookieProvider,
+    BLOCK_PAGE_MARKERS,
     WafBlockDetected,
     content_matches_block_markers,
     content_matches_fake_404_block,
+    matched_block_marker,
 )
 
 
@@ -243,3 +245,77 @@ def test_content_matches_fake_404_block():
         b"<html>Senate Bill 1141 of 2026 - Michigan Legislature</html>"
     )
     assert not content_matches_fake_404_block(b"")
+
+
+# --- OPEN-334: say what a block looked like, and what the warm-up page received ---
+
+
+@pytest.mark.parametrize("marker", [m.decode() for m in BLOCK_PAGE_MARKERS])
+def test_matched_block_marker_names_the_marker_case_insensitively(marker):
+    page = b"<html><title>Challenge</title>" + marker.upper().encode() + b"</html>"
+    assert matched_block_marker(page) == marker
+    assert content_matches_block_markers(page) is True
+
+
+def test_matched_block_marker_is_none_for_real_content_and_empty():
+    assert matched_block_marker(b"<html>Bill HB 1 and its actions</html>") is None
+    assert matched_block_marker(b"") is None
+    assert content_matches_block_markers(b"") is False
+
+
+def test_matched_block_marker_only_looks_at_the_first_2kib():
+    assert matched_block_marker(b"x" * 2048 + b"captcha_resp") is None
+
+
+def test_fetch_with_retry_logs_what_the_block_looked_like(tmp_path, caplog):
+    provider, _ = make_provider(tmp_path)
+    attempts = {"n": 0}
+
+    def do_request(cookies, user_agent):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise WafBlockDetected("matched 'captcha_resp' (HTTP 200) on /Bills/Bill")
+        return "ok"
+
+    with caplog.at_level("WARNING", logger="openstates"):
+        assert provider.fetch_with_retry(do_request) == "ok"
+    assert "block detected despite cached cookies (matched 'captcha_resp' (HTTP 200) on /Bills/Bill)" in caplog.text
+
+
+def test_warm_up_logs_cookie_names_and_which_required_ones_were_not_issued(tmp_path, caplog):
+    def warm_up(url):
+        return [
+            {"name": "ARRAffinity", "value": "secret-affinity", "expires": 0},
+            {"name": ".AspNetCore.Session", "value": "secret-session", "expires": 0},
+        ], DEFAULT_USER_AGENT
+
+    provider, _ = make_provider(tmp_path, warm_up_func=warm_up)
+    with caplog.at_level("INFO", logger="openstates"):
+        provider.get_cookies()
+    assert "warm-up page set cookies ['.AspNetCore.Session', 'ARRAffinity']" in caplog.text
+    assert "required cookies not issued: ['x-bni-fpc', 'x-bni-rncf']" in caplog.text
+    assert "secret-" not in caplog.text  # names only, never values
+
+
+def test_warm_up_log_has_no_not_issued_clause_when_all_required_cookies_arrive(tmp_path, caplog):
+    provider, _ = make_provider(tmp_path)
+    with caplog.at_level("INFO", logger="openstates"):
+        provider.get_cookies()
+    assert "warm-up page set cookies" in caplog.text
+    assert "not issued" not in caplog.text
+    assert "fpc-value" not in caplog.text
+
+
+def test_fetch_with_retry_caps_the_block_text_it_logs(tmp_path, caplog):
+    provider, _ = make_provider(tmp_path)
+    attempts = {"n": 0}
+
+    def do_request(cookies, user_agent):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise WafBlockDetected("x" * 500)
+        return "ok"
+
+    with caplog.at_level("WARNING", logger="openstates"):
+        provider.fetch_with_retry(do_request)
+    assert "x" * 200 in caplog.text and "x" * 201 not in caplog.text
