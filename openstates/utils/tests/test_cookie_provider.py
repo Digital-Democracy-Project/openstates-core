@@ -5,6 +5,7 @@ import pytest
 
 from openstates.utils.cookie_provider import (
     CookieProvider,
+    BLOCK_PAGE_MARKERS,
     WafBlockDetected,
     content_matches_block_markers,
     content_matches_fake_404_block,
@@ -249,10 +250,7 @@ def test_content_matches_fake_404_block():
 # --- OPEN-334: say what a block looked like, and what the warm-up page received ---
 
 
-@pytest.mark.parametrize("marker", [
-    "user validation required", "captcha_resp", "pardon the interruption",
-    "request rejected", "checking your browser before accessing",
-])
+@pytest.mark.parametrize("marker", [m.decode() for m in BLOCK_PAGE_MARKERS])
 def test_matched_block_marker_names_the_marker_case_insensitively(marker):
     page = b"<html><title>Challenge</title>" + marker.upper().encode() + b"</html>"
     assert matched_block_marker(page) == marker
@@ -306,3 +304,18 @@ def test_warm_up_log_has_no_not_issued_clause_when_all_required_cookies_arrive(t
     assert "warm-up page set cookies" in caplog.text
     assert "not issued" not in caplog.text
     assert "fpc-value" not in caplog.text
+
+
+def test_fetch_with_retry_caps_the_block_text_it_logs(tmp_path, caplog):
+    provider, _ = make_provider(tmp_path)
+    attempts = {"n": 0}
+
+    def do_request(cookies, user_agent):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise WafBlockDetected("x" * 500)
+        return "ok"
+
+    with caplog.at_level("WARNING", logger="openstates"):
+        provider.fetch_with_retry(do_request)
+    assert "x" * 200 in caplog.text and "x" * 201 not in caplog.text

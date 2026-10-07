@@ -170,9 +170,10 @@ class CookieProvider:
             return do_request(cookies, user_agent)
         except WafBlockDetected as e:
             # OPEN-334: say what the block looked like (the do_request callable puts the
-            # matched marker / HTTP status / path in the exception message).
+            # matched marker / HTTP status / path in the exception message). Capped: a
+            # connection error's own text can run to several hundred characters.
             logger.warning(
-                f"{self.name}: block detected despite cached cookies ({e}); "
+                f"{self.name}: block detected despite cached cookies ({str(e)[:200]}); "
                 "invalidating cache and re-warming once"
             )
             self.invalidate()
