@@ -1,5 +1,26 @@
 # Changelog
 
+## 6.26.3 - Oct 8, 2026
+
+* Add path filter to release workflow so openstates_metadata only publishes when metadata files change
+
+## 6.26.2 - Oct 7, 2026
+
+- Make people-to-database "purge" error more explicit that the operation failed
+- Fix bug in people CSV generation handling of adddress/contact info
+
+## 6.26.1 - Sep 30, 2026
+
+- Fix openstates_metadata PyPI publish failure by updating version in pyproject.toml.sample from 2024.10.3 to 2026.9.1
+
+## 6.26.0 - Sep 28, 2026
+
+- Upgrade Python support from 3.9 to 3.13.
+- Update flake8 and fix related lint/test issues.
+
+## 6.25.6 - Sep 15, 2026
+* Fixes case/punctuation-sensitive committee matching for USA events
+
 ## 6.25.5 - Aug 12, 2026
 * Disable session report generation to reduce database load
 
