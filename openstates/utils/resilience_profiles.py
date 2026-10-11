@@ -21,7 +21,7 @@ new jurisdiction is a config-only change.
 """
 import os
 import typing
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from .cookie_provider import CookieProvider
 from .mi_cookies import MI_COOKIE_PROVIDER

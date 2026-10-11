@@ -10,10 +10,8 @@ test_archive_per_media.py) by concern rather than by which module the code lives
 """
 
 import hashlib
-import os
 from unittest import mock
 
-import pytest  # type: ignore
 from botocore.exceptions import ClientError, EndpointConnectionError, NoCredentialsError
 
 from openstates.cli.text_extract import (
