@@ -48,6 +48,9 @@ jobs:
     - name: set poetry config path
       run: poetry config virtualenvs.path ~/.virtualenvs
 
+    - name: install poppler (pdftotext, used by the fulltext extraction tests; the Dockerfile installs it too)
+      run: sudo apt-get update && sudo apt-get install -y poppler-utils
+
     - name: install dependencies
       run: poetry install
 
