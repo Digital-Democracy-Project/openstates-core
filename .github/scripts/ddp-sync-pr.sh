@@ -17,7 +17,7 @@ mt=$(git merge-tree --write-tree --name-only --no-messages origin/main upstream/
 set -e
 [[ "$(printf '%s\n' "$mt" | head -1)" =~ ^[0-9a-f]{40,64}$ ]] || { echo "merge-tree failed: $(cat /tmp/mt.err)"; exit 1; }
 conflicts=$(printf '%s\n' "$mt" | sed 1d | grep -v '^$' || true)   # a real result starts with a tree id; conflicts are the lines after it
-git push --force origin upstream/main:refs/heads/sync/upstream   # a mirror of upstream, never committed to by hand
+git push --force origin upstream/main:refs/heads/sync/upstream   # sync/upstream is owned by this job alone: an exact mirror of upstream, never committed to by hand
 title="Sync upstream (${behind} commits)"
 body="Upstream mainline commits: ${behind}. Files in tracked paths: ${tracked}.
 Would conflict today: ${conflicts:-none}
