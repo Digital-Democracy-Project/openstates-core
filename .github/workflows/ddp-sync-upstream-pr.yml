@@ -10,6 +10,7 @@ permissions:
 jobs:
   sync-pr:
     runs-on: ubuntu-latest   # git >= 2.38 is needed for merge-tree --write-tree; ubuntu-latest ships a newer git
+    environment: ddp-sync   # the secrets live in this Environment, limited to `main`, so a PR run of upstream's own workflows (the sync PR comes from a branch in this repo) cannot read them
     env:
       UPSTREAM_REPO: openstates/openstates-core
       TRACKED_PATHS: "."
