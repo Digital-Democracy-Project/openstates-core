@@ -1,0 +1,31 @@
+name: DDP sync upstream PR
+on:
+  schedule:
+    - cron: "30 1 * * *"
+  workflow_dispatch: {}
+concurrency: ddp-sync-upstream
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  sync-pr:
+    runs-on: ubuntu-latest   # git >= 2.38 is needed for merge-tree --write-tree; ubuntu-latest ships a newer git
+    environment: ddp-sync   # the secrets live in this Environment, limited to `main`, so a PR run of upstream's own workflows (the sync PR comes from a branch in this repo) cannot read them
+    env:
+      UPSTREAM_REPO: openstates/openstates-core
+      TRACKED_PATHS: "."
+      GH_TOKEN: ${{ secrets.DDP_SYNC_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.DDP_SYNC_TOKEN }}
+      - run: bash .github/scripts/ddp-sync-pr.sh
+      - name: Tell us
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          curl -fsS -X POST -H 'Content-type: application/json' \
+            --data "{\"text\":\":red_circle: *${GITHUB_REPOSITORY#*/} sync-PR job failed* - $url\"}" "$SLACK_WEBHOOK_URL" || true
