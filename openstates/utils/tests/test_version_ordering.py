@@ -207,3 +207,76 @@ def test_is_procedural_document_virginia_committee_amendment_pattern(note):
 )
 def test_is_procedural_document_virginia_committee_amendment_does_not_exclude_real_text(note):
     assert is_procedural_document("Virginia", note) is False
+
+
+# --- OPEN-361: Utah's stamped "Amended <M/D/YYYY H:MM:N>" is ranked by date and hour ----------
+
+
+@pytest.mark.parametrize(
+    "notes_in_true_order",
+    [
+        # Real bills. The true order is that of the timestamps in the archived file URLs; the
+        # old rule (the last number) put the first of these as 1, 3, 2 and the second exactly
+        # reversed.
+        [
+            "Amended 1/27/2026 11:01:108",
+            "Amended 2/9/2026 11:02:713",
+            "Amended 3/3/2026 19:03:587",
+        ],
+        [
+            "Amended 2/13/2026 10:02:552",
+            "Amended 2/20/2026 15:02:361",
+            "Amended 2/26/2026 12:02:334",
+        ],
+    ],
+)
+def test_utah_stamped_amended_versions_are_ordered_by_date(notes_in_true_order):
+    shuffled = [notes_in_true_order[i] for i in (2, 0, 1)]
+    ranked = sorted(shuffled, key=lambda n: version_sort_key(n, ""))
+    assert ranked == notes_in_true_order
+
+
+def test_utah_stamped_amended_orders_by_hour_within_a_day():
+    earlier = "Amended 2/12/2026 09:02:900"
+    later = "Amended 2/12/2026 15:02:100"
+    assert version_sort_key(earlier, "") < version_sort_key(later, "")
+
+
+def test_utah_stamped_amended_same_hour_falls_back_to_the_last_number():
+    """Deterministic, though the note cannot say which of two same-hour versions is later
+    (right for one of the two such Utah bills seen)."""
+    assert version_sort_key("Amended 2/12/2026 10:02:100", "") < version_sort_key(
+        "Amended 2/12/2026 10:02:409", ""
+    )
+
+
+def test_utah_stamped_amended_still_sorts_after_substitutes_and_before_enrolled():
+    stamped = version_sort_key("Amended 1/28/2026 10:01:41", "")
+    assert version_sort_key("Substitute #9", "") < stamped < version_sort_key("Enrolled", "")
+
+
+def test_utah_stamped_amended_stays_in_the_amendment_stage():
+    assert note_stage("Amended 2/12/2026 10:02:409")[0] == STAGE_AMENDMENT
+    assert note_stage("Amended Excerpts 2/12/2026 10:02:409")[0] == STAGE_AMENDMENT
+
+
+def test_utah_amended_excerpt_ranks_with_its_full_text_twin():
+    assert extract_ordinal("Amended Excerpts 2/12/2026 10:02:409") == extract_ordinal(
+        "Amended 2/12/2026 10:02:409"
+    )
+
+
+@pytest.mark.parametrize(
+    "note, expected",
+    [
+        # Not a real date: the generic rule (last number) applies, and nothing raises.
+        ("Amended 13/45/2026 10:02:409", 409.0),
+        ("Amended 2/30/2026 10:02:409", 409.0),
+        # Not the stamped shape at all: unchanged.
+        ("Amended Engrossed", 0.0),
+        ("Substitute #3", 3.0),
+        ("Amended 2/12/2026", 2026.0),
+    ],
+)
+def test_extract_ordinal_leaves_everything_else_to_the_generic_rules(note, expected):
+    assert extract_ordinal(note) == expected

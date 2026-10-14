@@ -59,6 +59,7 @@ is a pure move: the logic/regex table below is unchanged from
 
 from __future__ import annotations
 
+import datetime
 import re
 import typing
 
@@ -84,6 +85,14 @@ _ORDINAL_WORDS = {
 
 _DATE_RE = re.compile(r"\A\d{4}(-\d{2}(-\d{2})?)?\Z")
 
+# OPEN-361: Utah's stamped "Amended <M/D/YYYY H:MM:N>" (and the "Amended Excerpts <same stamp>"
+# beside it) -- see extract_ordinal(). Only Utah has notes of this shape (checked against every
+# distinct stored note in every jurisdiction, 2026-10-13).
+_STAMPED_AMENDED_RE = re.compile(
+    r"\Aamended (?:excerpts )?(\d{1,2})/(\d{1,2})/(\d{4}) (\d{1,2}):\d{1,2}:(\d+)\Z"
+)
+_STAMPED_AMENDED_EPOCH = datetime.date(2000, 1, 1)
+
 
 def extract_ordinal(note: str) -> float:
     """
@@ -97,6 +106,19 @@ def extract_ordinal(note: str) -> float:
     e.g. "Substitute (S-1) - 2" -- a minor tiebreak, not a different amendment stage; folded
     in as a small fraction so it sorts immediately after "Substitute (S-1)" rather than being
     conflated with "Substitute (S-2)").
+
+    OPEN-361: Utah's stamped "Amended 2/12/2026 10:02:409" is ranked by the date and hour in
+    the note, not by its last number. The generic rule below reads the trailing "409" as an
+    ordinal, but that number has nothing to do with order: measured against the real file
+    timestamps in the archived URLs (2026-10-13), it put 48 of the 74 Utah bills that have two
+    or more such versions in the wrong order, some exactly reversed, while date + hour then
+    the last number is right for 73 of the 74 (the date and hour in the note matched the URL's
+    for all 368 pairs checked; the "minute" in the note is just the month again, so the real
+    minutes and seconds are not in the note at all). Two versions in the same hour fall back to
+    the last number, which is deterministic but only right for one of the two such bills seen.
+    The value is hours since 2000-01-01 plus the last number as a fraction, so a stamped
+    "Amended" still ranks after every numbered "Substitute #N", as it did before. A note with
+    a date that is not a real date falls through to the generic rules rather than failing.
     """
     lowered = note.lower()
 
@@ -105,6 +127,16 @@ def extract_ordinal(note: str) -> float:
         base = float(paren.group(1))
         tail = re.search(r"\)\s*-\s*(\d+)\s*\Z", lowered)
         return base + (int(tail.group(1)) / 100.0 if tail else 0.0)
+
+    stamped = _STAMPED_AMENDED_RE.match(lowered)
+    if stamped:
+        month, day, year, hour, tail_digits = (int(g) for g in stamped.groups())
+        try:
+            days = (datetime.date(year, month, day) - _STAMPED_AMENDED_EPOCH).days
+        except ValueError:
+            days = None
+        if days is not None:
+            return days * 24 + hour + min(tail_digits, 999999) / 1000000.0
 
     for word, value in _ORDINAL_WORDS.items():
         if word in lowered:
