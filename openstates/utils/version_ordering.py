@@ -326,6 +326,33 @@ _PROCEDURAL_DOCUMENT_NOTES: dict[str, frozenset] = {
 # above: all 563 of these currently carry a non-null diff today -- same prospective-only
 # reasoning as Virginia's own comment above (merging alone does not retroactively touch them;
 # a separate, explicitly-authorized `recompute-diff-order --commit` for Utah does).
+# Utah, OPEN-350: two more families, on DIFFERENT evidence -- one is not proof of the other.
+# Audited 2026-10-13 against the local database (notes/open349-utah-version-document-audit-
+# 20261013.md in ddp-open-states, OPEN-349); all 762 distinct Utah notes fall into seven families.
+#   (1) "Amended Excerpts <M/D/YYYY H:MM:N>" -- 368 documents (PDF only), each a short excerpt of
+#       one floor amendment. This one meets the length standard above: max 10,114 chars among
+#       bills and 1,902 among the other classifications, against full-text maxes near 1,000,000;
+#       all 368 sit in a bill that also has a full "Amended <same timestamp>" version.
+#   (2) "Comparison to Original Bill" / "Comparison to Sub #N" -- redline PDFs, 2,239 documents.
+#       These are NOT short (median 21,731 chars against 23,035 for "Substitute #N"; max 593,304
+#       against 1,018,572), so the length standard cannot justify excluding them and this entry
+#       does not claim it does. It rests on content and ordering instead (Ramon, 2026-10-13):
+#       in a 220-bill sample the extracted text holds a median 29% of the old-only wording, 43%
+#       of the new-only wording and 58% of the unchanged wording of the two real drafts, with
+#       nothing marking which is which, so it is neither version of the bill; and its sort key
+#       collides with "Substitute #N" and "House Amendment N" (all (1, '', N)), which left its
+#       place in the lineage to whatever order the database returned -- 471 of Utah's 1,021
+#       bills had versions tied that way, none once both families are excluded. The sample
+#       covered only "Comparison to Original Bill" (1,164 of the 2,239); "Comparison to Sub #N"
+#       (1,075) and the 67 resolution documents rest on the shared naming and form and on the
+#       collision, not on a content sample.
+# The full-text "Amended <ts>" (736 documents, min 1,193 chars) shares a prefix with (1) and is
+# deliberately NOT matched: the pattern requires the literal word "excerpts". "Introduced",
+# "Substitute #N" and "Enrolled" are not matched either. Checked against every distinct Utah
+# note: 7 comparison notes (2,239 documents) and 367 excerpt notes (368 documents) match, no
+# note matches both, and none naming "comparison" or "excerpt" is missed. Measured reduction
+# (AC5): all 2,239 + 368 = 2,607 of these carry a non-null diff today -- same prospective-only
+# reasoning as above (a recompute for Utah, OPEN-351, is what changes stored diffs).
 # Virginia (pattern match -- committee/subcommittee/legislator names, not a fixed list; OPEN-246):
 # a floor amendment offered by a specific committee ("Courts of Justice Amendment"), subcommittee
 # ("Subcommittee #2 Subcommittee Amendment"), or individual legislator ("Senator Sturtevant
@@ -368,7 +395,14 @@ _PROCEDURAL_DOCUMENT_NOTES: dict[str, frozenset] = {
 # reasoning as the Virginia/Utah entries above (merging this fix does not retroactively touch
 # them; a separate, explicitly-authorized `recompute-diff-order --commit` for Virginia does).
 _PROCEDURAL_DOCUMENT_NOTE_PATTERNS: dict[str, "re.Pattern"] = {
-    "Utah": re.compile(r"\A(house|senate) amendment [1-9]\d*\Z", re.IGNORECASE),
+    "Utah": re.compile(
+        r"\A("
+        r"(house|senate) amendment [1-9]\d*"
+        r"|comparison to (original bill|sub #[1-9]\d*)"
+        r"|amended excerpts \d{1,2}/\d{1,2}/\d{4} \d{1,2}:\d{2}:\d+"
+        r")\Z",
+        re.IGNORECASE,
+    ),
     "Virginia": re.compile(r"\A.+\bamendments?\Z", re.IGNORECASE),
 }
 
@@ -376,10 +410,12 @@ _PROCEDURAL_DOCUMENT_NOTE_PATTERNS: dict[str, "re.Pattern"] = {
 def is_procedural_document(jurisdiction_name: str, note: str) -> bool:
     """
     True if `note` (for `jurisdiction_name`) is a known short procedural document rather than
-    a full bill text, per the real-data audit above -- callers should treat this the same way
-    they already treat `note_stage(note)[0] == STAGE_UNKNOWN` (OPEN-34): the version neither
-    takes a diff nor becomes the baseline the next version diffs against, so the diff lineage
-    closes over the gap and the next real version diffs against the previous real one.
+    a full bill text, per the real-data audit above (or, for Utah's redline comparisons, a
+    document that is not a clean version of the bill, OPEN-350; see its comment) -- callers
+    should treat this the same way they already treat `note_stage(note)[0] == STAGE_UNKNOWN`
+    (OPEN-34): the version neither takes a diff nor becomes the baseline the next version
+    diffs against, so the diff lineage closes over the gap and the next real version diffs
+    against the previous real one.
 
     Deliberately separate from `note_stage()` rather than folded into it: `note_stage()` has
     other callers (this module's own docstring names api-v3's bill-detail endpoint) that want
