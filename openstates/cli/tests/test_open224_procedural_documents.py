@@ -88,6 +88,17 @@ class TestProceduralDocumentSkipsDiffAndBaseline:
                 "ocd-jurisdiction/country:us/state:ut/government",
                 "House Amendment 1",
             ),
+            # OPEN-350: Utah's redline and excerpt families get the same treatment.
+            (
+                "Utah",
+                "ocd-jurisdiction/country:us/state:ut/government",
+                "Comparison to Original Bill",
+            ),
+            (
+                "Utah",
+                "ocd-jurisdiction/country:us/state:ut/government",
+                "Amended Excerpts 2/12/2026 10:02:409",
+            ),
         ],
     )
     def test_archive_skips_procedural_and_diffs_enrolled_against_introduced(
@@ -194,6 +205,16 @@ class TestProceduralDocumentBothDiffPathsAgree:
                 "Utah",
                 "ocd-jurisdiction/country:us/state:ut/government",
                 "Senate Amendment 2",
+            ),
+            (
+                "Utah",
+                "ocd-jurisdiction/country:us/state:ut/government",
+                "Comparison to Sub #1",
+            ),
+            (
+                "Utah",
+                "ocd-jurisdiction/country:us/state:ut/government",
+                "Amended Excerpts 3/3/2026 19:03:217",
             ),
         ],
     )

@@ -158,6 +158,59 @@ def test_is_procedural_document_utah_amendment_zero_is_not_matched():
     assert is_procedural_document("Utah", "House Amendment 0") is False
 
 
+# --- OPEN-350: Utah's redline "Comparison to ..." and "Amended Excerpts ..." families -------
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        # Real notes from the OPEN-349 audit (every distinct Utah note was checked).
+        "Comparison to Original Bill",
+        "Comparison to Sub #1",
+        "Comparison to Sub #6",
+        "Amended Excerpts 2/12/2026 10:02:409",
+        "Amended Excerpts 3/3/2026 19:03:217",
+        "Amended Excerpts 1/28/2026 10:01:41",  # a two-digit tail is real too
+        # Case-insensitive, and an open-ended series rather than the numbers sampled.
+        "comparison to original bill",
+        "Comparison to Sub #12",
+    ],
+)
+def test_is_procedural_document_utah_redline_and_excerpt_families(note):
+    assert is_procedural_document("Utah", note) is True
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        # The full-text twin of "Amended Excerpts <ts>": shares the prefix and the timestamp,
+        # is a real version (736 documents, min 1,193 chars), and must keep its diff.
+        "Amended 2/12/2026 10:02:409",
+        "Amended 3/3/2026 19:03:217",
+        "Substitute #1",
+        "Substitute #7",
+        # Anchored: not a substring of a longer note, and not a bare prefix.
+        "Comparison to Original Bill 2",
+        "Comparison to Original",
+        "Comparison to Substitute",
+        "Comparison to Sub #0",
+        "Comparison to Sub #",
+        "Amended Excerpts",
+        "Amended Excerpts 2/12/2026",
+        "Amended Excerpts 2/12/2026 10:02:409 revised",
+    ],
+)
+def test_is_procedural_document_utah_redline_and_excerpt_entries_stay_narrow(note):
+    assert is_procedural_document("Utah", note) is False
+
+
+def test_is_procedural_document_utah_redline_entries_are_utah_only():
+    """The table is per jurisdiction: another state's "Comparison to ..." note is not excluded
+    by Utah's evidence."""
+    assert is_procedural_document("Virginia", "Comparison to Original Bill") is False
+    assert is_procedural_document("Michigan", "Comparison to Sub #1") is False
+
+
 def test_is_procedural_document_jurisdiction_specific():
     """"Conference Report" is a Virginia stub (median ~813 chars) but a real, large Michigan
     document (median well over 1M chars) -- this module's own real-data audit found both, and
