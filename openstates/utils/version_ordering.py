@@ -87,9 +87,11 @@ _DATE_RE = re.compile(r"\A\d{4}(-\d{2}(-\d{2})?)?\Z")
 
 # OPEN-361: Utah's stamped "Amended <M/D/YYYY H:MM:N>" (and the "Amended Excerpts <same stamp>"
 # beside it) -- see extract_ordinal(). Only Utah has notes of this shape (checked against every
-# distinct stored note in every jurisdiction, 2026-10-13).
+# distinct stored note in every jurisdiction, 2026-10-13). The pattern is limited to the shape
+# observed in all 734 distinct stamped notes (years 2026, hours 7-23, last numbers 1-999): an
+# hour of 0-23 and a last number of at most four digits.
 _STAMPED_AMENDED_RE = re.compile(
-    r"\Aamended (?:excerpts )?(\d{1,2})/(\d{1,2})/(\d{4}) (\d{1,2}):\d{1,2}:(\d+)\Z"
+    r"\Aamended (?:excerpts )?(\d{1,2})/(\d{1,2})/(\d{4}) ([01]?\d|2[0-3]):\d{1,2}:(\d{1,4})\Z"
 )
 _STAMPED_AMENDED_EPOCH = datetime.date(2000, 1, 1)
 
@@ -116,9 +118,12 @@ def extract_ordinal(note: str) -> float:
     for all 368 pairs checked; the "minute" in the note is just the month again, so the real
     minutes and seconds are not in the note at all). Two versions in the same hour fall back to
     the last number, which is deterministic but only right for one of the two such bills seen.
-    The value is hours since 2000-01-01 plus the last number as a fraction, so a stamped
-    "Amended" still ranks after every numbered "Substitute #N", as it did before. A note with
-    a date that is not a real date falls through to the generic rules rather than failing.
+    The value is 1000 + hours since 2000-01-01 + the last number as a fraction (under 1, so it
+    only breaks ties), so a stamped "Amended" ranks after every numbered "Substitute #N", as it
+    did before. This covers the observed shape only: all 734 distinct stamped notes are from
+    2026, with hours 7-23 and last numbers 1-999. A note outside it -- an hour above 23, a last
+    number of more than four digits, a date before 2000 or that is not a real date -- falls
+    through to the generic rules below rather than being ranked on bad data or failing.
     """
     lowered = note.lower()
 
@@ -134,9 +139,9 @@ def extract_ordinal(note: str) -> float:
         try:
             days = (datetime.date(year, month, day) - _STAMPED_AMENDED_EPOCH).days
         except ValueError:
-            days = None
-        if days is not None:
-            return days * 24 + hour + min(tail_digits, 999999) / 1000000.0
+            days = -1
+        if days >= 0:
+            return 1000.0 + days * 24 + hour + tail_digits / 10000.0
 
     for word, value in _ORDINAL_WORDS.items():
         if word in lowered:

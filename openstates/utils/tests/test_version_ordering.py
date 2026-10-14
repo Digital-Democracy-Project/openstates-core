@@ -272,6 +272,12 @@ def test_utah_amended_excerpt_ranks_with_its_full_text_twin():
         # Not a real date: the generic rule (last number) applies, and nothing raises.
         ("Amended 13/45/2026 10:02:409", 409.0),
         ("Amended 2/30/2026 10:02:409", 409.0),
+        # Outside the observed shape: an hour above 23, a last number of more than four
+        # digits, a date before 2000. Not ranked on data that cannot be a real time.
+        ("Amended 2/12/2026 24:02:409", 409.0),
+        ("Amended 2/12/2026 99:02:409", 409.0),
+        ("Amended 2/12/2026 10:02:10000", 10000.0),
+        ("Amended 12/31/1999 10:02:5", 5.0),
         # Not the stamped shape at all: unchanged.
         ("Amended Engrossed", 0.0),
         ("Substitute #3", 3.0),
@@ -280,3 +286,21 @@ def test_utah_amended_excerpt_ranks_with_its_full_text_twin():
 )
 def test_extract_ordinal_leaves_everything_else_to_the_generic_rules(note, expected):
     assert extract_ordinal(note) == expected
+
+
+def test_utah_stamped_amended_last_number_stays_in_order_up_to_four_digits():
+    """The last number is a fraction under 1, so four digits never spill into the next hour."""
+    assert version_sort_key("Amended 2/12/2026 10:02:1000", "") < version_sort_key(
+        "Amended 2/12/2026 10:02:9999", ""
+    )
+    assert version_sort_key("Amended 2/12/2026 10:02:9999", "") < version_sort_key(
+        "Amended 2/12/2026 11:02:1", ""
+    )
+
+
+def test_utah_stamped_amended_ranks_after_substitutes_even_at_the_epoch():
+    """The base of 1000 keeps every matched note above numbered substitutes, including the
+    earliest date the pattern accepts."""
+    assert version_sort_key("Substitute #9", "") < version_sort_key(
+        "Amended 1/1/2000 0:02:1", ""
+    )
