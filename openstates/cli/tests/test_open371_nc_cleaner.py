@@ -12,7 +12,6 @@ import pytest
 from openstates.cli.text_extract import (
     _clean_nc_text,
     apply_prediff_cleaning,
-    archive_bill_versions,
     recomputed_diffs_for_documents,
 )
 from openstates.cli.tests.test_open224_procedural_documents import _archive
