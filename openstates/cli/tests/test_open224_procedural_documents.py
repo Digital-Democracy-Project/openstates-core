@@ -99,6 +99,12 @@ class TestProceduralDocumentSkipsDiffAndBaseline:
                 "ocd-jurisdiction/country:us/state:ut/government",
                 "Amended Excerpts 2/12/2026 10:02:409",
             ),
+            # OPEN-366: North Carolina's amendment stamp pages.
+            (
+                "North Carolina",
+                "ocd-jurisdiction/country:us/state:nc/government",
+                "A1: Amendment",
+            ),
             # OPEN-367: Alabama's committee and legislator amendment excerpts.
             (
                 "Alabama",
@@ -270,4 +276,44 @@ def test_amendment_in_the_nature_of_a_substitute_still_gets_a_real_diff():
     assert doc.diff_from_previous_version is not None
     assert "+Section 1. A court shall consider the tax consequences of an award." in (
         doc.diff_from_previous_version
+    )
+
+
+@pytest.mark.django_db
+def test_north_carolina_editions_and_ratified_form_a_diff_chain():
+    """OPEN-366: before the stage rules, "Edition N" and "Ratified" were unknown-stage and took
+    no diff at all; now each diffs against the previous full printing."""
+    urls = {
+        "Filed": "https://x.test/nc/v0.pdf",
+        "Edition 2": "https://x.test/nc/v2.pdf",
+        "Ratified": "https://x.test/nc/v4.pdf",
+    }
+    texts = {
+        urls["Filed"]: "Section 1. A court may consider the award.\n",
+        urls["Edition 2"]: "Section 1. A court shall consider the award.\n",
+        urls["Ratified"]: "Section 1. A court shall consider the award and costs.\n",
+    }
+    bill = _make_bill(
+        jid="ocd-jurisdiction/country:us/state:nc/government",
+        jurisdiction_name="North Carolina",
+    )
+    bill.classification = ["bill"]
+    bill.save()
+    # Created out of order on purpose: the chain must come from the notes, not row order.
+    for note in ("Ratified", "Filed", "Edition 2"):
+        bill.versions.create(note=note, date="").links.create(
+            url=urls[note], media_type="application/pdf"
+        )
+    _archive(bill, texts)
+    docs = {d.version_note: d for d in BillVersionDocument.objects.filter(bill=bill)}
+
+    assert docs["Filed"].diff_from_previous_version is None
+    assert "+Section 1. A court shall consider the award." in (
+        docs["Edition 2"].diff_from_previous_version
+    )
+    assert "+Section 1. A court shall consider the award and costs." in (
+        docs["Ratified"].diff_from_previous_version
+    )
+    assert "-Section 1. A court shall consider the award." in (
+        docs["Ratified"].diff_from_previous_version
     )

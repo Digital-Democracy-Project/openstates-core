@@ -331,6 +331,103 @@ def test_is_procedural_document_alabama_entry_is_alabama_only():
     assert is_procedural_document("Arizona", "Judiciary 1st Amendment") is False
 
 
+# --- OPEN-366: North Carolina's "Edition N" / "Ratified" / "SL <year>-<N>" and stamp pages ---
+
+
+@pytest.mark.parametrize(
+    ("note", "expected_stage"),
+    [
+        ("Filed", STAGE_INTRODUCED),
+        ("Edition 1", STAGE_AMENDMENT),
+        ("Edition 8", STAGE_AMENDMENT),
+        ("Ratified", STAGE_FINAL_PASSAGE),
+        ("SL 2025-14", STAGE_ENACTED),
+        ("SL 2026-9", STAGE_ENACTED),
+    ],
+)
+def test_note_stage_north_carolina_vocabulary(note, expected_stage):
+    assert note_stage(note)[0] == expected_stage
+
+
+def test_north_carolina_versions_order_filed_editions_ratified_session_law():
+    in_true_order = [
+        "Filed",
+        "Edition 1",
+        "Edition 2",
+        "Edition 9",
+        "Edition 10",  # numeric, not alphabetical: 10 follows 9
+        "Ratified",
+        "SL 2025-14",
+    ]
+    keys = [version_sort_key(n, "") for n in in_true_order]
+    assert keys == sorted(keys)
+    assert len(set(keys)) == len(keys)  # no ties, so the lineage order is never a guess
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        # Shapes that look close but are not North Carolina's, or are real notes of the other
+        # states: they must keep their existing classification (unknown here, since no other
+        # rule claims them).
+        "Edition",
+        "Edition 0",
+        "Edition 2 Revised",
+        "Resolution 2025-4",  # NC's own single-version resolutions stay unknown
+        "Adopted",
+        "Ratified Bill",
+        "SL 2025",
+    ],
+)
+def test_note_stage_north_carolina_rules_do_not_widen(note):
+    assert note_stage(note)[0] == STAGE_UNKNOWN
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        # Real notes from the OPEN-359 audit: the numbered and un-numbered stamp pages.
+        "A1: Amendment",
+        "A7: Amendment",
+        "A49: Amendment",
+        # Two real un-numbered ones exist (whole text "A" and "A A"), both with a stored diff.
+        "A: Amendment",
+    ],
+)
+def test_is_procedural_document_north_carolina_amendment_stamp_pages(note):
+    assert is_procedural_document("North Carolina", note) is True
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        # The adjacent family that must stay as it is: real amendment text, coded by the
+        # clerk's amendment number, already outside the lineage because no stage rule claims it.
+        "A1: ABR-9-V-1",
+        "A1: ABB-54-V-2",
+        "A1: ABKE-21-V-5",
+        # Real full-text versions.
+        "Filed",
+        "Edition 1",
+        "Edition 2",
+        ("Ratified"),
+        "SL 2025-14",
+        # Amendments are numbered from 1; a zero is not an NC shape.
+        "A0: Amendment",
+    ],
+)
+def test_is_procedural_document_north_carolina_does_not_exclude_real_text(note):
+    assert is_procedural_document("North Carolina", note) is False
+
+
+def test_is_procedural_document_north_carolina_entry_is_north_carolina_only():
+    # Michigan and Utah have no entry that matches this shape. (Alabama's and Virginia's
+    # end-anchored "...amendment" patterns match "A1: Amendment" by shape, which is harmless for
+    # their own notes and is why this test names other states.)
+    assert is_procedural_document("Michigan", "A1: Amendment") is False
+    assert is_procedural_document("Utah", "A1: Amendment") is False
+
+
 # --- OPEN-361: Utah's stamped "Amended <M/D/YYYY H:MM:N>" is ranked by date and hour ----------
 
 
