@@ -92,6 +92,18 @@ FIXTURES = {
         "Section 1.  A court shall consider the tax\nconsequences of an award.\n"
         "Sec. 2.  This act is effective from and after\nDecember 31, 2025.\n",
     ),
+    # OPEN-372: an Introduced with a SYNOPSIS block and a tracking code, against an Engrossed that
+    # has neither but ends with the legislative-history block.
+    "Alabama": (
+        "ocd-jurisdiction/country:us/state:al/government",
+        "HB1\nJPKGJNN-1\nBy Representative Smith\nSYNOPSIS:\nUnder existing law, a court may act.\n"
+        "A BILL\nTO BE ENTITLED\nAN ACT\nRelating to courts.\n"
+        "Section 1. A court may consider the tax consequences of an award.\n",
+        "HB1\nDGC49NN-2\nBy Representative Smith\nA BILL\nTO BE ENTITLED\nAN ACT\nRelating to courts.\n"
+        "Section 1. A court shall consider the tax consequences of an award.\n"
+        "House of Representatives\nRead for the first time and referred ...05-Feb-26\n"
+        "Yeas 93\nNays 0\nJohn Treadwell\nClerk\n",
+    ),
     # The control. No cleaner exists, so the two paths agreed even before this fix -- which
     # is exactly why the divergence went unnoticed for two weeks: most traffic is here.
     "Test": (
@@ -194,7 +206,7 @@ def test_a_jurisdiction_with_no_cleaner_is_untouched():
     """Every jurisdiction without a cleaner must be byte-for-byte unchanged by this ticket
     (AC4). Stated against the shared helper directly, so it holds for any caller."""
     text_a, text_b = "line one\nline two", "line one\nline three"
-    for jurisdiction in ("Test", "United States", "Utah", "Florida", "Massachusetts", "Alabama"):
+    for jurisdiction in ("Test", "United States", "Utah", "Florida", "Massachusetts"):
         assert apply_prediff_cleaning(
             text_a,
             text_b,

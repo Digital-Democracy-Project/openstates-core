@@ -1259,6 +1259,61 @@ def _clean_wa_text(text: str) -> str:
     return "\n".join(lines)
 
 
+# OPEN-372: Alabama-only text cleaning applied to prior_text/raw_text immediately before
+# difflib.unified_diff() (never touching the stored raw_text, and never applied to any other
+# jurisdiction). Measured 2026-10-15 on the production replica (OPEN-352 / OPEN-360), over every
+# Introduced -> Engrossed (232) and Engrossed -> Enrolled (155) pair:
+#
+# 1. "Introduced" carries a "SYNOPSIS:" block (916 of 1,507 documents, always before the "A BILL"
+#    line) that "Engrossed" and "Enrolled" do not, so the synopsis showed up as removed text.
+# 2. The second line of every version is a tracking code that changes per version ("JPKGJNN-1",
+#    "DGC49NN-2", "DGC49NN-3"), and the title block changes shape between versions ("A BILL / TO BE
+#    ENTITLED / AN ACT" becomes "Enrolled, An Act,"). Each shape occurs at most once per document.
+# 3. Every Engrossed document (232 of 232), and no other kind, ends with a legislative-history
+#    block: a "Senate" or "House of Representatives" line, the "Read for the first time and
+#    referred ..." readings, "Yeas / Nays / Abstains", and the Clerk's or Secretary's name. It
+#    added about 14 lines to every Introduced -> Engrossed diff and removed them again in every
+#    Engrossed -> Enrolled diff, more noise than the synopsis.
+#
+# Result over the same pairs: changed lines 30,232 -> 22,658 (Introduced -> Engrossed; median per
+# pair 60 -> 26) and 10,322 -> 7,991 (Engrossed -> Enrolled; median 29 -> 13), never larger for
+# any pair. The remainder is real amendment text, so no whitespace or re-wrapping step is done.
+_AL_TRACKING_LINE_RE = re.compile(r"[A-Za-z0-9]{4,}-\d+")
+_AL_TITLE_LINES = frozenset(
+    {"A BILL", "TO BE ENTITLED", "AN ACT", "Enrolled, An Act,"}
+)
+_AL_HISTORY_MARKER_RE = re.compile(r"Read for the first time")
+_AL_CHAMBER_LINES = frozenset({"Senate", "House of Representatives"})
+
+
+def _clean_al_text(text: str) -> str:
+    """Alabama-only cleaner, see the block comment above: the synopsis block, the per-version
+    tracking code, the title block, and the legislative-history block at the end are removed."""
+    lines = text.split("\n")
+
+    synopsis = [i for i, ln in enumerate(lines) if ln.strip() == "SYNOPSIS:"]
+    bill = [i for i, ln in enumerate(lines) if ln.strip() == "A BILL"]
+    if synopsis and bill and synopsis[0] < bill[0]:
+        lines = lines[: synopsis[0]] + lines[bill[0] :]
+
+    history = [i for i, ln in enumerate(lines) if _AL_HISTORY_MARKER_RE.match(ln.strip())]
+    if history:
+        cut = history[0]
+        if cut > 0 and lines[cut - 1].strip() in _AL_CHAMBER_LINES:
+            cut -= 1
+        lines = lines[:cut]
+
+    kept = []
+    for i, ln in enumerate(lines):
+        stripped = ln.strip()
+        if i == 1 and _AL_TRACKING_LINE_RE.fullmatch(stripped):
+            continue
+        if stripped in _AL_TITLE_LINES:
+            continue
+        kept.append(ln)
+    return "\n".join(kept)
+
+
 # OPEN-11: Michigan-only text cleaning applied to prior_text/raw_text immediately before the
 # difflib.unified_diff() call in archive_bill_versions() (never touching the stored raw_text
 # field, and never applied to any other jurisdiction).
@@ -1428,7 +1483,7 @@ def apply_prediff_cleaning(
     cur_media_type: str,
 ) -> typing.Tuple[str, str]:
     """The per-jurisdiction text cleaning that runs immediately before
-    `difflib.unified_diff()` -- OPEN-7 (WA), OPEN-9 (VA), OPEN-10 (AZ), OPEN-11 (MI).
+    `difflib.unified_diff()` -- OPEN-7 (WA), OPEN-9 (VA), OPEN-10 (AZ), OPEN-11 (MI), OPEN-372 (AL).
 
     OPEN-219: extracted so that BOTH diff-computing paths run it. It previously lived
     inline in `archive_bill_versions` only, so `recomputed_diffs_for_documents` --
@@ -1467,6 +1522,9 @@ def apply_prediff_cleaning(
     if jurisdiction_name == "Washington":
         prior_text = _clean_wa_text(prior_text)
         raw_text = _clean_wa_text(raw_text)
+    if jurisdiction_name == "Alabama":
+        prior_text = _clean_al_text(prior_text)
+        raw_text = _clean_al_text(raw_text)
     if jurisdiction_name == "Michigan":
         prior_text, raw_text = _clean_michigan_text(
             prior_text, raw_text, prior_media_type, cur_media_type, is_bill
