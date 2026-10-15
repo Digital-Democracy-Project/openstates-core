@@ -166,6 +166,19 @@ def note_stage(note: str) -> tuple:
     """
     lowered = note.lower()
 
+    # OPEN-366: North Carolina's own version names (ncleg.gov's "<bill>v<N>.pdf" series):
+    # "Edition <N>" are the successive full printings after "Filed", "Ratified" is the bill as
+    # sent to the Governor, and "SL <year>-<N>" is the enacted session law. None matched any rule
+    # below, so 3,800 of NC's 6,191 archived versions were out of the lineage. Exact shapes, not
+    # substrings, so no other jurisdiction's note can be pulled in (checked against every distinct
+    # stored note in every jurisdiction, 2026-10-15: only North Carolina has these three shapes).
+    if re.fullmatch(r"sl \d{4}-\d+", lowered):
+        return (STAGE_ENACTED, 0.0)
+    if lowered == "ratified":
+        return (STAGE_FINAL_PASSAGE, 0.0)
+    if re.fullmatch(r"edition [1-9]\d*", lowered):
+        return (STAGE_AMENDMENT, extract_ordinal(note))
+
     if re.search(
         r"public act|public law|\bchapter|passed legislature|concurred", lowered
     ):
@@ -431,6 +444,16 @@ _PROCEDURAL_DOCUMENT_NOTES: dict[str, frozenset] = {
 # which currently carry a non-null diff_from_previous_version today -- same prospective-only
 # reasoning as the Virginia/Utah entries above (merging this fix does not retroactively touch
 # them; a separate, explicitly-authorized `recompute-diff-order --commit` for Virginia does).
+# North Carolina, OPEN-366: "A<n>: Amendment" (and the un-numbered "A: Amendment") is the stamp
+# page of an adopted amendment, not the amendment text and not a bill: e.g. "ADOPTED A49 ADOPTED
+# A49 ... The official copy of this document, with signatures and vote information, is available
+# in the House Principal Clerk's Office". Audited 2026-10-15 against the local database (OPEN-352 /
+# OPEN-359): 54 documents, 3 to 424 characters, all 54 carry a non-null diff today, against North
+# Carolina's real full texts ("Filed" 228 / 3,701 / 536,800 and "Edition 2" 320 / 7,495 /
+# 1,519,891, min / median / max). The lexically adjacent "A<n>: <code>" family (e.g. "A1:
+# ABR-9-V-1", 206 documents) is real amendment text; it matches no stage rule and so is already
+# outside the lineage, and this pattern does not touch it. Same prospective-only reasoning as the
+# entries above: a recompute for North Carolina is a separate, explicitly authorised step.
 _PROCEDURAL_DOCUMENT_NOTE_PATTERNS: dict[str, "re.Pattern"] = {
     "Utah": re.compile(
         r"\A("
@@ -441,6 +464,7 @@ _PROCEDURAL_DOCUMENT_NOTE_PATTERNS: dict[str, "re.Pattern"] = {
         re.IGNORECASE,
     ),
     "Virginia": re.compile(r"\A.+\bamendments?\Z", re.IGNORECASE),
+    "North Carolina": re.compile(r"\AA\d*: Amendment\Z", re.IGNORECASE),
 }
 
 
