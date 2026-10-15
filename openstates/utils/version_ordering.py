@@ -448,7 +448,8 @@ _PROCEDURAL_DOCUMENT_NOTES: dict[str, frozenset] = {
 # page of an adopted amendment, not the amendment text and not a bill: e.g. "ADOPTED A49 ADOPTED
 # A49 ... The official copy of this document, with signatures and vote information, is available
 # in the House Principal Clerk's Office". Audited 2026-10-15 against the local database (OPEN-352 /
-# OPEN-359): 54 documents, 3 to 424 characters, all 54 carry a non-null diff today, against North
+# OPEN-359): 54 documents, 3 to 424 characters (52 numbered, 212 to 424; and 2 un-numbered "A:
+# Amendment", whose whole text is "A" and "A A"), all 54 carry a non-null diff today, against North
 # Carolina's real full texts ("Filed" 228 / 3,701 / 536,800 and "Edition 2" 320 / 7,495 /
 # 1,519,891, min / median / max). The lexically adjacent "A<n>: <code>" family (e.g. "A1:
 # ABR-9-V-1", 206 documents) is real amendment text; it matches no stage rule and so is already
@@ -464,7 +465,7 @@ _PROCEDURAL_DOCUMENT_NOTE_PATTERNS: dict[str, "re.Pattern"] = {
         re.IGNORECASE,
     ),
     "Virginia": re.compile(r"\A.+\bamendments?\Z", re.IGNORECASE),
-    "North Carolina": re.compile(r"\AA\d*: Amendment\Z", re.IGNORECASE),
+    "North Carolina": re.compile(r"\AA([1-9]\d*)?: Amendment\Z", re.IGNORECASE),
 }
 
 

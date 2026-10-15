@@ -321,6 +321,7 @@ def test_note_stage_north_carolina_rules_do_not_widen(note):
         "A1: Amendment",
         "A7: Amendment",
         "A49: Amendment",
+        # Two real un-numbered ones exist (whole text "A" and "A A"), both with a stored diff.
         "A: Amendment",
     ],
 )
@@ -342,6 +343,8 @@ def test_is_procedural_document_north_carolina_amendment_stamp_pages(note):
         "Edition 2",
         ("Ratified"),
         "SL 2025-14",
+        # Amendments are numbered from 1; a zero is not an NC shape.
+        "A0: Amendment",
     ],
 )
 def test_is_procedural_document_north_carolina_does_not_exclude_real_text(note):
