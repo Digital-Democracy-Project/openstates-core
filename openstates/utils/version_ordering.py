@@ -157,6 +157,18 @@ def extract_ordinal(note: str) -> float:
     return 0.0
 
 
+# OPEN-373: Washington's introduced forms of resolutions and memorials. A bill's introduced text is
+# the note "Bill" (matched by "^bill$" below); the equivalent for these four kinds had no rule, so
+# they were STAGE_UNKNOWN and outside the diff lineage, and their substitutes ("Substitute
+# Resolution", "Substitute Joint Memorial", ...) were first in the lineage with nothing to diff
+# against. Exact notes, not substrings. Checked against every distinct stored note in all 10
+# jurisdictions on the production replica (2026-10-15): only Washington has them (Resolution 624
+# documents, Joint Memorial 94, Joint Resolution 54, Concurrent Resolution 40).
+_INTRODUCED_RESOLUTION_NOTES = frozenset(
+    {"resolution", "joint memorial", "joint resolution", "concurrent resolution"}
+)
+
+
 def note_stage(note: str) -> tuple:
     """
     Classify a version_note into (stage, ordinal) using the content-based stage table built
@@ -178,6 +190,9 @@ def note_stage(note: str) -> tuple:
         return (STAGE_FINAL_PASSAGE, 0.0)
     if re.fullmatch(r"edition [1-9]\d*", lowered):
         return (STAGE_AMENDMENT, extract_ordinal(note))
+
+    if lowered in _INTRODUCED_RESOLUTION_NOTES:
+        return (STAGE_INTRODUCED, 0.0)
 
     if re.search(
         r"public act|public law|\bchapter|passed legislature|concurred", lowered

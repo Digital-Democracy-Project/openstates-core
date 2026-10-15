@@ -428,6 +428,66 @@ def test_is_procedural_document_north_carolina_entry_is_north_carolina_only():
     assert is_procedural_document("Utah", "A1: Amendment") is False
 
 
+# --- OPEN-373: Washington's introduced resolutions and memorials ------------------------------
+
+
+@pytest.mark.parametrize(
+    "note",
+    ["Resolution", "Joint Memorial", "Joint Resolution", "Concurrent Resolution"],
+)
+def test_note_stage_washington_introduced_resolutions_and_memorials(note):
+    assert note_stage(note) == (STAGE_INTRODUCED, 0.0)
+
+
+@pytest.mark.parametrize(
+    "in_true_order",
+    [
+        ["Resolution", "Substitute Resolution", "Engrossed Resolution"],
+        [
+            "Joint Memorial",
+            "Substitute Joint Memorial",
+            "Engrossed Substitute Joint Memorial",
+        ],
+        ["Joint Resolution", "Substitute Joint Resolution"],
+        ["Concurrent Resolution", "Substitute Concurrent Resolution"],
+    ],
+)
+def test_washington_resolution_families_order_introduced_substitute_engrossed(
+    in_true_order,
+):
+    keys = [version_sort_key(n, "") for n in in_true_order]
+    assert keys == sorted(keys)
+    assert len(set(keys)) == len(keys)  # no ties, so the lineage order is never a guess
+    assert note_stage(in_true_order[0])[0] == STAGE_INTRODUCED
+    assert all(note_stage(n)[0] != STAGE_UNKNOWN for n in in_true_order)
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        # Exact notes only: near-misses and other kinds of resolution keep their classification.
+        "Resolutions",
+        "Joint Resolution 1",
+        "Senate Resolution",
+        "House Resolution",
+        "Resolution of the Senate",
+        "Memorial",
+        "Joint",
+    ],
+)
+def test_the_washington_resolution_rule_does_not_widen(note):
+    assert note_stage(note)[0] == STAGE_UNKNOWN
+
+
+def test_michigans_resolution_notes_are_untouched():
+    """Michigan has real resolution notes of its own; none is one of the four exact Washington
+    notes, so each keeps the stage it had."""
+    assert note_stage("House Introduced Resolution")[0] == STAGE_INTRODUCED
+    assert note_stage("Senate Introduced Resolution")[0] == STAGE_INTRODUCED
+    assert note_stage("House Adopted Resolution")[0] == STAGE_UNKNOWN
+    assert note_stage("Senate Adopted Resolution")[0] == STAGE_UNKNOWN
+
+
 # --- OPEN-361: Utah's stamped "Amended <M/D/YYYY H:MM:N>" is ranked by date and hour ----------
 
 
