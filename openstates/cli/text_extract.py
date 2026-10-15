@@ -1278,17 +1278,27 @@ def _clean_wa_text(text: str) -> str:
 # Result over the same pairs: changed lines 30,232 -> 22,658 (Introduced -> Engrossed; median per
 # pair 60 -> 26) and 10,322 -> 7,991 (Engrossed -> Enrolled; median 29 -> 13), never larger for
 # any pair. The remainder is real amendment text, so no whitespace or re-wrapping step is done.
-_AL_TRACKING_LINE_RE = re.compile(r"[A-Za-z0-9]{4,}-\d+")
+_AL_TRACKING_LINE_RE = re.compile(r"[A-Z0-9]{4,}-\d+")
 _AL_TITLE_LINES = frozenset(
     {"A BILL", "TO BE ENTITLED", "AN ACT", "Enrolled, An Act,"}
 )
+# The title lines were never found past line 20 once the synopsis is removed (4,501 occurrences).
+_AL_TITLE_REGION_LINES = 25
 _AL_HISTORY_MARKER_RE = re.compile(r"Read for the first time")
 _AL_CHAMBER_LINES = frozenset({"Senate", "House of Representatives"})
+# All 232 history blocks run 10 to 14 non-blank lines from the marker to the end.
+_AL_HISTORY_MAX_TAIL_LINES = 20
 
 
 def _clean_al_text(text: str) -> str:
     """Alabama-only cleaner, see the block comment above: the synopsis block, the per-version
-    tracking code, the title block, and the legislative-history block at the end are removed."""
+    tracking code, the title block, and the legislative-history block at the end are removed.
+
+    Every cut is anchored on the structure measured in the corpus, so text that merely resembles
+    one is kept: the synopsis only when an "A BILL" line follows it; the title lines only in the
+    first lines of the document; the history block only when the marker is immediately preceded
+    by an exact chamber line and sits within the last few lines (a line that starts "Read for the
+    first time" anywhere else is bill text and is left alone)."""
     lines = text.split("\n")
 
     synopsis = [i for i, ln in enumerate(lines) if ln.strip() == "SYNOPSIS:"]
@@ -1296,19 +1306,23 @@ def _clean_al_text(text: str) -> str:
     if synopsis and bill and synopsis[0] < bill[0]:
         lines = lines[: synopsis[0]] + lines[bill[0] :]
 
-    history = [i for i, ln in enumerate(lines) if _AL_HISTORY_MARKER_RE.match(ln.strip())]
-    if history:
-        cut = history[0]
-        if cut > 0 and lines[cut - 1].strip() in _AL_CHAMBER_LINES:
-            cut -= 1
-        lines = lines[:cut]
+    for i, ln in enumerate(lines):
+        if (
+            i > 0
+            and _AL_HISTORY_MARKER_RE.match(ln.strip())
+            and lines[i - 1].strip() in _AL_CHAMBER_LINES
+            and sum(1 for rest in lines[i - 1 :] if rest.strip())
+            <= _AL_HISTORY_MAX_TAIL_LINES
+        ):
+            lines = lines[: i - 1]
+            break
 
     kept = []
     for i, ln in enumerate(lines):
         stripped = ln.strip()
         if i == 1 and _AL_TRACKING_LINE_RE.fullmatch(stripped):
             continue
-        if stripped in _AL_TITLE_LINES:
+        if i < _AL_TITLE_REGION_LINES and stripped in _AL_TITLE_LINES:
             continue
         kept.append(ln)
     return "\n".join(kept)

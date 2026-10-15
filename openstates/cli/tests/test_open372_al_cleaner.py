@@ -222,3 +222,35 @@ def test_the_recompute_path_agrees_with_the_archiver_for_alabama():
         docs, jurisdiction_name="Alabama", is_bill=True
     )
     assert result["changed"] == []
+
+
+def test_a_history_marker_without_the_chamber_line_before_it_cuts_nothing():
+    """The review's high-severity case: bill text that starts "Read for the first time" must not
+    take the rest of the document with it unless the exact chamber line precedes it."""
+    text = (
+        "HB1\nTRK12-1\nA BILL\n"
+        "Section 1. A court may act.\n"
+        "Read for the first time in any proceeding, the notice shall state the date.\n"
+        "Section 2. More real text.\n"
+        "Section 3. Even more real text.\n"
+    )
+    assert "More real text" in _clean_al_text(text)
+    assert "Read for the first time in any proceeding" in _clean_al_text(text)
+
+
+def test_a_chamber_line_and_marker_far_from_the_end_cuts_nothing():
+    body = "".join(f"Section {n}. Real text number {n}.\n" for n in range(40))
+    text = f"HB1\nTRK12-1\nA BILL\nSenate\nRead for the first time and referred\n{body}"
+    cleaned = _clean_al_text(text)
+    assert "Real text number 39" in cleaned and "Read for the first time" in cleaned
+
+
+def test_an_exact_title_phrase_later_in_the_document_is_kept():
+    body = "".join(f"Section {n}. Real text number {n}.\n" for n in range(40))
+    text = f"HB1\nTRK12-1\nA BILL\n{body}AN ACT\nSection 41. After the title region."
+    assert "\nAN ACT\n" in _clean_al_text(text)
+
+
+@pytest.mark.parametrize("second_line", ["jpkgjnn-1", "AB-1", "ABCD", "By Rep. Smith"])
+def test_only_an_uppercase_tracking_code_on_line_two_is_dropped(second_line):
+    assert second_line in _clean_al_text(f"HB1\n{second_line}\nbody")
