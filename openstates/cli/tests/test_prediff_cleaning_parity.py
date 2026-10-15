@@ -92,6 +92,24 @@ FIXTURES = {
         "Section 1.  A court shall consider the tax\nconsequences of an award.\n"
         "Sec. 2.  This act is effective from and after\nDecember 31, 2025.\n",
     ),
+    # OPEN-371: an indented Ratified printing with the header, a running page line and the
+    # signature block, against the flush-left Edition it follows.
+    "North Carolina": (
+        "ocd-jurisdiction/country:us/state:nc/government",
+        "A BILL TO BE ENTITLED\n"
+        "The General Assembly of North Carolina enacts:\n"
+        "SECTION 1. A court may consider the tax consequences of an award.\n"
+        "SECTION 2. This act is effective when it becomes law.\n",
+        "      GENERAL ASSEMBLY OF NORTH CAROLINA\n"
+        "      SESSION 2025\n"
+        "      RATIFIED BILL\n"
+        "The General Assembly of North Carolina enacts:\n"
+        "      SECTION 1. A court shall consider the tax consequences of an award.\n"
+        "Page 2 House Bill 26-Ratified\n"
+        "      SECTION 2. This act is effective when it becomes law.\n"
+        "In the General Assembly read three times and ratified this the 1st day of May,\n"
+        "      s/ A Person\n",
+    ),
     # The control. No cleaner exists, so the two paths agreed even before this fix -- which
     # is exactly why the divergence went unnoticed for two weeks: most traffic is here.
     "Test": (

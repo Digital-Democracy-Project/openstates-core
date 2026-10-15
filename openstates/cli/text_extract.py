@@ -1418,6 +1418,69 @@ def _clean_michigan_text(
     return prior_text, raw_text
 
 
+# OPEN-371: North Carolina-only text cleaning applied to prior_text/raw_text immediately before
+# difflib.unified_diff() (never touching the stored raw_text, and never applied to any other
+# jurisdiction). Measured 2026-10-15 on the production replica (OPEN-352 / OPEN-359):
+#
+# 1. The "Ratified" printing and the "SL <year>-<N>" session law are typeset differently from the
+#    "Edition N" printings: every line is indented, there is a header block ("GENERAL ASSEMBLY OF
+#    NORTH CAROLINA / SESSION 2025 / HOUSE BILL 26 / RATIFIED BILL", plus a tracking line such as
+#    "*H26-v-4*"), a running page header or footer on every page ("Page 2 House Bill 26-Ratified",
+#    "House Bill 26-Ratified Page 3", or the Session Law equivalents), and the Editions' own "A BILL
+#    TO BE ENTITLED" line is missing. A raw Edition -> Ratified diff was therefore 5 to 10 times
+#    larger than the real change (HB26 34,414 characters raw, 3,899 cleaned; SB50 58,140 / 5,276).
+# 2. Every Ratified (164 of 164) and Session Law (158 of 158) document ends with the same block
+#    after the bill text: "In the General Assembly read three times and ratified this the ...",
+#    then 9 to 13 lines of signatures and the Governor's approval, none of it bill text. It is cut
+#    at that marker.
+#
+# A scan of every North Carolina Filed, Edition, Ratified and Session Law document on the
+# production replica found none of these header, tracking or page-line shapes in any of the 5,566
+# Filed and Edition documents ("A BILL TO BE ENTITLED" is the one exception, once, near the top),
+# so removing a whole line that matches one cannot remove Edition text. A bare "Page N" line was
+# also considered and matched no document at all, so it is not included.
+#
+# What is NOT done, on purpose: no re-wrapping of lines. The measured remainder after the steps
+# below was real amendment text (HB171 Edition 3 -> Ratified), not wrapping.
+_NC_RATIFICATION_MARKER_RE = re.compile(
+    r"^In the General Assembly read three times and ratified", re.IGNORECASE
+)
+_NC_NOISE_LINE_RES = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"A BILL TO BE ENTITLED",
+        r"GENERAL ASSEMBLY OF NORTH CAROLINA",
+        r"SESSION \d{4}",
+        r"(?:HOUSE|SENATE) BILL \d+",
+        r"RATIFIED BILL",
+        r"SESSION LAW \d{4}-\d+",
+        r"\*[HS]\d+-v-\d+\*",
+        r"Page \d+ (?:House|Senate) Bill \d+-Ratified",
+        r"(?:House|Senate) Bill \d+-Ratified Page \d+",
+        r"Page \d+ Session Law \d{4}-\d+ (?:House|Senate) Bill \d+",
+        r"(?:House|Senate) Bill \d+ Session Law \d{4}-\d+ Page \d+",
+    )
+)
+_NC_WHITESPACE_RUN = re.compile(r"\s+")
+
+
+def _clean_nc_text(text: str) -> str:
+    """North Carolina-only cleaner, see the block comment above: whitespace and blank lines
+    normalised, the header block and running page lines dropped, and the signature block after the
+    ratification marker cut."""
+    kept = []
+    for line in text.split("\n"):
+        line = _NC_WHITESPACE_RUN.sub(" ", line).strip()
+        if not line:
+            continue
+        if _NC_RATIFICATION_MARKER_RE.match(line):
+            break
+        if any(pattern.fullmatch(line) for pattern in _NC_NOISE_LINE_RES):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def apply_prediff_cleaning(
     prior_text: str,
     raw_text: str,
@@ -1428,7 +1491,7 @@ def apply_prediff_cleaning(
     cur_media_type: str,
 ) -> typing.Tuple[str, str]:
     """The per-jurisdiction text cleaning that runs immediately before
-    `difflib.unified_diff()` -- OPEN-7 (WA), OPEN-9 (VA), OPEN-10 (AZ), OPEN-11 (MI).
+    `difflib.unified_diff()` -- OPEN-7 (WA), OPEN-9 (VA), OPEN-10 (AZ), OPEN-11 (MI), OPEN-371 (NC).
 
     OPEN-219: extracted so that BOTH diff-computing paths run it. It previously lived
     inline in `archive_bill_versions` only, so `recomputed_diffs_for_documents` --
@@ -1478,6 +1541,9 @@ def apply_prediff_cleaning(
     if jurisdiction_name == "Arizona":
         prior_text = _reflow_paragraphs(prior_text)
         raw_text = _reflow_paragraphs(raw_text)
+    if jurisdiction_name == "North Carolina":
+        prior_text = _clean_nc_text(prior_text)
+        raw_text = _clean_nc_text(raw_text)
     return prior_text, raw_text
 
 
