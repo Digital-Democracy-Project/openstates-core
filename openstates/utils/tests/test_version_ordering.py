@@ -262,6 +262,58 @@ def test_is_procedural_document_virginia_committee_amendment_does_not_exclude_re
     assert is_procedural_document("Virginia", note) is False
 
 
+# --- OPEN-367: Alabama's committee/legislator "Amendment" family -------------------------
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        # Real notes from the OPEN-360 audit (all 25 distinct Alabama notes ending in
+        # "Amendment" / "Amendment Offered" were checked; these are one of each shape).
+        "Judiciary 1st Amendment",
+        "Finance and Taxation Education 2nd Amendment",
+        "Transportation, Utilities and Infrastructure 1st Amendment",
+        "Robbins 2nd Amendment Offered",
+        "Agriculture, Conservation, and Forestry 1st Amendment Offered",
+        "Reported Out Committee House of Origin-- Committee Amendment",
+        "Reported Out Committee House of Origin- Committee Amendment",
+        "Reported Out Committee House of Origin-- Committee 1st Amendment",
+        "judiciary 1st amendment",  # case-insensitive
+    ],
+)
+def test_is_procedural_document_alabama_amendment_family(note):
+    assert is_procedural_document("Alabama", note) is True
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        # The adjacent family that must stay in: real full replacement text (21 documents,
+        # 1,929 to 183,379 characters), same committee-name prefix, never ends in "Amendment".
+        "Judiciary 1st Substitute",
+        "Finance and Taxation General Fund 1st Substitute Offered",
+        "Economic Development and Tourism  Engrossed Substitute Offered",
+        # Alabama's real full-text stages.
+        "Introduced",
+        "Engrossed",
+        "Enrolled",
+        "Reported Out of Committee House of Origin",
+        "Reported Out of Committee Second House",
+        "Senate Concurs in Conference Committee Report",
+        # Not a note shape that exists, and the pattern must need a prefix.
+        "Amendment",
+    ],
+)
+def test_is_procedural_document_alabama_does_not_exclude_real_text(note):
+    assert is_procedural_document("Alabama", note) is False
+
+
+def test_is_procedural_document_alabama_entry_is_alabama_only():
+    """The pattern rests on Alabama's evidence; another state's notes are not judged by it."""
+    assert is_procedural_document("Michigan", "Judiciary 1st Amendment") is False
+    assert is_procedural_document("Arizona", "Judiciary 1st Amendment") is False
+
+
 # --- OPEN-361: Utah's stamped "Amended <M/D/YYYY H:MM:N>" is ranked by date and hour ----------
 
 
