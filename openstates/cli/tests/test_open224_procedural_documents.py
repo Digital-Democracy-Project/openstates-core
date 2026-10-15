@@ -99,6 +99,12 @@ class TestProceduralDocumentSkipsDiffAndBaseline:
                 "ocd-jurisdiction/country:us/state:ut/government",
                 "Amended Excerpts 2/12/2026 10:02:409",
             ),
+            # OPEN-367: Alabama's committee and legislator amendment excerpts.
+            (
+                "Alabama",
+                "ocd-jurisdiction/country:us/state:al/government",
+                "Judiciary 1st Amendment",
+            ),
             # OPEN-368: Arizona's action versions, excluded for order rather than length.
             (
                 "Arizona",

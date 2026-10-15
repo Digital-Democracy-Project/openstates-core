@@ -447,6 +447,22 @@ _PROCEDURAL_DOCUMENT_NOTES: dict[str, frozenset] = {
 # a date), "Conference Committee", "Conference Engrossed Version", "Chaptered Version" or
 # "Transmitted to Secretary of State". If the ids are later shown to be chronological, ordering by
 # them would restore these diffs (a ticket of its own: it needs the link URL in the sort key).
+# Alabama, OPEN-367 (pattern match -- committee and legislator names, not a fixed list): a
+# committee amendment ("Judiciary 1st Amendment"), a floor amendment offered by a member
+# ("Robbins 2nd Amendment Offered") and a reported-out committee amendment ("Reported Out
+# Committee House of Origin-- Committee 1st Amendment") are each a short excerpt of just that one
+# change, the same shape as Virginia's OPEN-246 family just below. Audited 2026-10-15 against the
+# local database (OPEN-352 / OPEN-360): the 25 distinct notes ending in "Amendment" or
+# "Amendment Offered" are 45 documents, all {bill}, min 53 / median 332 / max 2,519 characters,
+# against Alabama's real full texts of "Introduced" 360 / 3,841 / 176,574, "Enrolled" 768 / 3,978 /
+# 183,904 and "Engrossed" 1,068 / 6,295 / 179,596 (min / median / max). Compared max against max, as
+# OPEN-246 did. All 45 carry a non-null diff today (the AC5 query above), none a real diff: they
+# were diffed against the whole bill. The lexically adjacent family that must stay in is
+# "<Committee> 1st Substitute" / "... Substitute Offered" / "... Engrossed Substitute Offered":
+# 14 distinct notes, 21 documents, 1,929 to 183,379 characters, real full replacement text. None
+# of them ends in "Amendment" or "Amendment Offered", so the end anchor keeps them out. Same
+# prospective-only reasoning as the entries above: a recompute for Alabama is a separate,
+# explicitly authorised step.
 _PROCEDURAL_DOCUMENT_NOTE_PATTERNS: dict[str, "re.Pattern"] = {
     "Utah": re.compile(
         r"\A("
@@ -458,6 +474,7 @@ _PROCEDURAL_DOCUMENT_NOTE_PATTERNS: dict[str, "re.Pattern"] = {
     ),
     "Virginia": re.compile(r"\A.+\bamendments?\Z", re.IGNORECASE),
     "Arizona": re.compile(r"\A(house|senate) - ", re.IGNORECASE),
+    "Alabama": re.compile(r"\A.+\bamendment( offered)?\Z", re.IGNORECASE),
 }
 
 
