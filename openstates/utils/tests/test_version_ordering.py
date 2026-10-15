@@ -268,16 +268,33 @@ def test_is_procedural_document_virginia_committee_amendment_does_not_exclude_re
 @pytest.mark.parametrize(
     "note",
     [
-        # Real notes from the OPEN-360 audit (all 25 distinct Alabama notes ending in
-        # "Amendment" / "Amendment Offered" were checked; these are one of each shape).
-        "Judiciary 1st Amendment",
-        "Finance and Taxation Education 2nd Amendment",
-        "Transportation, Utilities and Infrastructure 1st Amendment",
-        "Robbins 2nd Amendment Offered",
+        # Every one of the 25 distinct Alabama notes ending in "Amendment" / "Amendment Offered"
+        # in the 2026-10-15 OPEN-360 audit (none has trailing whitespace; every one has a prefix).
+        "Agriculture, Conservation, and Forestry 1st Amendment",
         "Agriculture, Conservation, and Forestry 1st Amendment Offered",
-        "Reported Out Committee House of Origin-- Committee Amendment",
+        "Chesteen 1st Amendment Offered",
+        "County and Municipal Government 1st Amendment",
+        "Finance and Taxation Education 1st Amendment",
+        "Finance and Taxation Education 2nd Amendment",
+        "Finance and Taxation General Fund 1st Amendment",
+        "Fiscal Responsibility and Economic Development 1st Amendment",
+        "Fiscal Responsibility and Economic Development 2nd Amendment",
+        "Harrison 1st Amendment Offered",
+        "Judiciary 1st Amendment",
+        "Rehm 1st Amendment Offered",
         "Reported Out Committee House of Origin- Committee Amendment",
         "Reported Out Committee House of Origin-- Committee 1st Amendment",
+        "Reported Out Committee House of Origin-- Committee 2nd Amendment",
+        "Reported Out Committee House of Origin-- Committee Amendment",
+        "Rigsby 1st Amendment Offered",
+        "Robbins 1st Amendment Offered",
+        "Robbins 2nd Amendment Offered",
+        "State Governmental Affairs 1st Amendment",
+        "State Governmental Affairs 2nd Amendment",
+        "Transportation and Energy 1st Amendment",
+        "Transportation, Utilities and Infrastructure 1st Amendment",
+        "Transportation, Utilities and Infrastructure 2nd Amendment",
+        "Ways and Means Education 1st Amendment",
         "judiciary 1st amendment",  # case-insensitive
     ],
 )
