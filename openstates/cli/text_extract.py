@@ -1434,6 +1434,12 @@ def _clean_michigan_text(
 #    then 9 to 13 lines of signatures and the Governor's approval, none of it bill text. It is cut
 #    at that marker.
 #
+# A scan of every North Carolina Filed, Edition, Ratified and Session Law document on the
+# production replica found none of these header, tracking or page-line shapes in any of the 5,566
+# Filed and Edition documents ("A BILL TO BE ENTITLED" is the one exception, once, near the top),
+# so removing a whole line that matches one cannot remove Edition text. A bare "Page N" line was
+# also considered and matched no document at all, so it is not included.
+#
 # What is NOT done, on purpose: no re-wrapping of lines. The measured remainder after the steps
 # below was real amendment text (HB171 Edition 3 -> Ratified), not wrapping.
 _NC_RATIFICATION_MARKER_RE = re.compile(
@@ -1449,7 +1455,6 @@ _NC_NOISE_LINE_RES = tuple(
         r"RATIFIED BILL",
         r"SESSION LAW \d{4}-\d+",
         r"\*[HS]\d+-v-\d+\*",
-        r"Page \d+",
         r"Page \d+ (?:House|Senate) Bill \d+-Ratified",
         r"(?:House|Senate) Bill \d+-Ratified Page \d+",
         r"Page \d+ Session Law \d{4}-\d+ (?:House|Senate) Bill \d+",

@@ -103,8 +103,6 @@ def test_the_edition_and_ratified_diff_is_empty_once_cleaned():
         "Senate Bill 50-Ratified Page 3",
         "Page 4 Session Law 2025-14 House Bill 26",
         "House Bill 26 Session Law 2025-14 Page 5",
-        "Page 8",
-        "   Page 8   ",
     ],
 )
 def test_the_measured_header_and_page_lines_are_dropped(line):
@@ -119,6 +117,7 @@ def test_the_measured_header_and_page_lines_are_dropped(line):
         "GENERAL ASSEMBLY OPERATING EXPENSES",
         "GENERAL ASSEMBLY OPERATING FUNDS AND GENERAL ASSEMBLY SPECIAL",
         "See Page 3 of the report.",
+        "Page 8",  # a bare page number matched no real document, so it is not treated as noise
         "The session 2025 appropriations are ratified by this act.",
         "HOUSE BILL 171 is amended as follows:",
         "SESSION LAW 2025-14 is repealed.",
@@ -213,3 +212,21 @@ def test_the_recompute_path_agrees_with_the_archiver_for_north_carolina():
         docs, jurisdiction_name="North Carolina", is_bill=True
     )
     assert result["changed"] == []
+
+
+@pytest.mark.parametrize(
+    "near_miss",
+    [
+        # The marker is a whole sentence at the START of a line. Anything else must keep every
+        # line that follows.
+        "SECTION 3. In the General Assembly read three times and ratified this the 9th day",
+        "The General Assembly read three times and ratified this the 9th day",
+        "in the general assembly read three and ratified",
+        "Whereas the General Assembly read three times and ratified",
+    ],
+)
+def test_a_line_that_only_resembles_the_ratification_marker_does_not_truncate(
+    near_miss,
+):
+    text = f"SECTION 1. Real text.\n{near_miss}\nSECTION 2. More real text."
+    assert _clean_nc_text(text) == text
