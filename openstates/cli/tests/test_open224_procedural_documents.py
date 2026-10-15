@@ -105,6 +105,12 @@ class TestProceduralDocumentSkipsDiffAndBaseline:
                 "ocd-jurisdiction/country:us/state:nc/government",
                 "A1: Amendment",
             ),
+            # OPEN-367: Alabama's committee and legislator amendment excerpts.
+            (
+                "Alabama",
+                "ocd-jurisdiction/country:us/state:al/government",
+                "Judiciary 1st Amendment",
+            ),
         ],
     )
     def test_archive_skips_procedural_and_diffs_enrolled_against_introduced(
