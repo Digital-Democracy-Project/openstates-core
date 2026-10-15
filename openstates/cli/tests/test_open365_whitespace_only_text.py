@@ -101,6 +101,36 @@ class TestArchive:
             docs["Chaptered Version"].diff_from_previous_version
         )
 
+    def test_an_already_archived_blank_row_is_not_a_baseline_when_a_later_version_arrives(
+        self,
+    ):
+        """The skip branch: a stored blank row (is_error=False, from before this fix) is skipped on
+        re-archive, and must not become the baseline for the version archived after it."""
+        bill = _three_version_arizona_bill()
+        for note, url, text in (
+            ("Introduced Version", "https://x.test/az/introduced.pdf", FIRST),
+            ("House Engrossed Version", "https://x.test/az/engrossed.pdf", BLANK),
+        ):
+            BillVersionDocument.objects.create(
+                bill=bill,
+                version_note=note,
+                version_date="",
+                source_url=url,
+                media_type="application/pdf",
+                raw_text=text,
+                is_error=False,
+                archive_location="s3://x/" + note,
+            )
+        _archive(bill, {"https://x.test/az/chaptered.pdf": THIRD})
+        docs = {
+            d.version_note: d for d in BillVersionDocument.objects.filter(bill=bill)
+        }
+
+        diff = docs["Chaptered Version"].diff_from_previous_version
+        assert diff is not None
+        assert "-Section 1. A court may consider the award." in diff
+        assert "+Section 1. A court shall consider the award and costs." in diff
+
 
 def test_recompute_treats_an_already_stored_blank_row_as_no_text():
     """The 131 stored Arizona rows have is_error=False. A recompute must not need them flipped
