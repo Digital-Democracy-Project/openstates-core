@@ -83,15 +83,6 @@ FIXTURES = {
         "  5  Be it enacted by the General Assembly of Virginia that a court shall\n"
         "  6  consider the tax consequences of an award of spousal support.              SJ58\n",
     ),
-    "Arizona": (
-        "ocd-jurisdiction/country:us/state:az/government",
-        "Be it enacted by the Legislature of the State of\nArizona:\n"
-        "Section 1.  A court may consider the tax\nconsequences of an award.\n"
-        "Sec. 2.  This act is effective from and after\nDecember 31, 2025.\n",
-        "Be it enacted by the Legislature of the State of\nArizona:\n"
-        "Section 1.  A court shall consider the tax\nconsequences of an award.\n"
-        "Sec. 2.  This act is effective from and after\nDecember 31, 2025.\n",
-    ),
     # OPEN-372: an Introduced with a SYNOPSIS block and a tracking code, against an Engrossed that
     # has neither but ends with the legislative-history block.
     "Alabama": (
@@ -103,6 +94,15 @@ FIXTURES = {
         "Section 1. A court shall consider the tax consequences of an award.\n"
         "House of Representatives\nRead for the first time and referred ...05-Feb-26\n"
         "Yeas 93\nNays 0\nJohn Treadwell\nClerk\n",
+    ),
+    "Arizona": (
+        "ocd-jurisdiction/country:us/state:az/government",
+        "Be it enacted by the Legislature of the State of\nArizona:\n"
+        "Section 1.  A court may consider the tax\nconsequences of an award.\n"
+        "Sec. 2.  This act is effective from and after\nDecember 31, 2025.\n",
+        "Be it enacted by the Legislature of the State of\nArizona:\n"
+        "Section 1.  A court shall consider the tax\nconsequences of an award.\n"
+        "Sec. 2.  This act is effective from and after\nDecember 31, 2025.\n",
     ),
     # The control. No cleaner exists, so the two paths agreed even before this fix -- which
     # is exactly why the divergence went unnoticed for two weeks: most traffic is here.

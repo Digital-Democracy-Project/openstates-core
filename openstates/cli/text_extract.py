@@ -1497,7 +1497,7 @@ def apply_prediff_cleaning(
     cur_media_type: str,
 ) -> typing.Tuple[str, str]:
     """The per-jurisdiction text cleaning that runs immediately before
-    `difflib.unified_diff()` -- OPEN-7 (WA), OPEN-9 (VA), OPEN-10 (AZ), OPEN-11 (MI), OPEN-372 (AL).
+    `difflib.unified_diff()` -- OPEN-7 (WA), OPEN-9 (VA), OPEN-10 (AZ), OPEN-11 (MI).
 
     OPEN-219: extracted so that BOTH diff-computing paths run it. It previously lived
     inline in `archive_bill_versions` only, so `recomputed_diffs_for_documents` --
