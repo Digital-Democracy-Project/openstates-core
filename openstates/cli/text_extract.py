@@ -283,6 +283,18 @@ def _cleanup(text: str) -> str:
     return text.replace("\0", "")
 
 
+def _has_text(text: typing.Optional[str]) -> bool:
+    """True if `text` holds anything besides whitespace.
+
+    OPEN-365: an image-only or scanned PDF extracts to whitespace (Arizona has 131 such pages,
+    Michigan 1), and `bool("\n \n")` is True, so it was archived as real text: it took a
+    whole-document diff, became the next version's baseline, and api-v3 offered it to LegBot ahead
+    of the same version's HTML. One predicate for "has usable text", used by every path that
+    decides whether a document is a baseline or a diff subject, so the archive path and the
+    recompute path cannot disagree about it."""
+    return bool(text) and bool(text.strip())
+
+
 # Arizona's drafting software's own literal section-delimiter tokens (see _reflow_paragraphs()'s
 # own docstring, point 1) -- END_STATUTE is always glued to the tail of the preceding sentence
 # with no reliable punctuation of its own, so it's forced onto its own line before the main
@@ -1612,7 +1624,7 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
             # as permanently done, silently, with no path back to a retry, ever.
             if existing and (existing.is_error or existing.archive_location):
                 counters["skipped"] += 1
-                if not existing.is_error and existing.raw_text:
+                if not existing.is_error and _has_text(existing.raw_text):
                     this_version_texts[existing.media_type] = existing.raw_text
                 continue
             # OPEN-263 (review round 1): `existing` here, if present, is a stale row from a
@@ -1626,7 +1638,7 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
             # every early-exit below that skips the create falls back to the stale row's own
             # raw_text, matching what the skip branch above and the concurrent-write recovery
             # branch below both already do.
-            if existing and not existing.is_error and existing.raw_text:
+            if existing and not existing.is_error and _has_text(existing.raw_text):
                 this_version_texts[existing.media_type] = existing.raw_text
 
             metadata: Metadata = {
@@ -1696,7 +1708,7 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
             is_error = True
             try:
                 raw_text = _cleanup(func(data, metadata))
-                is_error = not bool(raw_text)
+                is_error = not _has_text(raw_text)
             except Exception as e:
                 click.secho(f"exception extracting {link.url}: {e}", fg="red")
                 counters["extract_errors"] += 1
@@ -1711,7 +1723,7 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
             if (
                 prior_text is not None
                 and not is_error
-                and raw_text
+                and _has_text(raw_text)
                 and not is_unknown_position
             ):
                 # OPEN-219: shared with recomputed_diffs_for_documents below. Applied to
@@ -1771,7 +1783,7 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                         archived_at=archived_at,
                     )
                 counters["archived"] += 1
-                if not is_error and raw_text:
+                if not is_error and _has_text(raw_text):
                     this_version_texts[link.media_type] = raw_text
             except IntegrityError:
                 # OPEN-107: ask the database which of two very different things just
@@ -1819,7 +1831,7 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
                     # so the NEXT version's document of the same rendering gets a diff
                     # against an older version, or none at all -- a silent lineage gap
                     # caused purely by having lost a race.
-                    if not stored.is_error and stored.raw_text:
+                    if not stored.is_error and _has_text(stored.raw_text):
                         this_version_texts[stored.media_type] = stored.raw_text
                 else:
                     click.secho(
@@ -2322,7 +2334,7 @@ def recomputed_diffs_for_documents(
             if (
                 prior_text is not None
                 and not doc.is_error
-                and doc.raw_text
+                and _has_text(doc.raw_text)
                 and not is_unknown_position
             ):
                 # OPEN-219: the same cleaning archive_bill_versions applies. Both paths are
@@ -2348,7 +2360,7 @@ def recomputed_diffs_for_documents(
                 changed.append((doc, new_diff))
             else:
                 unchanged.append(doc)
-            if not doc.is_error and doc.raw_text:
+            if not doc.is_error and _has_text(doc.raw_text):
                 group_texts[doc.media_type] = doc.raw_text
         if group_texts and not is_unknown_position:
             prior_by_media.update(group_texts)
@@ -2550,7 +2562,7 @@ def _reextract_document(doc: typing.Any) -> dict[str, typing.Any]:
 
     try:
         new_raw_text = _cleanup(func(data, metadata))
-        new_is_error = not bool(new_raw_text)
+        new_is_error = not _has_text(new_raw_text)
     except Exception as e:
         return {
             "attempted": True,
@@ -2756,8 +2768,8 @@ def refresh_extraction(
             # Never downgrade. This command exists to give documents BETTER text; a document
             # that currently extracts worse than what is stored is a signal to look at, not a
             # row to overwrite.
-            currently_good = bool(doc.raw_text) and not doc.is_error
-            now_worse = new_is_error or not new_raw_text
+            currently_good = _has_text(doc.raw_text) and not doc.is_error
+            now_worse = new_is_error or not _has_text(new_raw_text)
             if currently_good and now_worse:
                 docs_refused += 1
                 # result["reason"] is None on the non-exception "extracted to empty" path (see
