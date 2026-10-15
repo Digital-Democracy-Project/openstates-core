@@ -431,6 +431,22 @@ _PROCEDURAL_DOCUMENT_NOTES: dict[str, frozenset] = {
 # which currently carry a non-null diff_from_previous_version today -- same prospective-only
 # reasoning as the Virginia/Utah entries above (merging this fix does not retroactively touch
 # them; a separate, explicitly-authorized `recompute-diff-order --commit` for Virginia does).
+# Arizona, OPEN-368: the committee, floor-amendment and strike-everything documents ("HOUSE - Health &
+# Human Services", "SENATE - Bolick flr amend (ref Resolution) adopted", "HOUSE - Commerce - Strike
+# Everything"). Unlike every other entry in this table, the reason is ORDER, not length: they are real
+# amended texts (median 5,400 to 8,700 characters, like the engrossed versions), but note_stage()
+# gives all of them the one key (2, '', 0.5) and Arizona's version_date is blank, so their order in
+# the lineage is whatever order the database returned. Audited 2026-10-15 (OPEN-352 / OPEN-355): 418
+# of 1,907 Arizona changelogs compare two of them, and of the 173 whose documents carry the site's
+# document id (apps.azleg.gov/BillStatus/GetDocumentPdf/<id>, which rises as documents are
+# published; a proxy for time, not a verified date) 79 run backward. A wrong-direction diff is worse
+# than a missing one (OPEN-34), so they are kept out of the lineage: no diff, and not a baseline, so
+# the engrossed and chaptered versions diff against each other. Cost, stated plainly: 1,729
+# documents (all currently carrying a diff) lose theirs. The pattern matches 315 of Arizona's 330
+# distinct notes and none of "Introduced Version", "House/Senate Engrossed Version" (with or without
+# a date), "Conference Committee", "Conference Engrossed Version", "Chaptered Version" or
+# "Transmitted to Secretary of State". If the ids are later shown to be chronological, ordering by
+# them would restore these diffs (a ticket of its own: it needs the link URL in the sort key).
 _PROCEDURAL_DOCUMENT_NOTE_PATTERNS: dict[str, "re.Pattern"] = {
     "Utah": re.compile(
         r"\A("
@@ -441,6 +457,7 @@ _PROCEDURAL_DOCUMENT_NOTE_PATTERNS: dict[str, "re.Pattern"] = {
         re.IGNORECASE,
     ),
     "Virginia": re.compile(r"\A.+\bamendments?\Z", re.IGNORECASE),
+    "Arizona": re.compile(r"\A(house|senate) - ", re.IGNORECASE),
 }
 
 

@@ -262,6 +262,48 @@ def test_is_procedural_document_virginia_committee_amendment_does_not_exclude_re
     assert is_procedural_document("Virginia", note) is False
 
 
+# --- OPEN-368: Arizona's "HOUSE - ..." / "SENATE - ..." action versions (excluded for ORDER) ----
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        # Real notes: committee action, floor amendment, strike-everything, one of each shape.
+        "HOUSE - Health & Human Services",
+        "SENATE - Appropriations, Transportation and Technology",
+        "HOUSE - Commerce - Strike Everything",
+        "HOUSE - Floor Amend to Bill - Bliss - passed",
+        "SENATE - Bolick flr amend (ref Resolution) adopted",
+        "HOUSE - SUB Floor Amend to TI - Biasiucci - passed",
+        "house - education",  # case-insensitive
+    ],
+)
+def test_is_procedural_document_arizona_action_versions(note):
+    assert is_procedural_document("Arizona", note) is True
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        "Introduced Version",
+        "House Engrossed Version",
+        "Senate Engrossed Version",
+        "Senate Engrossed Version (02/23/2026)",
+        "Conference Engrossed Version",
+        "Conference Committee",
+        "Chaptered Version",
+        "Transmitted to Secretary of State",
+    ],
+)
+def test_is_procedural_document_arizona_keeps_the_real_stages(note):
+    assert is_procedural_document("Arizona", note) is False
+
+
+def test_is_procedural_document_arizona_entry_is_arizona_only():
+    assert is_procedural_document("Michigan", "HOUSE - Education") is False
+    assert is_procedural_document("Utah", "SENATE - Judiciary") is False
+
+
 # --- OPEN-361: Utah's stamped "Amended <M/D/YYYY H:MM:N>" is ranked by date and hour ----------
 
 
