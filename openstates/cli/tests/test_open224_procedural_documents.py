@@ -317,3 +317,32 @@ def test_north_carolina_editions_and_ratified_form_a_diff_chain():
     assert "-Section 1. A court shall consider the award." in (
         docs["Ratified"].diff_from_previous_version
     )
+
+
+@pytest.mark.django_db
+def test_a_washington_resolution_with_a_substitute_gets_a_diff():
+    """OPEN-373: "Resolution" had no stage, so "Substitute Resolution" was first in the lineage
+    and took no diff. Now the substitute diffs against the introduced resolution."""
+    urls = {
+        "Resolution": "https://x.test/wa/res.pdf",
+        "Substitute Resolution": "https://x.test/wa/sub.pdf",
+    }
+    texts = {
+        urls["Resolution"]: "A resolution honoring the volunteers of the county fair.\n",
+        urls["Substitute Resolution"]: "A resolution honoring the volunteers and staff of the county fair.\n",
+    }
+    bill = _make_bill(
+        jid="ocd-jurisdiction/country:us/state:wa/government",
+        jurisdiction_name="Washington",
+    )
+    bill.classification = ["resolution"]
+    bill.save()
+    for note in ("Substitute Resolution", "Resolution"):  # out of row order on purpose
+        bill.versions.create(note=note, date="").links.create(
+            url=urls[note], media_type="application/pdf"
+        )
+    _archive(bill, texts)
+    docs = {d.version_note: d for d in BillVersionDocument.objects.filter(bill=bill)}
+    assert docs["Resolution"].diff_from_previous_version is None
+    assert docs["Substitute Resolution"].diff_from_previous_version
+    assert "volunteers and staff" in docs["Substitute Resolution"].diff_from_previous_version
