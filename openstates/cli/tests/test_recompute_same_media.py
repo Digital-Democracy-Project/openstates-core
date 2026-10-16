@@ -14,6 +14,7 @@ class FakeDoc:
     def __init__(self, note, media_type, raw_text, diff=None, is_error=False):
         self.version_note = note
         self.version_date = ""
+        self.source_url = ""
         self.media_type = media_type
         self.raw_text = raw_text
         self.diff_from_previous_version = diff

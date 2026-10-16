@@ -1727,7 +1727,10 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
     prior_by_media: dict[str, str] = {}
 
     ordered_versions = sorted(
-        bill.versions.all(), key=lambda v: _version_sort_key(v.note, v.date)
+        bill.versions.all(),
+        key=lambda v: _version_sort_key(
+            v.note, v.date, [ln.url for ln in v.links.all()]
+        ),
     )
     for version in ordered_versions:
         # OPEN-224: a short procedural document (e.g. Virginia's "Governor's Recommendation",
@@ -2439,7 +2442,10 @@ def recomputed_diffs_for_documents(
     for doc in docs:
         groups.setdefault((doc.version_note, doc.version_date), []).append(doc)
 
-    ordered_keys = sorted(groups.keys(), key=lambda k: _version_sort_key(k[0], k[1]))
+    ordered_keys = sorted(
+        groups.keys(),
+        key=lambda k: _version_sort_key(k[0], k[1], [d.source_url for d in groups[k]]),
+    )
 
     unchanged = []
     changed = []
@@ -2867,13 +2873,14 @@ def refresh_extraction(
         attributes, which is why it was split out from its database-querying caller."""
 
         __slots__ = (
-            "version_note", "version_date", "media_type",
+            "version_note", "version_date", "source_url", "media_type",
             "raw_text", "is_error", "diff_from_previous_version",
         )
 
         def __init__(self, doc, raw_text, is_error):
             self.version_note = doc.version_note
             self.version_date = doc.version_date
+            self.source_url = doc.source_url
             self.media_type = doc.media_type
             self.raw_text = raw_text
             self.is_error = is_error

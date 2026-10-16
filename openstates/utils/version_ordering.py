@@ -264,13 +264,41 @@ def note_stage(note: str) -> tuple:
     return (STAGE_UNKNOWN, 0.0)
 
 
-def version_sort_key(note: str, date: typing.Optional[str]) -> tuple:
+# OPEN-368: Arizona's committee / floor-action documents ("HOUSE - <committee>", "SENATE - <name>
+# flr amend ...") all share one note_stage() rank and have no date, so nothing in the note or date
+# orders them. Their links do carry the site's own document number
+# (apps.azleg.gov/BillStatus/GetDocumentPdf/<id>), which rises as documents are published. A
+# 30-bill spot check against azleg.gov's committee and floor dates found 0 contradictions (ties
+# inside one hearing or one same-day floor session are no worse than before), so it is the
+# tiebreaker.
+_AZ_DOCUMENT_NUMBER_RE = re.compile(
+    r"\Ahttps?://apps\.azleg\.gov/BillStatus/GetDocumentPdf/(\d+)", re.IGNORECASE
+)
+
+
+def document_number(urls: typing.Iterable[typing.Optional[str]]) -> int:
+    """The Arizona site's document number from any of a version's link URLs (the smallest, if
+    several carry one), or 0 when none does -- which is every other jurisdiction, and Arizona's
+    own versions that have a distinct stage rank anyway."""
+    numbers = [
+        int(m.group(1))
+        for m in (_AZ_DOCUMENT_NUMBER_RE.match(u or "") for u in urls)
+        if m
+    ]
+    return min(numbers) if numbers else 0
+
+
+def version_sort_key(
+    note: str,
+    date: typing.Optional[str],
+    urls: typing.Iterable[typing.Optional[str]] = (),
+) -> tuple:
     """
     Rank a single version (by its note + date) for chronological ordering, without ever
     trusting the order it was returned from the DB in. See this module's own docstring for
     the audit this encodes.
 
-    Returns (stage, date-or-empty, ordinal). The macro stage always comes from the note (see
+    Returns (stage, date-or-empty, ordinal, document-number). The macro stage always comes from the note (see
     note_stage()) -- a real, parseable date is used only as a same-stage tiebreaker, not as
     an override of the note-based stage. This matters for jurisdictions that could have a mix
     of dated and undated versions on the same bill (US federal is ~99.4% dated, not 100%):
@@ -281,13 +309,16 @@ def version_sort_key(note: str, date: typing.Optional[str]) -> tuple:
     (e.g. "Reported to Senate" vs. "Engrossed in Senate") more precisely than the ordinal
     heuristic alone would.
 
+    `urls` (the version's link URLs) adds a last element that only matters between versions that
+    tie on everything above: Arizona's document number (OPEN-368), 0 for everything else.
+
     A note matching none of the known patterns returns stage STAGE_UNKNOWN -- the caller
     excludes those versions from the diff lineage entirely rather than guessing a position for
     them.
     """
     stage, ordinal = note_stage(note)
     has_date = bool(date) and bool(_DATE_RE.match(date))
-    return (stage, date if has_date else "", ordinal)
+    return (stage, date if has_date else "", ordinal, document_number(urls))
 
 
 # OPEN-224: some jurisdictions attach short procedural documents (a governor's specific
