@@ -249,7 +249,7 @@ class TestProceduralDocumentBothDiffPathsAgree:
         docs = list(BillVersionDocument.objects.filter(bill=bill).order_by("id"))
 
         result = recomputed_diffs_for_documents(
-            docs, jurisdiction_name=jurisdiction_name, is_bill=True
+            docs, jurisdiction_name=jurisdiction_name, is_bill=True, bill_identifier="HB 1"
         )
 
         assert result["changed"] == [], (

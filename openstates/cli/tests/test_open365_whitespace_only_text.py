@@ -143,7 +143,7 @@ def test_recompute_treats_an_already_stored_blank_row_as_no_text():
         FakeDoc("Chaptered Version", "application/pdf", THIRD, diff="-blank\n+all"),
     ]
     result = recomputed_diffs_for_documents(
-        docs, jurisdiction_name="Arizona", is_bill=True
+        docs, jurisdiction_name="Arizona", is_bill=True, bill_identifier="HB 1"
     )
     changed = {d.version_note: new for d, new in result["changed"]}
 
@@ -166,6 +166,6 @@ def test_archive_and_recompute_agree_on_a_blank_document():
     )
     stored = list(BillVersionDocument.objects.filter(bill=bill))
     result = recomputed_diffs_for_documents(
-        stored, jurisdiction_name="Arizona", is_bill=True
+        stored, jurisdiction_name="Arizona", is_bill=True, bill_identifier="HB 1"
     )
     assert result["changed"] == []

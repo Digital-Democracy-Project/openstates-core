@@ -184,7 +184,7 @@ def test_both_diff_paths_agree(jurisdiction):
     docs = list(BillVersionDocument.objects.filter(bill=bill).order_by("id"))
 
     result = recomputed_diffs_for_documents(
-        docs, jurisdiction_name=jurisdiction, is_bill=True
+        docs, jurisdiction_name=jurisdiction, is_bill=True, bill_identifier="HB 1"
     )
 
     assert result["changed"] == [], (
@@ -367,7 +367,7 @@ def test_error_and_empty_documents_never_reach_the_cleaner():
         side_effect=lambda p, r, **kw: (seen.append((p, r)), real(p, r, **kw))[1],
     ):
         te.recomputed_diffs_for_documents(
-            docs, jurisdiction_name="Washington", is_bill=True
+            docs, jurisdiction_name="Washington", is_bill=True, bill_identifier="HB 1"
         )
 
     assert seen == [], f"cleaner was called with {seen!r} despite an error/empty row"

@@ -111,7 +111,9 @@ def test_recompute_agrees_with_archive_for_arizona_action_documents():
     _archive(bill, TEXTS)
     docs = list(BillVersionDocument.objects.filter(bill=bill).order_by("id"))
 
-    result = recomputed_diffs_for_documents(docs, jurisdiction_name="Arizona", is_bill=True)
+    result = recomputed_diffs_for_documents(
+        docs, jurisdiction_name="Arizona", is_bill=True, bill_identifier="HB 1"
+    )
 
     assert result["changed"] == []
     assert len(result["unchanged"]) == len(docs)

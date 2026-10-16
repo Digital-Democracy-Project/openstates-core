@@ -43,6 +43,7 @@ from ..utils.version_ordering import (
     STAGE_UNKNOWN as _STAGE_UNKNOWN,
     is_procedural_document as _is_procedural_document,
     note_stage as _note_stage,
+    origin_chamber as _origin_chamber,
     version_sort_key as _version_sort_key,
 )
 from openstates.exceptions import ScrapeError
@@ -1729,7 +1730,10 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
     ordered_versions = sorted(
         bill.versions.all(),
         key=lambda v: _version_sort_key(
-            v.note, v.date, [ln.url for ln in v.links.all()]
+            v.note,
+            v.date,
+            [ln.url for ln in v.links.all()],
+            _origin_chamber(bill.identifier),
         ),
     )
     for version in ordered_versions:
@@ -2414,6 +2418,7 @@ def recompute_bill_diff_order(bill: typing.Any) -> dict[str, list]:
         docs,
         jurisdiction_name=bill.legislative_session.jurisdiction.name,
         is_bill=bill.classification == ["bill"],
+        bill_identifier=bill.identifier,
     )
 
 
@@ -2422,6 +2427,7 @@ def recomputed_diffs_for_documents(
     *,
     jurisdiction_name: str,
     is_bill: bool,
+    bill_identifier: str,
 ) -> dict[str, list]:
     """The ordering-and-diffing half of `recompute_bill_diff_order`, split out (OPEN-211) so it
     can be exercised without a database -- it reads nothing but plain attributes off each
@@ -2435,6 +2441,10 @@ def recomputed_diffs_for_documents(
     the divergence survived unnoticed from 2026-08-14 to 2026-08-29. Making the caller state
     the jurisdiction means it cannot be skipped by omission.
 
+    OPEN-382: `bill_identifier` is required for the same reason -- Arizona's Engrossed Versions are
+    placed by the bill's origin chamber, so a caller that left it out would order Arizona
+    differently from `archive_bill_versions`.
+
     They are parameters rather than values read off a model because this function's whole
     contract is that it touches only plain attributes: that is what lets it be tested with no
     database, and what lets `refresh-extraction` simulate a dry run with stand-in objects."""
@@ -2442,9 +2452,12 @@ def recomputed_diffs_for_documents(
     for doc in docs:
         groups.setdefault((doc.version_note, doc.version_date), []).append(doc)
 
+    origin = _origin_chamber(bill_identifier)
     ordered_keys = sorted(
         groups.keys(),
-        key=lambda k: _version_sort_key(k[0], k[1], [d.source_url for d in groups[k]]),
+        key=lambda k: _version_sort_key(
+            k[0], k[1], [d.source_url for d in groups[k]], origin
+        ),
     )
 
     unchanged = []
@@ -2943,6 +2956,7 @@ def refresh_extraction(
                     proposed,
                     jurisdiction_name=bill.legislative_session.jurisdiction.name,
                     is_bill=bill.classification == ["bill"],
+                    bill_identifier=bill.identifier,
                 )["changed"]
             )
             continue
