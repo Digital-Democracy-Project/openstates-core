@@ -115,3 +115,14 @@ def test_recompute_agrees_with_archive_for_arizona_action_documents():
 
     assert result["changed"] == []
     assert len(result["unchanged"]) == len(docs)
+
+
+def test_a_tied_version_without_a_number_sorts_before_numbered_ones():
+    """Pinned, not relied on: the replica has no such pair (all 1,732 HOUSE-/SENATE- link rows
+    carry a number), but if one appears it sorts first among the tie, ahead of every numbered
+    version, and several unnumbered ones keep the order they came in (sorted() is stable)."""
+    numbered = version_sort_key("HOUSE - Education", "", [_az(537487)])
+    unnumbered = version_sort_key("HOUSE - Appropriations", "", ["https://x.test/a.pdf"])
+    assert unnumbered < numbered
+    notes = ["HOUSE - B", "HOUSE - A"]
+    assert sorted(notes, key=lambda n: version_sort_key(n, "", [])) == notes
