@@ -486,6 +486,13 @@ _PROCEDURAL_DOCUMENT_NOTES: dict[str, frozenset] = {
 # of them ends in "Amendment" or "Amendment Offered", so the end anchor keeps them out. Same
 # prospective-only reasoning as the entries above: a recompute for Alabama is a separate,
 # explicitly authorised step.
+# OPEN-379: Arizona publishes a document for every floor amendment offered, including ones the
+# chamber rejected ("SENATE - Ortiz flr amend (ref Bill) failed"). A failed amendment never became
+# part of the bill, so it is not a version of it (Ramon, 2026-10-15). Read on the production
+# replica (2026-10-16): 332 distinct Arizona notes, exactly 11 contain "fail" and all 11 have this
+# shape (16 versions); none of the adopted/passed notes, the engrossed or chaptered versions does.
+# Prospective only: an Arizona recompute-diff-order applies it to stored diffs (OPEN-381). The
+# document stays archived with its raw_text; only its diff, and its place as a baseline, go.
 _PROCEDURAL_DOCUMENT_NOTE_PATTERNS: dict[str, "re.Pattern"] = {
     "Utah": re.compile(
         r"\A("
@@ -498,6 +505,7 @@ _PROCEDURAL_DOCUMENT_NOTE_PATTERNS: dict[str, "re.Pattern"] = {
     "Virginia": re.compile(r"\A.+\bamendments?\Z", re.IGNORECASE),
     "North Carolina": re.compile(r"\AA([1-9]\d*)?: Amendment\Z", re.IGNORECASE),
     "Alabama": re.compile(r"\A.+\bamendment( offered)?\Z", re.IGNORECASE),
+    "Arizona": re.compile(r"\A(house|senate) - .+\bfailed\Z", re.IGNORECASE),
 }
 
 
