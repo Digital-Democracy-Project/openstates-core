@@ -583,3 +583,58 @@ def test_utah_stamped_amended_ranks_after_substitutes_even_at_the_epoch():
     assert version_sort_key("Substitute #9", "") < version_sort_key(
         "Amended 1/1/2000 0:02:1", ""
     )
+
+
+# --- OPEN-379: Arizona's failed floor amendments -------------------------------------------
+
+_AZ_FAILED_NOTES = [
+    # All 11 distinct Arizona notes containing "fail" on the production replica (2026-10-16).
+    "SENATE - Ortiz flr amend (ref Resolution) failed",
+    "SENATE - Sundareshan flr amend (ref Bill) failed",
+    "SENATE - Ortiz flr amend (ref Bill) failed",
+    "SENATE - Epstein flr amend (ref Bill) failed",
+    "SENATE - Hoffman flr  amend (ref ATT) failed",
+    "SENATE - Miranda flr amend (ref RAGE) failed",
+    "SENATE - Miranda flr amend (ref Bill) failed",
+    "SENATE - Kavanagh flr amend (ref RAGE) failed",
+    "SENATE - Sundareshan flr amend (ref FIN) failed",
+    "SENATE - Diaz flr amend (ref Bill) failed",
+    "SENATE - Sears flr amend (ref Bill) failed",
+]
+
+
+@pytest.mark.parametrize("note", _AZ_FAILED_NOTES)
+def test_is_procedural_document_arizona_failed_amendments(note):
+    assert is_procedural_document("Arizona", note) is True
+    assert is_procedural_document("Arizona", note.upper()) is True
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        "SENATE - Shamp flr amend (ref Bill) adopted",
+        "HOUSE - Floor Amend to Engrossed Bill - Nguyen - passed",
+        "HOUSE - Appropriations",
+        "SENATE - Judiciary and Elections",
+        "SENATE - ",
+        "SENATE -",
+        "Introduced Version",
+        "House Engrossed Version",
+        "Senate Engrossed Version (02/23/2026)",
+        "Conference Engrossed Version",
+        "Conference Committee",
+        "Chaptered Version",
+        # Only a note that ENDS in "failed" and is a chamber action document.
+        "SENATE - failed amendments study committee",
+        "Failed",
+        "Introduced Version failed",
+    ],
+)
+def test_is_procedural_document_arizona_keeps_everything_else(note):
+    assert is_procedural_document("Arizona", note) is False
+
+
+def test_is_procedural_document_arizona_failed_entry_is_arizona_only():
+    note = "SENATE - Ortiz flr amend (ref Bill) failed"
+    for state in ("Utah", "Virginia", "Alabama", "North Carolina", "Michigan"):
+        assert is_procedural_document(state, note) is False

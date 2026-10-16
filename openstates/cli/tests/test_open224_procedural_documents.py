@@ -111,6 +111,12 @@ class TestProceduralDocumentSkipsDiffAndBaseline:
                 "ocd-jurisdiction/country:us/state:al/government",
                 "Judiciary 1st Amendment",
             ),
+            # OPEN-379: Arizona's failed floor amendments.
+            (
+                "Arizona",
+                "ocd-jurisdiction/country:us/state:az/government",
+                "SENATE - Ortiz flr amend (ref Bill) failed",
+            ),
         ],
     )
     def test_archive_skips_procedural_and_diffs_enrolled_against_introduced(
