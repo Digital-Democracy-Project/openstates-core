@@ -208,7 +208,7 @@ def test_the_recompute_path_agrees_with_the_archiver_for_north_carolina():
     _archive(bill, {urls["Edition 3"]: EDITION, urls["Ratified"]: RATIFIED})
     docs = list(BillVersionDocument.objects.filter(bill=bill).order_by("id"))
     result = recomputed_diffs_for_documents(
-        docs, jurisdiction_name="North Carolina", is_bill=True
+        docs, jurisdiction_name="North Carolina", is_bill=True, bill_identifier="HB 1"
     )
     assert result["changed"] == []
 

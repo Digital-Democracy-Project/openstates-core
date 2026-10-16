@@ -288,10 +288,57 @@ def document_number(urls: typing.Iterable[typing.Optional[str]]) -> int:
     return min(numbers) if numbers else 0
 
 
+# OPEN-382: Arizona's "House/Senate Engrossed Version" notes get a lower ordinal than every
+# "HOUSE - ..." / "SENATE - ..." action document, so the committee texts that come BEFORE a chamber
+# passes the bill sorted after its Engrossed version, and diffs ran backward (1,089 of 1,571
+# pairs compared against the site's own document ids, on 538 of 605 bills with both kinds). The
+# Engrossed notes carry no document number (their links are static files), so they are placed by
+# chamber instead: for a bill that starts in chamber X, X's action documents, X's Engrossed
+# Version, the other chamber's action documents, its Engrossed Version. The origin chamber comes
+# from the bill identifier (HB/HCR/... is House, SB/SCR/... is Senate).
+#
+# One refinement, measured: a floor amendment whose note names the Engrossed bill ("Floor Amend to
+# Engrossed Bill", "flr amend (ref Senate Engrossed House Bill)") amends the already-engrossed
+# text, so it goes AFTER its own chamber's Engrossed Version (58 of 84 such documents come after
+# it by document id, against 14 of 421 other floor amendments). Measured on the 2026 session
+# (azleg.gov's own document ids, 605 bills; ids as the proxy validated in OPEN-368): 1,089 wrong
+# pairs today, 72 with the plain placement, 40 with the refinement. Every committee-type
+# document (476 of 476) precedes its own chamber's Engrossed Version, and every second-chamber
+# document follows the origin chamber's.
+#
+# The ordinals sit below Conference Committee (0.25), which in all 4 bills that have one comes
+# after every action document. Only Arizona uses these note shapes (checked on the replica).
+_AZ_CHAMBER_NOTE_RE = re.compile(r"\A(house|senate) (- |engrossed version)", re.IGNORECASE)
+_AZ_FLOOR_AMEND_RE = re.compile(r"flr\s+amend|floor amend", re.IGNORECASE)
+_AZ_ORIGIN_RE = re.compile(r"\A([HS])[A-Z]*\s*\d", re.IGNORECASE)
+
+
+def origin_chamber(identifier: typing.Optional[str]) -> typing.Optional[str]:
+    """"house" or "senate" from a bill identifier like "HB 2014" or "SCR 1049", else None."""
+    m = _AZ_ORIGIN_RE.match((identifier or "").strip())
+    if not m:
+        return None
+    return "house" if m.group(1).upper() == "H" else "senate"
+
+
+def _az_chamber_ordinal(note: str, origin: str, ordinal: float) -> float:
+    m = _AZ_CHAMBER_NOTE_RE.match(note)
+    if not m:
+        return ordinal
+    base = 0.01 if m.group(1).lower() == origin else 0.03
+    if not m.group(2).startswith("-"):  # an Engrossed Version
+        return base + 0.01
+    rest = note[m.end() :]
+    if _AZ_FLOOR_AMEND_RE.search(rest) and "engrossed" in rest.lower():
+        return base + 0.015
+    return base
+
+
 def version_sort_key(
     note: str,
     date: typing.Optional[str],
     urls: typing.Iterable[typing.Optional[str]] = (),
+    origin: typing.Optional[str] = None,
 ) -> tuple:
     """
     Rank a single version (by its note + date) for chronological ordering, without ever
@@ -311,12 +358,16 @@ def version_sort_key(
 
     `urls` (the version's link URLs) adds a last element that only matters between versions that
     tie on everything above: Arizona's document number (OPEN-368), 0 for everything else.
+    `origin` (origin_chamber() of the bill's identifier) places Arizona's Engrossed Versions
+    among its action documents (OPEN-382); it changes nothing for any other note.
 
     A note matching none of the known patterns returns stage STAGE_UNKNOWN -- the caller
     excludes those versions from the diff lineage entirely rather than guessing a position for
     them.
     """
     stage, ordinal = note_stage(note)
+    if origin:
+        ordinal = _az_chamber_ordinal(note, origin, ordinal)
     has_date = bool(date) and bool(_DATE_RE.match(date))
     return (stage, date if has_date else "", ordinal, document_number(urls))
 

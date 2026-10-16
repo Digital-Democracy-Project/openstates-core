@@ -55,7 +55,7 @@ NO_CLEANER = "Utah"
 
 def _recompute(docs):
     return recomputed_diffs_for_documents(
-        docs, jurisdiction_name=NO_CLEANER, is_bill=True
+        docs, jurisdiction_name=NO_CLEANER, is_bill=True, bill_identifier="HB 1"
     )
 
 
