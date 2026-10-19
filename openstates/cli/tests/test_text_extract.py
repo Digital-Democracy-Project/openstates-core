@@ -3162,7 +3162,7 @@ class TestCleanMassachusettsText:
 
     def test_drops_a_page_footer_tail_line(self):
         # real shape: "of 5" between two unrelated paragraphs of a Massachusetts PDF
-        for marker in ("of 5", "OF 3", "  of 7  "):
+        for marker in ("of 5", "OF 3", "  of 7  ", "of 5\r"):
             text = f"defined in section 1 of chapter 19C.\n{marker}\n\u201cEligible adult\u201d means"
             assert _clean_massachusetts_text(text) == (
                 "defined in section 1 of chapter 19C.\n\u201cEligible adult\u201d means"
