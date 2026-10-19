@@ -2143,6 +2143,15 @@ class TestCleanVirginiaTextPatterns:
         ):
             assert _strip_virginia_boilerplate(text) == text, text
 
+    def test_short_degenerate_pdf_text_is_left_untouched_even_with_a_footer_tail(self):
+        # OPEN-399: the degenerate-extraction guard (_VA_DEGENERATE_LEN) still wins: near-empty
+        # garbage PDFs (Chaptered stage, resolution Enrolled stage) are returned as they came.
+        prior, raw = "of 5\nCHAPTER 2\nof 9", "of 6\nx"
+        assert _clean_virginia_text(prior, raw, "application/pdf", "application/pdf") == (
+            prior,
+            raw,
+        )
+
     def test_a_page_count_change_alone_is_not_a_diff_after_cleaning(self):
         # OPEN-399, HB 979's shape: two versions of the same paragraph that differ only in the page
         # footer's total ("of 12" vs "of 14") must not produce a changed line once cleaned.
