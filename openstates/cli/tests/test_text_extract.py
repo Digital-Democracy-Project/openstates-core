@@ -23,6 +23,8 @@ from openstates.cli.text_extract import (
     _strip_virginia_boilerplate,
     _reflow_virginia_text,
     _clean_wa_text,
+    _clean_massachusetts_text,
+    apply_prediff_cleaning,
     S3_BILL_ARCHIVE_BUCKET,
 )
 # STAGE_INTRODUCED/STAGE_ENACTED moved to openstates.utils.version_ordering (OPEN-91) --
@@ -2121,6 +2123,56 @@ class TestCleanVirginiaTextPatterns:
         assert _strip_virginia_boilerplate("[H 1244]\nReal content.") == "Real content."
         assert _strip_virginia_boilerplate("[H 1]\nReal content.") == "Real content."
 
+    def test_strips_page_footer_tail_line(self):
+        # OPEN-399: the tail of a printed page footer ("Page 3 of 12" -> "of 12"), left as a bare
+        # line mid-paragraph by the PDF extractor (real: HB 979, between "possible bone marrow"
+        # and "donor, if ...").
+        for marker in ("of 12", "OF 3", "  of 7  "):
+            text = f"...a possible bone marrow\n{marker}\ndonor, if the individual is not reimbursed"
+            assert _strip_virginia_boilerplate(text) == (
+                "...a possible bone marrow\ndonor, if the individual is not reimbursed"
+            ), marker
+
+    def test_keeps_text_that_only_looks_like_a_page_footer_tail(self):
+        # Only a whole line of "of" plus one to three digits goes: real text around it stays.
+        for text in (
+            "of the bill",
+            "of 12 months",
+            "total of 12",
+            "Page 4 of 12",
+            "of 1234",
+            "of",
+        ):
+            assert _strip_virginia_boilerplate(text) == text, text
+
+    def test_short_degenerate_pdf_text_is_left_untouched_even_with_a_footer_tail(self):
+        # OPEN-399: the degenerate-extraction guard (_VA_DEGENERATE_LEN) still wins: near-empty
+        # garbage PDFs (Chaptered stage, resolution Enrolled stage) are returned as they came.
+        prior, raw = "of 5\nCHAPTER 2\nof 9", "of 6\nx"
+        assert _clean_virginia_text(prior, raw, "application/pdf", "application/pdf") == (
+            prior,
+            raw,
+        )
+
+    def test_a_page_count_change_alone_is_not_a_diff_after_cleaning(self):
+        # OPEN-399, HB 979's shape: two versions of the same paragraph that differ only in the page
+        # footer's total ("of 12" vs "of 14") must not produce a changed line once cleaned.
+        paragraph = (
+            "6. The amount an individual pays as a fee for a screening to become a possible bone marrow\n"
+            "{marker}\n"
+            "donor, if the individual is not reimbursed for such fee, shall be deductible from Virginia\n"
+            "taxable income in the taxable year in which the fee is paid, subject to the limits of this\n"
+            "section, for individuals who file a return with the Department of Taxation in this Commonwealth.\n"
+        )
+        prior, raw = _clean_virginia_text(
+            paragraph.format(marker="of 12"),
+            paragraph.format(marker="of 14"),
+            "application/pdf",
+            "application/pdf",
+        )
+        assert prior == raw
+        assert "of 12" not in prior and "of 14" not in raw
+
     def test_strips_trailing_inline_watermark_but_keeps_the_real_content(self):
         # real example from the ticket: the watermark is appended to an otherwise-real line
         text = "...where every young person has access to              SJ58"
@@ -3103,3 +3155,70 @@ class TestFetchBytesRealScrapelibRetryInteractionOPEN53:
         # Exactly one re-warm happened (the initial get_cookies() call during do_request
         # plus the invalidate-triggered re-warm) -- not the un-set default cache TTL path.
         assert len(warm_up_calls) == 2
+
+
+class TestCleanMassachusettsText:
+    """OPEN-400: Massachusetts drops the page footer's tail ("of 12") and nothing else."""
+
+    def test_drops_a_page_footer_tail_line(self):
+        # real shape: "of 5" between two unrelated paragraphs of a Massachusetts PDF
+        for marker in ("of 5", "OF 3", "  of 7  ", "of 5\r"):
+            text = f"defined in section 1 of chapter 19C.\n{marker}\n\u201cEligible adult\u201d means"
+            assert _clean_massachusetts_text(text) == (
+                "defined in section 1 of chapter 19C.\n\u201cEligible adult\u201d means"
+            ), marker
+
+    def test_keeps_text_that_only_looks_like_a_page_footer_tail(self):
+        for text in (
+            "of the General Laws",
+            "of 12 months",
+            "total of 12",
+            "Page 4 of 12",
+            "Page 4",
+            "of 1234",
+        ):
+            assert _clean_massachusetts_text(text) == text, text
+
+    def test_every_other_line_is_left_exactly_as_it_was(self):
+        # blank lines, indentation, a trailing newline and "Approved, ..." lines are real text
+        text = (
+            "  SECTION 1.  This act shall take effect upon its passage.\n\n"
+            "\tSECTION 2. Chapter 90 of the General Laws is hereby amended.\n"
+            "Approved, July 3, 2025.\n"
+        )
+        assert _clean_massachusetts_text(text) == text
+
+    def test_is_dispatched_for_massachusetts_only(self):
+        text = "kept\nof 12\nkept too"
+        args = dict(
+            is_bill=True,
+            prior_media_type="application/pdf",
+            cur_media_type="application/pdf",
+        )
+        cleaned, _ = apply_prediff_cleaning(
+            text, text, jurisdiction_name="Massachusetts", **args
+        )
+        assert cleaned == "kept\nkept too"
+        for other in ("Utah", "Florida", "United States", "Michigan"):
+            assert apply_prediff_cleaning(
+                text, text, jurisdiction_name=other, **args
+            ) == (text, text), other
+
+    def test_a_page_count_change_alone_is_not_a_diff_after_cleaning(self):
+        paragraph = (
+            "SECTION 1. The city of Boston, acting by and through its Public Facilities Commission,\n"
+            "may grant a highway easement to the commonwealth\n"
+            "{marker}\n"
+            "for the purposes described in this act.\n"
+        )
+        prior, raw = apply_prediff_cleaning(
+            paragraph.format(marker="of 1"),
+            paragraph.format(marker="of 2"),
+            jurisdiction_name="Massachusetts",
+            is_bill=True,
+            prior_media_type="application/pdf",
+            cur_media_type="application/pdf",
+        )
+        assert prior == raw
+        assert not list(difflib.unified_diff(prior.split("\n"), raw.split("\n"), lineterm=""))
+

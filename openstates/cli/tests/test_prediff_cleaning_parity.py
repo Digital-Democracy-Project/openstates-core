@@ -122,6 +122,19 @@ FIXTURES = {
         "In the General Assembly read three times and ratified this the 1st day of May,\n"
         "      s/ A Person\n",
     ),
+    # OPEN-400: Massachusetts PDFs leave the tail of the page footer ("of 1") as a bare line, which a
+    # different page count turns into a changed line.
+    "Massachusetts": (
+        "ocd-jurisdiction/country:us/state:ma/government",
+        "SECTION 1. The city of Boston may grant a highway easement to the commonwealth\n"
+        "of 1\n"
+        "for the purposes described in this act.\n"
+        "SECTION 2. This act shall take effect upon its passage.\n",
+        "SECTION 1. The city of Boston may grant a highway easement to the commonwealth\n"
+        "of 2\n"
+        "for the purposes described in this act.\n"
+        "SECTION 2. This act shall take effect upon its passage and the city may act.\n",
+    ),
     # The control. No cleaner exists, so the two paths agreed even before this fix -- which
     # is exactly why the divergence went unnoticed for two weeks: most traffic is here.
     "Test": (
@@ -224,7 +237,7 @@ def test_a_jurisdiction_with_no_cleaner_is_untouched():
     """Every jurisdiction without a cleaner must be byte-for-byte unchanged by this ticket
     (AC4). Stated against the shared helper directly, so it holds for any caller."""
     text_a, text_b = "line one\nline two", "line one\nline three"
-    for jurisdiction in ("Test", "United States", "Utah", "Florida", "Massachusetts"):
+    for jurisdiction in ("Test", "United States", "Utah", "Florida"):
         assert apply_prediff_cleaning(
             text_a,
             text_b,
