@@ -870,6 +870,18 @@ def _upload_and_verify_direct(
 # See that module's own docstring for the full OPEN-34 audit this encodes.
 
 
+# OPEN-399: the tail of a printed PDF page footer ("Page 3 of 12" -> the extractor keeps only
+# "of 12") left as a bare line, often in the middle of a paragraph. When two versions have a
+# different page count, difflib shows it as a removed or added line and a reflow-only change
+# reads as a real edit: on HB 979 a stray "-of 12" between "...a possible bone marrow" and
+# "donor, if ..." made the changelog model report a donor-screening fee as removed.
+# Measured 2026-10-19 on the production replica: 2,654 of 11,871 Virginia PDF documents contain
+# one (10,813 lines, a single N per document) and none of 13,669 Virginia HTML documents does.
+# Only this exact shape: "Page N of M" and "Page N" lines were not seen as separate lines, and a
+# broader pattern would only add false-positive risk (real text can wrap onto an "of 17" line, as
+# one Michigan HTML document does, which is why this runs only for the jurisdictions that need it).
+_PAGE_FOOTER_TAIL_RE = re.compile(r"^\s*of\s+\d{1,3}\s*$", re.IGNORECASE)
+
 _VA_LINE_PATTERNS = [
     re.compile(r"^\s*\+\s*$"),  # decorative vertical-rule margin artifact -- indent shifts by
     # document stage but is identical across bills at the same stage; match on content only.
@@ -929,6 +941,8 @@ _VA_LINE_PATTERNS = [
     # Bracketed chamber+number cross-reference tag on its own line, e.g. "[H 1244]" (confirmed
     # real on both Enrolled and Chaptered documents).
     re.compile(r"^\s*\[[A-Z]{1,3}\s*\d+\]\s*$"),
+    # OPEN-399: the page footer's tail, "of 12" (see _PAGE_FOOTER_TAIL_RE above).
+    _PAGE_FOOTER_TAIL_RE,
 ]
 # Deliberately NOT implementing the ticket's originally-proposed `_VA_COMMITTEE_SUBSTITUTE`
 # ("any line containing the word Substitute", meant to strip a supposed committee-name-plus-

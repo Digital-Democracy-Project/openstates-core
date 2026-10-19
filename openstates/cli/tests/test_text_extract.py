@@ -2121,6 +2121,47 @@ class TestCleanVirginiaTextPatterns:
         assert _strip_virginia_boilerplate("[H 1244]\nReal content.") == "Real content."
         assert _strip_virginia_boilerplate("[H 1]\nReal content.") == "Real content."
 
+    def test_strips_page_footer_tail_line(self):
+        # OPEN-399: the tail of a printed page footer ("Page 3 of 12" -> "of 12"), left as a bare
+        # line mid-paragraph by the PDF extractor (real: HB 979, between "possible bone marrow"
+        # and "donor, if ...").
+        for marker in ("of 12", "OF 3", "  of 7  "):
+            text = f"...a possible bone marrow\n{marker}\ndonor, if the individual is not reimbursed"
+            assert _strip_virginia_boilerplate(text) == (
+                "...a possible bone marrow\ndonor, if the individual is not reimbursed"
+            ), marker
+
+    def test_keeps_text_that_only_looks_like_a_page_footer_tail(self):
+        # Only a whole line of "of" plus one to three digits goes: real text around it stays.
+        for text in (
+            "of the bill",
+            "of 12 months",
+            "total of 12",
+            "Page 4 of 12",
+            "of 1234",
+            "of",
+        ):
+            assert _strip_virginia_boilerplate(text) == text, text
+
+    def test_a_page_count_change_alone_is_not_a_diff_after_cleaning(self):
+        # OPEN-399, HB 979's shape: two versions of the same paragraph that differ only in the page
+        # footer's total ("of 12" vs "of 14") must not produce a changed line once cleaned.
+        paragraph = (
+            "6. The amount an individual pays as a fee for a screening to become a possible bone marrow\n"
+            "{marker}\n"
+            "donor, if the individual is not reimbursed for such fee, shall be deductible from Virginia\n"
+            "taxable income in the taxable year in which the fee is paid, subject to the limits of this\n"
+            "section, for individuals who file a return with the Department of Taxation in this Commonwealth.\n"
+        )
+        prior, raw = _clean_virginia_text(
+            paragraph.format(marker="of 12"),
+            paragraph.format(marker="of 14"),
+            "application/pdf",
+            "application/pdf",
+        )
+        assert prior == raw
+        assert "of 12" not in prior and "of 14" not in raw
+
     def test_strips_trailing_inline_watermark_but_keeps_the_real_content(self):
         # real example from the ticket: the watermark is appended to an otherwise-real line
         text = "...where every young person has access to              SJ58"
