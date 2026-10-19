@@ -876,7 +876,8 @@ def _upload_and_verify_direct(
 # reads as a real edit: on HB 979 a stray "-of 12" between "...a possible bone marrow" and
 # "donor, if ..." made the changelog model report a donor-screening fee as removed.
 # Measured 2026-10-19 on the production replica: 2,654 of 11,871 Virginia PDF documents contain
-# one (10,813 lines, a single N per document) and none of 13,669 Virginia HTML documents does.
+# one (10,813 lines, a single N per document, the largest N 159, so one to three digits) and none
+# of 13,669 Virginia HTML documents does.
 # Only this exact shape: "Page N of M" and "Page N" lines were not seen as separate lines, and a
 # broader pattern would only add false-positive risk (real text can wrap onto an "of 17" line, as
 # one Michigan HTML document does, which is why this runs only for the jurisdictions that need it).
