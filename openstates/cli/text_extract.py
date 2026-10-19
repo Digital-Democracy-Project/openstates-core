@@ -1566,6 +1566,26 @@ def _clean_nc_text(text: str) -> str:
     return "\n".join(kept)
 
 
+# OPEN-400: Massachusetts-only text cleaning applied to prior_text/raw_text immediately before
+# difflib.unified_diff() (never touching the stored raw_text, never applied to another
+# jurisdiction). Massachusetts is the heaviest case of the page-footer tail described at
+# _PAGE_FOOTER_TAIL_RE: 9,233 of 10,711 Massachusetts PDF documents contain one (48,688 lines;
+# the first footer is "of 1" in 86% of them) and none of the 297 HTML documents does. It is also
+# in 289 of the 291 stored Massachusetts diffs, 1,814 lines. Characterised before adding any other
+# rule (2026-10-19, every stored Massachusetts diff): the changed lines that recur across diffs are
+# real legal text ("Be it enacted by the Senate and House of Representatives ...", "SECTION N. This
+# act shall take effect upon its passage.", "Approved, <month> <day>, <year>."), not boilerplate, so
+# nothing else is stripped. Only whole lines are dropped; every other line is left exactly as it was, and
+# there is no reflow: since OPEN-217 both diff paths compare like-for-like media types, so a
+# cross-media reflow step (the Virginia and Michigan shape) could never run here.
+def _clean_massachusetts_text(text: str) -> str:
+    """Massachusetts-only cleaner, see the block comment above: drops lines that are only the tail
+    of a page footer ("of 12") and leaves everything else untouched."""
+    return "\n".join(
+        line for line in text.split("\n") if not _PAGE_FOOTER_TAIL_RE.match(line)
+    )
+
+
 def apply_prediff_cleaning(
     prior_text: str,
     raw_text: str,
@@ -1576,7 +1596,7 @@ def apply_prediff_cleaning(
     cur_media_type: str,
 ) -> typing.Tuple[str, str]:
     """The per-jurisdiction text cleaning that runs immediately before
-    `difflib.unified_diff()` -- OPEN-7 (WA), OPEN-9 (VA), OPEN-10 (AZ), OPEN-11 (MI), OPEN-371 (NC).
+    `difflib.unified_diff()` -- OPEN-7 (WA), OPEN-9 (VA), OPEN-10 (AZ), OPEN-11 (MI), OPEN-371 (NC), OPEN-400 (MA).
 
     OPEN-219: extracted so that BOTH diff-computing paths run it. It previously lived
     inline in `archive_bill_versions` only, so `recomputed_diffs_for_documents` --
@@ -1632,6 +1652,9 @@ def apply_prediff_cleaning(
     if jurisdiction_name == "North Carolina":
         prior_text = _clean_nc_text(prior_text)
         raw_text = _clean_nc_text(raw_text)
+    if jurisdiction_name == "Massachusetts":
+        prior_text = _clean_massachusetts_text(prior_text)
+        raw_text = _clean_massachusetts_text(raw_text)
     return prior_text, raw_text
 
 
