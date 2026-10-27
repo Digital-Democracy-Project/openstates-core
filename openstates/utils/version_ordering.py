@@ -577,6 +577,12 @@ _PROCEDURAL_DOCUMENT_NOTES: dict[str, frozenset] = {
 # shape (16 versions); none of the adopted/passed notes, the engrossed or chaptered versions does.
 # Prospective only: an Arizona recompute-diff-order applies it to stored diffs (OPEN-381). The
 # document stays archived with its raw_text; only its diff, and its place as a baseline, go.
+# OPEN-428: the scraper may append " (<document id>)" to a note that repeats inside one bill
+# (upstream openstates-scrapers #5807: the second and later copies, the first stays plain), so the
+# same sponsor's second failed amendment reads "... failed (541432)". The optional group lets that
+# shape through; nothing else changes. On the 2026-10-22 live sample 213 of 1,480 version notes
+# (430 bills) carried the suffix and it moved neither note_stage() nor version_sort_key() for any of
+# them; this pattern was the only end-anchored matcher it broke.
 _PROCEDURAL_DOCUMENT_NOTE_PATTERNS: dict[str, "re.Pattern"] = {
     "Utah": re.compile(
         r"\A("
@@ -589,7 +595,7 @@ _PROCEDURAL_DOCUMENT_NOTE_PATTERNS: dict[str, "re.Pattern"] = {
     "Virginia": re.compile(r"\A.+\bamendments?\Z", re.IGNORECASE),
     "North Carolina": re.compile(r"\AA([1-9]\d*)?: Amendment\Z", re.IGNORECASE),
     "Alabama": re.compile(r"\A.+\bamendment( offered)?\Z", re.IGNORECASE),
-    "Arizona": re.compile(r"\A(house|senate) - .+\bfailed\Z", re.IGNORECASE),
+    "Arizona": re.compile(r"\A(house|senate) - .+\bfailed( \(\d+\))?\Z", re.IGNORECASE),
 }
 
 

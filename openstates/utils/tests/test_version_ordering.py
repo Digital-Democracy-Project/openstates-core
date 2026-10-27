@@ -634,6 +634,63 @@ def test_is_procedural_document_arizona_keeps_everything_else(note):
     assert is_procedural_document("Arizona", note) is False
 
 
+# --- OPEN-428: the " (<document id>)" suffix the scraper may add to a repeated note ----------
+
+
+@pytest.mark.parametrize("note", _AZ_FAILED_NOTES)
+def test_is_procedural_document_arizona_failed_amendment_with_document_id_suffix(note):
+    """Upstream #5807 appends the document id to the second and later copies of a note
+    repeated inside one bill, e.g. a sponsor's second failed amendment of the same text."""
+    assert is_procedural_document("Arizona", note + " (541432)") is True
+    assert is_procedural_document("Arizona", note.upper() + " (541432)") is True
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        "SENATE - Shamp flr amend (ref Bill) adopted (541432)",
+        "HOUSE - Appropriations - Strike Everything (539012)",
+        "SENATE - Appropriations, Transportation and Technology (541432)",
+        "Introduced Version (541432)",
+        "Senate Engrossed Version (02/26/2026) (541432)",
+        "Introduced Version failed (541432)",
+        # the suffix must be a bare number in parentheses, after a space, at the very end
+        "SENATE - Ortiz flr amend (ref Bill) failed (ref 12)",
+        "SENATE - Ortiz flr amend (ref Bill) failed (12) extra",
+        "SENATE - Ortiz flr amend (ref Bill) failed ()",
+        "SENATE - Ortiz flr amend (ref Bill) failed(541432)",
+        "SENATE - Ortiz flr amend (ref Bill) failed (02/26/2026)",
+    ],
+)
+def test_is_procedural_document_arizona_suffix_does_not_widen_the_match(note):
+    assert is_procedural_document("Arizona", note) is False
+
+
+def test_is_procedural_document_arizona_suffix_is_arizona_only():
+    note = "SENATE - Ortiz flr amend (ref Bill) failed (541432)"
+    for state in ("Utah", "Virginia", "Alabama", "North Carolina", "Michigan"):
+        assert is_procedural_document(state, note) is False
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        "Introduced Version",
+        "House Engrossed Version",
+        "Senate Engrossed Version (02/26/2026)",
+        "HOUSE - Appropriations - Strike Everything",
+        "SENATE - Ortiz flr amend (ref Bill) failed",
+        "SENATE - Shamp flr amend (ref Bill) adopted",
+    ],
+)
+def test_document_id_suffix_moves_neither_stage_nor_sort_key(note):
+    """Measured on 213 real suffixed notes (2026-10-22 live sample): the suffix never changed
+    note_stage() or version_sort_key(); pinned here so a later stage rule can't start to."""
+    suffixed = note + " (541432)"
+    assert note_stage(suffixed) == note_stage(note)
+    assert version_sort_key(suffixed, "") == version_sort_key(note, "")
+
+
 def test_is_procedural_document_arizona_failed_entry_is_arizona_only():
     note = "SENATE - Ortiz flr amend (ref Bill) failed"
     for state in ("Utah", "Virginia", "Alabama", "North Carolina", "Michigan"):
