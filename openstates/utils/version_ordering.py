@@ -261,6 +261,29 @@ def note_stage(note: str) -> tuple:
         # accidentally swallow some other jurisdiction's differently-worded note.
         return (STAGE_INTRODUCED, 0.0)
 
+    # OPEN-482: version names of Pennsylvania, Nebraska and Louisiana. After their first full scrapes
+    # (2026-11-02/03) the Stage 3 gate found 6,194 of 6,194 (PA), 1,360 of 3,383 (NE) and 1,070 of
+    # 10,468 (LA) versions with no stage, so they sat outside the diff lineage. This block is LAST on
+    # purpose: it runs only for a note no rule above claims, so no note that has a stage today can
+    # change (checked over every distinct stored note in every jurisdiction on the production
+    # replica, 2026-11-03: only these three states' notes change). Exact shapes, not substrings.
+    #   PA "Printer's No. PN<N>": each printing of a bill. The note does not say which printing is
+    #   the introduced one, so they all rank as amendments ordered by the printer's number: the
+    #   first printing leads the lineage and each later one diffs against the one before it.
+    #   NE "Slip Law" (enacted), "Final Reading" (after "Enrollment and Review"), and the
+    #   amendment documents "<introducer or committee> AM<N>" / "... FA<N>" (floor amendments).
+    #   LA "<bill> Act <N>" and "<bill> Act": the enacted act. "Senate Floor Bureau Note ..." stays
+    #   unknown: it is not bill text.
+    printers_no = re.fullmatch(r"printer's no\. pn(\d+)", lowered)
+    if printers_no:
+        return (STAGE_AMENDMENT, float(printers_no.group(1)))
+    if lowered == "slip law" or re.fullmatch(r"[a-z]+\d+ act( \d+)?", lowered):
+        return (STAGE_ENACTED, 0.0)
+    if lowered == "final reading":
+        return (STAGE_FINAL_PASSAGE, 0.5)
+    if re.fullmatch(r".+ (?:am|fa)\d+(?: .+)?", lowered):
+        return (STAGE_AMENDMENT, extract_ordinal(note))
+
     return (STAGE_UNKNOWN, 0.0)
 
 

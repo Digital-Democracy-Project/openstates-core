@@ -695,3 +695,116 @@ def test_is_procedural_document_arizona_failed_entry_is_arizona_only():
     note = "SENATE - Ortiz flr amend (ref Bill) failed"
     for state in ("Utah", "Virginia", "Alabama", "North Carolina", "Michigan"):
         assert is_procedural_document(state, note) is False
+
+
+# --- OPEN-482: Pennsylvania, Nebraska and Louisiana version names ---
+
+
+@pytest.mark.parametrize(
+    ("note", "expected_stage"),
+    [
+        # Real notes from the production replica (2026-11-03).
+        ("Printer's No. PN1422", STAGE_AMENDMENT),
+        ("Printer's No. PN0130", STAGE_AMENDMENT),
+        ("Slip Law", STAGE_ENACTED),
+        ("Final Reading", STAGE_FINAL_PASSAGE),
+        ("von Gillern AM1020", STAGE_AMENDMENT),
+        ("McKinney FA134", STAGE_AMENDMENT),
+        ("Spivey AM1738 Spivey FA924", STAGE_AMENDMENT),
+        ("Government, Military and Veterans Affairs AM1008 Conrad AM1147", STAGE_AMENDMENT),
+        ("HB519 Act 303", STAGE_ENACTED),
+        ("SB40 Act", STAGE_ENACTED),
+        ("SCR65 Act 12", STAGE_ENACTED),
+    ],
+)
+def test_note_stage_pennsylvania_nebraska_louisiana_vocabulary(note, expected_stage):
+    assert note_stage(note)[0] == expected_stage
+
+
+def test_pennsylvania_printings_order_by_printers_number_not_alphabetically():
+    # PN9 before PN10 and PN130: numeric, so the lineage is the real order of the printings.
+    notes = ["Printer's No. PN9", "Printer's No. PN10", "Printer's No. PN130"]
+    keys = [version_sort_key(n, "") for n in notes]
+    assert keys == sorted(keys)
+    assert len(set(keys)) == len(keys)
+
+
+def test_nebraska_versions_order_introduced_amendments_final_reading_slip_law():
+    in_true_order = [
+        "Introduced",
+        "von Gillern AM1020",
+        "Enrollment and Review ER68",
+        "Final Reading",
+        "Slip Law",
+    ]
+    keys = [version_sort_key(n, "") for n in in_true_order]
+    assert keys == sorted(keys)
+    assert len(set(keys)) == len(keys)
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        # Close shapes, or notes of these states that are not bill text: they stay unknown.
+        "Printer's No.",
+        "Printer's No. PN",
+        "Printer's No. PN12 Revised",
+        "Slip Law Copy",
+        "Final Reading Draft",
+        "AM1020",  # no introducer or committee name: not the observed shape
+        "Senate Floor Bureau Note, #3797, Miller, G., Adopted",  # LA: not bill text
+        "HB519 Acts",
+        "Act 303",
+    ],
+)
+def test_note_stage_pennsylvania_nebraska_louisiana_rules_do_not_widen(note):
+    assert note_stage(note)[0] == STAGE_UNKNOWN
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        # Notes that already have a stage keep it: the new rules run last and only see notes no
+        # earlier rule claims (so a state with a real rule is never pulled into these).
+        "Introduced",
+        "Enrolled",
+        "Edition 2",
+        "SL 2025-14",
+        "Substitute (S-1)",
+        "House Committee Amendment, #3001, CL&P, Draft",
+        "Enrollment and Review ER68",
+    ],
+)
+def test_pennsylvania_nebraska_louisiana_rules_leave_existing_stages_alone(note):
+    assert note_stage(note)[0] != STAGE_UNKNOWN
+    assert note_stage(note) == _stage_before_open_482(note)
+
+
+def _stage_before_open_482(note):
+    # The classification these notes had before the OPEN-482 block, restated per note so the
+    # test fails if the block ever claims one of them.
+    return {
+        "Introduced": (STAGE_INTRODUCED, 0.0),
+        "Enrolled": (STAGE_FINAL_PASSAGE, 0.0),
+        "Edition 2": (STAGE_AMENDMENT, 2.0),
+        "SL 2025-14": (STAGE_ENACTED, 0.0),
+        "Substitute (S-1)": (STAGE_AMENDMENT, 1.0),
+        "House Committee Amendment, #3001, CL&P, Draft": (STAGE_AMENDMENT, 3001.0),
+        "Enrollment and Review ER68": (STAGE_FINAL_PASSAGE, 0.0),
+    }[note]
+
+
+def test_note_stage_nebraska_amendment_ordinal_is_the_last_amendment_number():
+    # Exact tuples, so an ordering test cannot pass on the wrong extracted number. Real Nebraska
+    # notes list every amendment in the document; the last number is the one that ranks it.
+    assert note_stage("von Gillern AM1020") == (STAGE_AMENDMENT, 1020.0)
+    assert note_stage("McKinney FA134") == (STAGE_AMENDMENT, 134.0)
+    assert note_stage("Spivey AM1738 Spivey FA924") == (STAGE_AMENDMENT, 924.0)
+    assert note_stage("Executive Board AM2028 Conrad AM2266 Conrad AM2267") == (
+        STAGE_AMENDMENT,
+        2267.0,
+    )
+    assert note_stage("Printer's No. PN0130") == (STAGE_AMENDMENT, 130.0)
+    assert note_stage("Slip Law") == (STAGE_ENACTED, 0.0)
+    assert note_stage("HB519 Act 303") == (STAGE_ENACTED, 0.0)
+    assert note_stage("Final Reading") == (STAGE_FINAL_PASSAGE, 0.5)
