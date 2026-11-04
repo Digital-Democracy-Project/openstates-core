@@ -1601,6 +1601,55 @@ def _clean_massachusetts_text(text: str) -> str:
     )
 
 
+# OPEN-486: Nebraska-only text cleaning applied to prior_text/raw_text immediately before
+# difflib.unified_diff() (never touching the stored raw_text, never applied to another
+# jurisdiction). Measured 2026-11-04 on the production replica (OPEN-479 Stage 4 trial, 3,382
+# documents): the "Slip Law" printing is typeset differently from "Introduced" and "Final Reading":
+# a running header on every page ("LB1237                LB1237", the year line "2026  2026"), the
+# "LEGISLATIVE BILL 1237" title, a "Became law ..." or "Approved by the Governor ..." line, the
+# "Introduced by ..." sponsor line, page numbers ("-4-") and a form feed after each page, and every
+# line wrapped at a different width. The Introduced and Final Reading printings carry a bare year
+# line "2026" on every page. A raw line diff therefore reported the whole document as changed: 360
+# of 365 Final Reading -> Slip Law pairs and 359 of 365 Introduced -> Slip Law pairs were 90% or
+# more changed.
+#
+# What it does: drop each whole line that is one of those header shapes, then put one sentence on
+# each line (split after a period, semicolon or colon). A fixed-width re-wrap was tried and
+# rejected (168 pairs got worse); splitting at sentences does not depend on where a printing wraps.
+# Result over every real pair (changed-lines share, median; whole-document = 90% or more):
+#   Final Reading -> Slip Law   365 pairs  0.97 -> 0.01   whole-document 360 -> 2   worse 0
+#   Introduced -> Slip Law      365 pairs  0.97 -> 0.16   whole-document 359 -> 17  worse 0
+#   Introduced -> Final Reading 380 pairs  0.20 -> 0.11   whole-document  31 -> 17  worse 10 (slightly)
+# "Worse" is a pair whose changed-lines share rose by more than 0.05; the ten are named in the
+# OPEN-486 pull request. A line is dropped only if the WHOLE line is one of the shapes.
+_NE_HEADER_LINE_RES = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"([A-Z]{1,3}\d+[A-Z]?)\s+\1",  # running "LB1237      LB1237", "LB380A  LB380A"
+        r"\d{4}(?:\s+\d{4})?",  # the year line, alone or doubled
+        r"LEGISLATIVE BILL \d+[A-Z]?",
+        r"Became law\b.*",
+        r"Approved by the Governor\b.*",
+        r"Introduced by\b.*",
+        r"-\d+-",  # Slip Law page number
+    )
+)
+_NE_SENTENCE_BREAK = re.compile(r"(?<=[.;:])\s+")
+
+
+def _clean_ne_text(text: str) -> str:
+    """Nebraska-only cleaner, see the block comment above: header lines dropped, then one
+    sentence per line."""
+    kept = []
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line or any(p.fullmatch(line) for p in _NE_HEADER_LINE_RES):
+            continue
+        kept.append(line)
+    words = " ".join(" ".join(kept).split())
+    return "\n".join(part for part in _NE_SENTENCE_BREAK.split(words) if part)
+
+
 def apply_prediff_cleaning(
     prior_text: str,
     raw_text: str,
@@ -1611,7 +1660,7 @@ def apply_prediff_cleaning(
     cur_media_type: str,
 ) -> typing.Tuple[str, str]:
     """The per-jurisdiction text cleaning that runs immediately before
-    `difflib.unified_diff()` -- OPEN-7 (WA), OPEN-9 (VA), OPEN-10 (AZ), OPEN-11 (MI), OPEN-371 (NC), OPEN-400 (MA).
+    `difflib.unified_diff()` -- OPEN-7 (WA), OPEN-9 (VA), OPEN-10 (AZ), OPEN-11 (MI), OPEN-371 (NC), OPEN-400 (MA), OPEN-486 (NE).
 
     OPEN-219: extracted so that BOTH diff-computing paths run it. It previously lived
     inline in `archive_bill_versions` only, so `recomputed_diffs_for_documents` --
@@ -1670,6 +1719,9 @@ def apply_prediff_cleaning(
     if jurisdiction_name == "Massachusetts":
         prior_text = _clean_massachusetts_text(prior_text)
         raw_text = _clean_massachusetts_text(raw_text)
+    if jurisdiction_name == "Nebraska":
+        prior_text = _clean_ne_text(prior_text)
+        raw_text = _clean_ne_text(raw_text)
     return prior_text, raw_text
 
 
