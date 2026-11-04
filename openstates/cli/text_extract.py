@@ -562,6 +562,10 @@ def update_bill(bill: typing.Any) -> int:
     return sb.id
 
 
+# OPEN-487: kept below the common 255-byte file-name limit with room to spare.
+_MAX_ARCHIVE_FILE_NAME_BYTES = 200
+
+
 def _archive_path(
     bill: typing.Any, version_note: str, version_date: str, url: str, ext: str
 ) -> str:
@@ -600,6 +604,17 @@ def _archive_path(
     # version_date is often blank in real scraped data (confirmed against live VA bills) —
     # omit it rather than leaving a stray leading separator in the filename.
     date_part = f"{version_date}-" if version_date else ""
+    # OPEN-487: filesystems cap a file name at 255 bytes, and safe_note is unbounded (Nebraska's
+    # AM2748 amendment note is long enough to blow it: "[Errno 36] File name too long", the
+    # document fetched and then silently not saved). Only the readable note is trimmed, and only
+    # when the whole name would exceed the budget, so every name that fit before is unchanged.
+    # Identity never rested on the note: the url hash (full, untrimmed url) is still in the name.
+    # safe_note is ASCII by construction (the regex above keeps only A-Za-z0-9_-), so its
+    # characters == bytes; version_date comes from the scraper, so the fixed part is measured
+    # in encoded bytes.
+    fixed = len(date_part.encode("utf-8")) + len(f"-{url_hash}.{ext}")
+    if fixed + len(safe_note) > _MAX_ARCHIVE_FILE_NAME_BYTES:
+        safe_note = safe_note[: _MAX_ARCHIVE_FILE_NAME_BYTES - fixed].rstrip("_-") or "version"
     filename = f"{date_part}{safe_note}-{url_hash}.{ext}"
     return os.path.join(
         settings.ARCHIVE_ROOT_DIR,
@@ -1658,7 +1673,9 @@ def apply_prediff_cleaning(
     return prior_text, raw_text
 
 
-def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
+def archive_bill_versions(
+    bill: typing.Any, unsaved_documents: typing.Optional[list] = None
+) -> dict[str, int]:
     """
     Fetch and permanently archive every not-yet-captured version+document of a bill
     (PLAN-bill-document-provenance.md, Phase 1).
@@ -1731,6 +1748,10 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
         # invisibly.
         "persist_errors": 0,
     }
+    # OPEN-487: the documents behind persist_errors, by address and reason, so the run names
+    # what it lost instead of only counting it. Not a counter (`counters` is summed as ints), so
+    # the caller passes in a list to collect (url, reason) pairs.
+    unsaved = unsaved_documents if unsaved_documents is not None else []
 
     jurisdiction_name = bill.legislative_session.jurisdiction.name
     # OPEN-11: several of _clean_michigan_text()'s steps are deliberately not applied to
@@ -1877,6 +1898,7 @@ def archive_bill_versions(bill: typing.Any) -> dict[str, int]:
             except OSError as e:
                 click.secho(f"failed to persist {link.url} to {path}: {e}", fg="red")
                 counters["persist_errors"] += 1
+                unsaved.append((link.url, str(e)))
                 continue
 
             object_key = _s3_object_key(path)
@@ -2356,6 +2378,7 @@ def archive(state: str, session: str = None, n: int = None) -> None:
         "persist_errors": 0,
     }
     bill_count = 0
+    unsaved_documents: list[tuple[str, str]] = []
     # OPEN-237: this loop otherwise prints nothing at all for a bill that archives cleanly --
     # every click.secho above is on an error/warning path only, and the one line that always
     # prints (the run's own summary) only appears once, at the very end. That leaves no way to
@@ -2373,7 +2396,7 @@ def archive(state: str, session: str = None, n: int = None) -> None:
     for bill in bills:
         bill_count += 1
         try:
-            bill_counters = archive_bill_versions(bill)
+            bill_counters = archive_bill_versions(bill, unsaved_documents)
         except ScrapeError as e:
             # OPEN-52: a sustained WAF block (consecutive-block circuit breaker tripped) must
             # be visible as a real failure, not a silent exit-0 run with a high "blocked" count
@@ -2421,6 +2444,10 @@ def archive(state: str, session: str = None, n: int = None) -> None:
         f"persist_errors={totals['persist_errors']}",
         fg=status_color,
     )
+    # OPEN-487: name every document that was fetched but could not be saved (address and
+    # reason), not only the persist_errors count. They are retried by the next run.
+    for url, reason in unsaved_documents:
+        click.secho(f"{state}: not saved: {url} ({reason})", fg="yellow")
     if totals["conflicts"]:
         # A conflict means our own uniqueness assumption was wrong somewhere — worth a
         # non-zero exit so this surfaces as a failure in run-scrape.sh, not just a log line.
