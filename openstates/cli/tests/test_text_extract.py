@@ -3221,4 +3221,3 @@ class TestCleanMassachusettsText:
         )
         assert prior == raw
         assert not list(difflib.unified_diff(prior.split("\n"), raw.split("\n"), lineterm=""))
-
