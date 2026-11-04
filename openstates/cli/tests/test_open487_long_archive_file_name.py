@@ -76,6 +76,13 @@ class TestArchiveFileNameLength:
         assert len(name_at) == budget and name_at.startswith(at_limit + "-")
         assert len(name_over) == budget  # trimmed back to the budget, not left over it
 
+    def test_a_multibyte_version_date_cannot_push_the_name_over_the_limit(self):
+        # version_date is scraper-supplied text; the limit is in bytes, not characters.
+        name = os.path.basename(
+            _archive_path(_bill(), LONG_NOTE, "\u2603" * 30, AM2748_URL, "pdf")
+        )
+        assert len(name.encode("utf-8")) <= 200
+
 
 @pytest.mark.django_db
 class TestUnsavedDocumentsAreNamed:

@@ -609,8 +609,10 @@ def _archive_path(
     # document fetched and then silently not saved). Only the readable note is trimmed, and only
     # when the whole name would exceed the budget, so every name that fit before is unchanged.
     # Identity never rested on the note: the url hash (full, untrimmed url) is still in the name.
-    # safe_note is ASCII by construction, so characters == bytes here.
-    fixed = len(date_part) + len(f"-{url_hash}.{ext}")
+    # safe_note is ASCII by construction (the regex above keeps only A-Za-z0-9_-), so its
+    # characters == bytes; version_date comes from the scraper, so the fixed part is measured
+    # in encoded bytes.
+    fixed = len(date_part.encode("utf-8")) + len(f"-{url_hash}.{ext}")
     if fixed + len(safe_note) > _MAX_ARCHIVE_FILE_NAME_BYTES:
         safe_note = safe_note[: _MAX_ARCHIVE_FILE_NAME_BYTES - fixed].rstrip("_-") or "version"
     filename = f"{date_part}{safe_note}-{url_hash}.{ext}"
