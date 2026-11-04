@@ -41,6 +41,7 @@ from ..utils.resilience_profiles import profile_for_netloc
 from ..utils.waf_circuit_breaker import raise_if_waf_block_threshold_reached
 from ..utils.version_ordering import (
     STAGE_UNKNOWN as _STAGE_UNKNOWN,
+    is_bill_version as _is_bill_version,
     is_procedural_document as _is_procedural_document,
     note_stage as _note_stage,
     origin_chamber as _origin_chamber,
@@ -2036,6 +2037,11 @@ def archive_bill_versions(
                         is_error=is_error,
                         sha256_hash=sha256_hash,
                         diff_from_previous_version=diff_from_previous_version,
+                        # OPEN-492: decided once, here, from the same per-state rules the
+                        # diff lineage uses; readers (api-v3) read this instead of a list.
+                        is_bill_version=_is_bill_version(
+                            jurisdiction_name, version.note
+                        ),
                         archive_location=archive_location,
                         archived_at=archived_at,
                     )
@@ -2676,12 +2682,18 @@ def recompute_diff_order(state: str, session: str = None, commit: bool = False) 
     total_unchanged = 0
     total_corrected = 0
     total_nulled = 0
+    # OPEN-492: is_bill_version, counted separately so the summary line above keeps its format.
+    flag_set = 0  # was empty (not decided yet), now has a value
+    flag_changed = 0  # had the other value
+    flag_not_a_version = 0  # documents the rules say are NOT a bill version, whatever was stored
     bill_count = 0
 
     for bill in bills:
         bill_count += 1
         result = recompute_bill_diff_order(bill)
         total_unchanged += len(result["unchanged"])
+        jurisdiction_name = bill.legislative_session.jurisdiction.name
+        fields_by_doc: dict[int, tuple] = {}
         for doc, new_diff in result["changed"]:
             if new_diff is None:
                 total_nulled += 1
@@ -2689,12 +2701,32 @@ def recompute_diff_order(state: str, session: str = None, commit: bool = False) 
                 total_corrected += 1
             if commit:
                 doc.diff_from_previous_version = new_diff
-                doc.save(update_fields=["diff_from_previous_version"])
+                fields_by_doc[doc.id] = (doc, {"diff_from_previous_version"})
+        for doc in result["unchanged"] + [d for d, _ in result["changed"]]:
+            want = _is_bill_version(jurisdiction_name, doc.version_note)
+            if not want:
+                flag_not_a_version += 1
+            if doc.is_bill_version is None:
+                flag_set += 1
+            elif doc.is_bill_version != want:
+                flag_changed += 1
+            else:
+                continue
+            if commit:
+                doc.is_bill_version = want
+                fields_by_doc.setdefault(doc.id, (doc, set()))[1].add("is_bill_version")
+        for doc, fields in fields_by_doc.values():
+            doc.save(update_fields=sorted(fields))
 
     mode = "COMMITTED" if commit else "DRY RUN"
     click.secho(
         f"{state}: [{mode}] {bill_count} bills checked | "
         f"unchanged={total_unchanged} corrected={total_corrected} nulled={total_nulled}",
+        fg="green" if commit else "yellow",
+    )
+    click.secho(
+        f"{state}: [{mode}] is_bill_version: set={flag_set} changed={flag_changed} "
+        f"not_a_version={flag_not_a_version}",
         fg="green" if commit else "yellow",
     )
 

@@ -686,3 +686,15 @@ def is_procedural_document(jurisdiction_name: str, note: str) -> bool:
     if pattern is not None and pattern.match(note):
         return True
     return False
+
+
+def is_bill_version(jurisdiction_name: str, note: str) -> bool:
+    """
+    The value the archiver stores in `BillVersionDocument.is_bill_version` (OPEN-492): False for a
+    paper this module's per-state rules call procedural (`is_procedural_document()`), True for
+    everything else. This is the ONE definition of "is it a real bill version"; readers (api-v3,
+    OPEN-422) read the stored answer instead of holding a list of their own. It says nothing about
+    the stage: a version `note_stage()` cannot place is still True here, and readers keep
+    handling that on their own.
+    """
+    return not is_procedural_document(jurisdiction_name, note)

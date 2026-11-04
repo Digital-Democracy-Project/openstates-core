@@ -338,6 +338,19 @@ class BillVersionDocument(models.Model):
         ),
     )
 
+    is_bill_version = models.BooleanField(
+        null=True,
+        blank=True,
+        help_text=(
+            "OPEN-492: whether this document is a real bill version (True) or a procedural paper "
+            "such as an amendment list or comparison sheet (False), decided once by the archiver "
+            "from openstates/utils/version_ordering.py's per-state rules "
+            "(is_bill_version()) and stored here so readers never keep a list of their own. "
+            "Null means not decided yet (a row saved before this column existed, until "
+            "`recompute-diff-order <state> --commit` fills it)."
+        ),
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
