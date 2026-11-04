@@ -808,3 +808,58 @@ def test_note_stage_nebraska_amendment_ordinal_is_the_last_amendment_number():
     assert note_stage("Slip Law") == (STAGE_ENACTED, 0.0)
     assert note_stage("HB519 Act 303") == (STAGE_ENACTED, 0.0)
     assert note_stage("Final Reading") == (STAGE_FINAL_PASSAGE, 0.5)
+
+
+# --- OPEN-486: Nebraska's amendment papers are not versions of the bill ----------------------
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        # Real Nebraska notes read on the production replica (2026-11-04): committee, introducer,
+        # floor and enrollment-and-review amendment papers.
+        "Judiciary AM12",
+        "Government, Military and Veterans Affairs AM1130",
+        "Banking, Commerce and Insurance AM345",
+        "von Gillern AM2",
+        "Cavanaugh, J. AM88",
+        "Bosn FA3",
+        "Enrollment and Review ER57",
+        "Enrollment and Review ER5",
+    ],
+)
+def test_is_procedural_document_nebraska_amendment_papers(note):
+    assert is_procedural_document("Nebraska", note) is True
+    assert is_procedural_document("Nebraska", note.upper()) is True
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        # The real versions keep their place in the lineage.
+        "Introduced",
+        "Final Reading",
+        "Slip Law",
+        # Anchored on both ends and needs a number of 1 or more.
+        "AM12",
+        "Judiciary AM",
+        "Judiciary AM0",
+        "Judiciary AM12 revised",
+        "Judiciary AMENDED12",
+        "Enrollment and Review",
+        "Enrollment and Review ER",
+        "Enrollment and Review ER0",
+        "Enrollment and Review ER5 revised",
+        "Enrollment ER5",
+    ],
+)
+def test_is_procedural_document_nebraska_real_versions_and_near_misses_stay_in(note):
+    assert is_procedural_document("Nebraska", note) is False
+
+
+def test_is_procedural_document_nebraska_entry_is_nebraska_only():
+    """Louisiana, Pennsylvania and every other state keep these shapes in the lineage."""
+    for state in ("Louisiana", "Pennsylvania", "Michigan", "Massachusetts"):
+        assert is_procedural_document(state, "Judiciary AM12") is False
+        assert is_procedural_document(state, "Bosn FA3") is False
+        assert is_procedural_document(state, "Enrollment and Review ER5") is False
