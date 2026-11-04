@@ -631,6 +631,30 @@ _PROCEDURAL_DOCUMENT_NOTE_PATTERNS: dict[str, "re.Pattern"] = {
     "Nebraska": re.compile(
         r"\A(?:.+ (?:am|fa)[1-9]\d*|enrollment and review er[1-9]\d*)\Z", re.IGNORECASE
     ),
+    # OPEN-491: Louisiana's amendment papers -- "<House|Senate> Committee Amendment, #<N>, <name>,
+    # <Draft|Adopted|Proposed>", "<House|Senate> Floor Amendment, #<N>, <name>, <Adopted|Proposed|
+    # Rejected|Withdrawn>", "<House|Senate> [Floor ]Legislative Bureau Amendment, #<N>, <name>,
+    # <Adopted|Proposed>" and "Senate Floor Bureau Note, #<N>, <name>, Adopted" -- are not versions
+    # of the bill (Ramon, 2026-11-04: "Leave them out"), the same call as Nebraska's. The real
+    # versions stay: Original, Engrossed, Reengrossed, Enrolled, Act. The name can itself hold a
+    # comma ("Owen, Robert"), so it is matched loosely between the number and the closing word.
+    # Read on the production replica (2026-11-04): all 3,328 of Louisiana's non-version documents
+    # match (committee 2,273, floor 811, bureau amendments 147, bureau notes 97), none of the
+    # 7,140 real versions (55 of them Conference Committee Reports) does, and no other state
+    # has a note of any of these shapes. 79% of their stored comparisons replaced the whole
+    # document (OPEN-480 Stage 4 trial). Their stage is untouched (committee, floor and bureau
+    # amendments already rank as amendments; the bureau note stays unknown, it is not bill text).
+    # Prospective only: a Louisiana recompute-diff-order applies it to stored diffs, a separate,
+    # authorised step.
+    "Louisiana": re.compile(
+        r"\A(?:"
+        r"(?:house|senate) committee amendment, #[1-9]\d*, .+, (?:draft|adopted|proposed)"
+        r"|(?:house|senate) floor amendment, #[1-9]\d*, .+, (?:adopted|proposed|rejected|withdrawn)"
+        r"|(?:house|senate) (?:floor )?legislative bureau amendment, #[1-9]\d*, .+, (?:adopted|proposed)"
+        r"|senate floor bureau note, #[1-9]\d*, .+, adopted"
+        r")\Z",
+        re.IGNORECASE,
+    ),
 }
 
 
