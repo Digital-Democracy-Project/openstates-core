@@ -11,11 +11,9 @@ from unittest import mock
 
 import pytest
 
-from openstates import settings
 from openstates.cli.text_extract import _archive_path, archive_bill_versions
 from openstates.cli.tests.test_text_extract import _make_bill
 from openstates.cli.tests.test_open263_retry_and_visibility import (
-    TEXT,
     _patches,
     _run_with,
 )
