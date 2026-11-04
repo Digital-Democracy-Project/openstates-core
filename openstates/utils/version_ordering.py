@@ -619,6 +619,18 @@ _PROCEDURAL_DOCUMENT_NOTE_PATTERNS: dict[str, "re.Pattern"] = {
     "North Carolina": re.compile(r"\AA([1-9]\d*)?: Amendment\Z", re.IGNORECASE),
     "Alabama": re.compile(r"\A.+\bamendment( offered)?\Z", re.IGNORECASE),
     "Arizona": re.compile(r"\A(house|senate) - .+\bfailed( \(\d+\))?\Z", re.IGNORECASE),
+    # OPEN-486: Nebraska's amendment papers -- "<introducer or committee> AM<N>" (committee and
+    # introducer amendments), "<introducer> FA<N>" (floor amendments) and "Enrollment and Review
+    # ER<N>" (the enrollment-and-review amendment) -- are not versions of the bill (Ramon,
+    # 2026-11-04: "Leave them out"). The real versions stay: Introduced, Final Reading, Slip Law.
+    # Read on the production replica (2026-11-04): all 790 of Nebraska's non-version documents
+    # (AM 513, FA 103, ER 174 by these shapes) match, none of the 2,592 real versions does, and no
+    # other state has a note of any of these shapes. 76% (AM), 69% (FA) and 93% (ER) of their
+    # stored comparisons replaced the whole document (OPEN-479 Stage 4 trial). Prospective only: a
+    # Nebraska recompute-diff-order applies it to stored diffs, a separate, authorised step.
+    "Nebraska": re.compile(
+        r"\A(?:.+ (?:am|fa)[1-9]\d*|enrollment and review er[1-9]\d*)\Z", re.IGNORECASE
+    ),
 }
 
 
