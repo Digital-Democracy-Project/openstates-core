@@ -863,3 +863,82 @@ def test_is_procedural_document_nebraska_entry_is_nebraska_only():
         assert is_procedural_document(state, "Judiciary AM12") is False
         assert is_procedural_document(state, "Bosn FA3") is False
         assert is_procedural_document(state, "Enrollment and Review ER5") is False
+
+
+# --- OPEN-491: Louisiana's amendment papers are not versions of the bill ---------------------
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        # Real Louisiana notes read on the production replica (2026-11-04), one per family and
+        # closing word.
+        "House Committee Amendment, #4774, INS, Adopted",
+        "House Committee Amendment, #2656, ACRJ, Draft",
+        "House Committee Amendment, #1, H&W, Proposed",
+        "Senate Committee Amendment, #12, JUD, Draft",
+        "House Floor Amendment, #3321, Miguez, Adopted",
+        "House Floor Amendment, #77, Marcelle, Rejected",
+        "Senate Floor Amendment, #512, Owen, Robert, Withdrawn",
+        "Senate Floor Amendment, #9, Fesi, Proposed",
+        "House Floor Legislative Bureau Amendment, #4, Smith, Adopted",
+        "Senate Floor Legislative Bureau Amendment, #12, Smith, Adopted",
+        "House Legislative Bureau Amendment, #7, Smith, Proposed",
+        "Senate Legislative Bureau Amendment, #7, Smith, Adopted",
+        "Senate Floor Bureau Note, #1238, Fesi, Adopted",
+        "Senate Floor Bureau Note, #2717, Owen, Robert, Adopted",
+    ],
+)
+def test_is_procedural_document_louisiana_amendment_papers(note):
+    assert is_procedural_document("Louisiana", note) is True
+    assert is_procedural_document("Louisiana", note.upper()) is True
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        # The real versions keep their place in the lineage.
+        "HB374 Original",
+        "HB374 Engrossed",
+        "HB374 Reengrossed",
+        "HB374 Re-Reengrossed",
+        "HB374 Enrolled",
+        "HB374 Act 12",
+        "SB12 Act",
+        "HR167 Enrolled",
+        "HCR12 Original",
+        # A conference report is a real document and stays in.
+        "Conference Committee Report, #5, House Adopted, Senate Adopted",
+        # Anchored on both ends, needs a number of 1 or more and a known closing word.
+        "House Committee Amendment, #4774, INS",
+        "House Committee Amendment, #0, INS, Adopted",
+        "House Committee Amendment, #4774, INS, Adopted and amended",
+        "House Committee Amendment, #4774, INS, Withdrawn",
+        "Senate Floor Amendment, #512, Owen, Draft",
+        "Senate Floor Bureau Note, #1238, Fesi, Rejected",
+        "House Floor Bureau Note, #1238, Fesi, Adopted",
+        "Committee Amendment, #4774, INS, Adopted",
+        "Amendment, #4774, INS, Adopted",
+        "Senate Floor Amendment",
+    ],
+)
+def test_is_procedural_document_louisiana_real_versions_and_near_misses_stay_in(note):
+    assert is_procedural_document("Louisiana", note) is False
+
+
+def test_is_procedural_document_louisiana_entry_is_louisiana_only():
+    """Nebraska, Pennsylvania and every other state keep these shapes in the lineage."""
+    committee = "House Committee Amendment, #4774, INS, Adopted"
+    bureau_note = "Senate Floor Bureau Note, #1238, Fesi, Adopted"
+    for state in ("Nebraska", "Pennsylvania", "Michigan", "Massachusetts"):
+        assert is_procedural_document(state, committee) is False
+        assert is_procedural_document(state, bureau_note) is False
+
+
+def test_note_stage_louisiana_amendment_papers_keep_their_stage():
+    """The exclusion is separate from the stage: nothing about note_stage() changed."""
+    committee = "House Committee Amendment, #4774, INS, Adopted"
+    bureau_amendment = "Senate Floor Legislative Bureau Amendment, #12, Smith, Adopted"
+    assert note_stage(committee)[0] == STAGE_AMENDMENT
+    assert note_stage(bureau_amendment)[0] == STAGE_AMENDMENT
+    assert note_stage("Senate Floor Bureau Note, #1238, Fesi, Adopted")[0] == STAGE_UNKNOWN
