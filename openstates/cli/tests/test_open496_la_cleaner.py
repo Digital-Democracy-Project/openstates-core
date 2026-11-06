@@ -75,7 +75,7 @@ def test_real_text_that_resembles_a_footer_is_kept(line):
 def test_only_footer_lines_are_removed_from_a_real_shaped_document():
     text = _page(BODY_1, 1, 2) + _page(BODY_2, 2, 2)
     cleaned = _clean_louisiana_text(text).split("\n")
-    expected = [l for l in text.split("\n") if "Page " not in l]
+    expected = [line for line in text.split("\n") if "Page " not in line]
     assert cleaned == expected
     assert BODY_1.split("\n")[0] in cleaned and BODY_2.split("\n")[-1] in cleaned
 
