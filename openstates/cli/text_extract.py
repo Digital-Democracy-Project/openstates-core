@@ -1582,6 +1582,12 @@ def _clean_nc_text(text: str) -> str:
     return "\n".join(kept)
 
 
+def _drop_page_footer_lines(text: str, footer_re: "re.Pattern[str]") -> str:
+    """The shared page-footer routine (OPEN-400, reused by OPEN-496): drop every whole line that
+    matches `footer_re` and leave every other line exactly as it was."""
+    return "\n".join(line for line in text.split("\n") if not footer_re.match(line))
+
+
 # OPEN-400: Massachusetts-only text cleaning applied to prior_text/raw_text immediately before
 # difflib.unified_diff() (never touching the stored raw_text, never applied to another
 # jurisdiction). Massachusetts is the heaviest case of the page-footer tail described at
@@ -1597,9 +1603,25 @@ def _clean_nc_text(text: str) -> str:
 def _clean_massachusetts_text(text: str) -> str:
     """Massachusetts-only cleaner, see the block comment above: drops lines that are only the tail
     of a page footer ("of 12") and leaves everything else untouched."""
-    return "\n".join(
-        line for line in text.split("\n") if not _PAGE_FOOTER_TAIL_RE.match(line)
-    )
+    return _drop_page_footer_lines(text, _PAGE_FOOTER_TAIL_RE)
+
+
+# OPEN-496: Louisiana-only text cleaning, the same page-footer drop as Massachusetts above but for
+# the whole footer. Louisiana's PDFs keep the full centred footer line ("Page 1 of 2", 38 or more
+# leading spaces), so there is no bare "of N" tail to match. Measured 2026-11-06 on the production
+# replica (a random 400 Louisiana bills with two or more versions, 937 stored comparisons): 190
+# comparisons held a footer line (468 lines), none after cleaning, none got worse. When text is inserted every later page number shifts, so these lines show
+# up as changes and cascade. Only a line that is nothing but "Page N of M" is dropped: real text that
+# mentions a page ("On page 10, line 16, change ...", "after page 2 of this") never matches because
+# the whole line has to be the footer. Nothing else is stripped (change bars and case-only changes
+# were not found in Louisiana).
+_LA_PAGE_FOOTER_RE = re.compile(r"^\s*Page\s+\d{1,4}\s+of\s+\d{1,4}\s*$", re.IGNORECASE)
+
+
+def _clean_louisiana_text(text: str) -> str:
+    """Louisiana-only cleaner, see the block comment above: drops "Page N of M" footer lines and
+    leaves everything else untouched."""
+    return _drop_page_footer_lines(text, _LA_PAGE_FOOTER_RE)
 
 
 # OPEN-486: Nebraska-only text cleaning applied to prior_text/raw_text immediately before
@@ -1707,7 +1729,7 @@ def apply_prediff_cleaning(
     cur_media_type: str,
 ) -> typing.Tuple[str, str]:
     """The per-jurisdiction text cleaning that runs immediately before
-    `difflib.unified_diff()` -- OPEN-7 (WA), OPEN-9 (VA), OPEN-10 (AZ), OPEN-11 (MI), OPEN-371 (NC), OPEN-400 (MA), OPEN-486 (NE), OPEN-495 (PA).
+    `difflib.unified_diff()` -- OPEN-7 (WA), OPEN-9 (VA), OPEN-10 (AZ), OPEN-11 (MI), OPEN-371 (NC), OPEN-400 (MA), OPEN-486 (NE), OPEN-495 (PA), OPEN-496 (LA).
 
     OPEN-219: extracted so that BOTH diff-computing paths run it. It previously lived
     inline in `archive_bill_versions` only, so `recomputed_diffs_for_documents` --
@@ -1772,6 +1794,9 @@ def apply_prediff_cleaning(
     if jurisdiction_name == "Pennsylvania":
         prior_text = _clean_pa_text(prior_text)
         raw_text = _clean_pa_text(raw_text)
+    if jurisdiction_name == "Louisiana":
+        prior_text = _clean_louisiana_text(prior_text)
+        raw_text = _clean_louisiana_text(raw_text)
     return prior_text, raw_text
 
 
