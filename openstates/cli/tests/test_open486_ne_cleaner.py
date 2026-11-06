@@ -150,7 +150,7 @@ def test_a_sentence_edit_does_not_shift_the_lines_after_it():
 
 
 @pytest.mark.parametrize(
-    "jurisdiction", ["Alabama", "Florida", "Louisiana", "Pennsylvania", "Utah"]
+    "jurisdiction", ["Alabama", "Florida", "Louisiana", "Utah"]
 )
 def test_the_cleaner_is_nebraska_only(jurisdiction):
     prior, raw = "LB1237      LB1237\n2026\nx. y.", "LB1237      LB1237\n2026\nz. w."

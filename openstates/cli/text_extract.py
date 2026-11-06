@@ -1651,6 +1651,38 @@ def _clean_ne_text(text: str) -> str:
     return "\n".join(part for part in _NE_SENTENCE_BREAK.split(words) if part)
 
 
+# OPEN-495: Pennsylvania-only text cleaning applied to prior_text/raw_text immediately before
+# difflib.unified_diff() (never touching the stored raw_text, never applied to another
+# jurisdiction). Measured 2026-11-06 on the production replica (Pennsylvania 2025-2026, 6,188
+# documents, 921 stored comparisons): the General Assembly's printings carry four kinds of
+# noise that a line diff reports as changes.
+#   1. A change bar: new or reprinted lines end in the right-margin marker "<--" (909 of the 921
+#      comparisons contain it). It is on the added line and not on the unchanged line it replaces.
+#   2. Capital letters: new language is printed in CAPITALS and the next printing folds it back to
+#      normal case (HB 1667 PN3745: 95% of the removed lines came back identical but for case).
+#   3. Spacing: the same line is printed with a different number of spaces between words.
+#   4. A "PRINTER'S NO. 3745" line at the top of 12 documents.
+# What it does, line by line (the line structure is kept: Pennsylvania wraps both printings at the
+# same width, so there is no reflow): drop the printer's-number line, remove the trailing change
+# bar, collapse runs of spaces, and lower-case the line so a case-only difference is no change.
+# Struck-out words ("60 180 days") cannot be told from the text, because the PDF extraction has no
+# strike-through, so they are left alone; "[bracketed]" words are real text and are kept.
+_PA_PRINTER_NO_LINE_RE = re.compile(r"PRINTER'S NO\.\s*\d+", re.IGNORECASE)
+_PA_CHANGE_BAR_RE = re.compile(r"\s*<--\s*$")
+
+
+def _clean_pa_text(text: str) -> str:
+    """Pennsylvania-only cleaner, see the block comment above: printer's-number line dropped,
+    change bar removed, spaces collapsed and case ignored."""
+    kept = []
+    for line in text.split("\n"):
+        line = " ".join(_PA_CHANGE_BAR_RE.sub("", line).split())
+        if _PA_PRINTER_NO_LINE_RE.fullmatch(line):
+            continue
+        kept.append(line.lower())
+    return "\n".join(kept)
+
+
 def apply_prediff_cleaning(
     prior_text: str,
     raw_text: str,
@@ -1661,7 +1693,7 @@ def apply_prediff_cleaning(
     cur_media_type: str,
 ) -> typing.Tuple[str, str]:
     """The per-jurisdiction text cleaning that runs immediately before
-    `difflib.unified_diff()` -- OPEN-7 (WA), OPEN-9 (VA), OPEN-10 (AZ), OPEN-11 (MI), OPEN-371 (NC), OPEN-400 (MA), OPEN-486 (NE).
+    `difflib.unified_diff()` -- OPEN-7 (WA), OPEN-9 (VA), OPEN-10 (AZ), OPEN-11 (MI), OPEN-371 (NC), OPEN-400 (MA), OPEN-486 (NE), OPEN-495 (PA).
 
     OPEN-219: extracted so that BOTH diff-computing paths run it. It previously lived
     inline in `archive_bill_versions` only, so `recomputed_diffs_for_documents` --
@@ -1723,6 +1755,9 @@ def apply_prediff_cleaning(
     if jurisdiction_name == "Nebraska":
         prior_text = _clean_ne_text(prior_text)
         raw_text = _clean_ne_text(raw_text)
+    if jurisdiction_name == "Pennsylvania":
+        prior_text = _clean_pa_text(prior_text)
+        raw_text = _clean_pa_text(raw_text)
     return prior_text, raw_text
 
 
