@@ -1636,6 +1636,18 @@ _NE_HEADER_LINE_RES = tuple(
     )
 )
 _NE_SENTENCE_BREAK = re.compile(r"(?<=[.;:])\s+")
+# OPEN-497: a line wrap can fall right after a hyphen or slash ("non-" / "Participating",
+# "time/" / "temperature") or between two parenthesised labels ("(3)(c)" / "(i)"). Joining the
+# lines with a space then reads "non- Participating" or "(3)(c) (i)", while a printing wrapped
+# elsewhere reads "non-Participating" or "(3)(c)(i)". The words are the same and only that space
+# differs, so the comparison showed changed lines for nothing: 158 of the 494 stored Nebraska
+# comparisons (2026-11-06, replica) were nothing else. The space is dropped on both sides, wherever it
+# sits, because the PDF text also carries it inside a line (joining only at wraps measured worse:
+# 7 pairs worse, 20 whitespace-only pairs left). It is a spacing normalisation of the comparison text
+# only; the stored text is untouched.
+# A page-number-shaped "-4-" token is matched first so it is kept whole.
+_NE_HYPHEN_WRAP_SPACE = re.compile(r"(?:(?<!\S)-\d+-(?= ))|(?<=\S)([-/]) (?=\S)")
+_NE_PAREN_WRAP_SPACE = re.compile(r"\) \(")
 
 
 def _clean_ne_text(text: str) -> str:
@@ -1648,6 +1660,8 @@ def _clean_ne_text(text: str) -> str:
             continue
         kept.append(line)
     words = " ".join(" ".join(kept).split())
+    words = _NE_HYPHEN_WRAP_SPACE.sub(lambda m: m.group(1) or m.group(0), words)
+    words = _NE_PAREN_WRAP_SPACE.sub(")(", words)
     return "\n".join(part for part in _NE_SENTENCE_BREAK.split(words) if part)
 
 
