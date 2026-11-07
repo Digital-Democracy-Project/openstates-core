@@ -219,3 +219,100 @@ def test_recompute_restores_true_for_a_measure_wrongly_stored_false():
     assert "is_bill_version: set=0 changed=1 not_a_version=0" in out
     doc.refresh_from_db()
     assert doc.is_bill_version is True
+
+
+# --- --flags-only: Massachusetts' stored diffs are the only record of which bill became which law ---
+HTML_URL = "https://malegislature.gov/Laws/SessionLaws/Acts/2025/Chapter12"
+STORED_DIFF = "@@ -1 +1 @@\n-old pdf line\n+new html line"
+
+
+def _law_pair(title):
+    """A real Massachusetts shape: the bill's PDF ("Bill Text") and its enacted law (an HTML page),
+    with the whole-document diff stored on the second. Same-media recompute has no prior HTML, so a
+    normal recompute would null that diff (OPEN-396: 290 of these are hidden, never deleted)."""
+    bill = _ma_bill(title)
+    pdf = _saved(bill)
+    law = BillVersionDocument.objects.create(
+        bill=bill,
+        version_note="Chapter Law Text (Enacted)",
+        version_date="",
+        source_url=HTML_URL,
+        media_type="text/html",
+        raw_text="Chapter 12 of the Acts of 2025. Be it enacted.\n",
+        archive_location="s3://bucket/key2",
+        diff_from_previous_version=STORED_DIFF,
+    )
+    return bill, pdf, law
+
+
+@pytest.mark.django_db
+def test_without_the_switch_a_recompute_nulls_a_cross_media_diff():
+    """Pins the behaviour the switch exists to avoid, so the next test proves a real difference."""
+    bill, _pdf, law = _law_pair("An Act relative to golf carts")
+
+    out = _recompute(bill, "--commit")
+
+    assert "nulled=1" in out
+    law.refresh_from_db()
+    assert law.diff_from_previous_version is None
+
+
+@pytest.mark.django_db
+def test_flags_only_commit_sets_the_mark_and_leaves_every_stored_diff_alone():
+    bill, pdf, law = _law_pair("An Act relative to golf carts")
+
+    out = _recompute(bill, "--commit", "--flags-only")
+
+    assert "diffs untouched (--flags-only)" in out
+    assert "nulled=" not in out and "corrected=" not in out
+    assert "is_bill_version: set=2 changed=0 not_a_version=0" in out
+    for doc in (pdf, law):
+        doc.refresh_from_db()
+        assert doc.is_bill_version is True
+    law.refresh_from_db()
+    assert law.diff_from_previous_version == STORED_DIFF
+
+
+@pytest.mark.django_db
+def test_flags_only_dry_run_writes_nothing_and_reports_the_same_flag_count():
+    report, doc = _ma_bill("Study Order"), None
+    doc = _saved(report)
+
+    out = _recompute(report, "--flags-only")
+
+    assert "[DRY RUN]" in out and "diffs untouched (--flags-only)" in out
+    assert "is_bill_version: set=1 changed=0 not_a_version=1" in out
+    doc.refresh_from_db()
+    assert doc.is_bill_version is None
+
+
+@pytest.mark.django_db
+def test_flags_only_still_hides_a_report_and_keeps_its_own_diff():
+    bill, pdf, law = _law_pair("Study Order")
+
+    _recompute(bill, "--commit", "--flags-only")
+
+    for doc in (pdf, law):
+        doc.refresh_from_db()
+        assert doc.is_bill_version is False
+    assert law.diff_from_previous_version == STORED_DIFF
+
+
+@pytest.mark.django_db
+def test_flags_only_commit_never_puts_the_diff_column_in_an_update():
+    """Equal values afterwards would not show a concurrent write being overwritten with the old
+    value; the UPDATE statements themselves must leave the diff column out."""
+    from django.db import connection
+    from django.test.utils import CaptureQueriesContext
+
+    bill, _pdf, _law = _law_pair("An Act relative to golf carts")
+
+    with CaptureQueriesContext(connection) as queries:
+        _recompute(bill, "--commit", "--flags-only")
+
+    updates = [
+        q["sql"] for q in queries if q["sql"].lstrip().upper().startswith("UPDATE")
+    ]
+    assert updates, "the commit should have updated the marks"
+    assert all("diff_from_previous_version" not in sql for sql in updates)
+    assert all("is_bill_version" in sql for sql in updates)
