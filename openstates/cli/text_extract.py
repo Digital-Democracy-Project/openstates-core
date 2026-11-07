@@ -2734,9 +2734,18 @@ def recomputed_diffs_for_documents(
     default=False,
     help="apply corrections to the DB; default is a dry run that only reports counts",
 )
-def recompute_diff_order(state: str, session: str = None, commit: bool = False) -> None:
+@click.option(
+    "--flags-only",
+    is_flag=True,
+    default=False,
+    help="OPEN-498: set is_bill_version only and leave every stored diff exactly as it is "
+    "(Massachusetts: its stored diffs are the only record of which bill became which law)",
+)
+def recompute_diff_order(
+    state: str, session: str = None, commit: bool = False, flags_only: bool = False
+) -> None:
     init_django()
-    from openstates.data.models import Bill
+    from openstates.data.models import Bill, BillVersionDocument
 
     if state == "all":
         bills = Bill.objects.all()
@@ -2765,8 +2774,17 @@ def recompute_diff_order(state: str, session: str = None, commit: bool = False) 
 
     for bill in bills:
         bill_count += 1
-        result = recompute_bill_diff_order(bill)
-        total_unchanged += len(result["unchanged"])
+        if flags_only:
+            # Every document goes through the flag loop below; no diff is computed or written.
+            result = {
+                "unchanged": list(
+                    BillVersionDocument.objects.filter(bill=bill).order_by("id")
+                ),
+                "changed": [],
+            }
+        else:
+            result = recompute_bill_diff_order(bill)
+            total_unchanged += len(result["unchanged"])
         jurisdiction_name = bill.legislative_session.jurisdiction.name
         fields_by_doc: dict[int, tuple] = {}
         for doc, new_diff in result["changed"]:
@@ -2794,9 +2812,12 @@ def recompute_diff_order(state: str, session: str = None, commit: bool = False) 
             doc.save(update_fields=sorted(fields))
 
     mode = "COMMITTED" if commit else "DRY RUN"
+    if flags_only:
+        diff_summary = "diffs untouched (--flags-only)"
+    else:
+        diff_summary = f"unchanged={total_unchanged} corrected={total_corrected} nulled={total_nulled}"
     click.secho(
-        f"{state}: [{mode}] {bill_count} bills checked | "
-        f"unchanged={total_unchanged} corrected={total_corrected} nulled={total_nulled}",
+        f"{state}: [{mode}] {bill_count} bills checked | {diff_summary}",
         fg="green" if commit else "yellow",
     )
     click.secho(
