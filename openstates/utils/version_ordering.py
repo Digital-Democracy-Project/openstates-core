@@ -688,7 +688,23 @@ def is_procedural_document(jurisdiction_name: str, note: str) -> bool:
     return False
 
 
-def is_bill_version(jurisdiction_name: str, note: str) -> bool:
+# OPEN-498: Massachusetts files agency reports, legislative orders, amendment papers and messages under
+# the same bill numbers as real bills, and gives their document the same note ("Bill Text"), so the note
+# rules above cannot see them. For such a state the BILL's title says what it is: a document is a real
+# bill version only if its bill's title opens like a measure (An Act, a Resolve, Resolutions, a Joint
+# Resolution, a Proposal for a constitutional amendment). Matched exactly against `Jurisdiction.name`,
+# like the note tables. Measured on the Mac replica of the 194th session (2026-11-06): 3,267 of 11,872.
+_REAL_MEASURE_TITLE_PATTERNS = {
+    "Massachusetts": re.compile(
+        r"\A\s*(an act|a resolve|resolves?|resolutions?|joint resolution|proposal)\b",
+        re.IGNORECASE,
+    ),
+}
+
+
+def is_bill_version(
+    jurisdiction_name: str, note: str, bill_title: typing.Optional[str] = None
+) -> bool:
     """
     The value the archiver stores in `BillVersionDocument.is_bill_version` (OPEN-492): False for a
     paper this module's per-state rules call procedural (`is_procedural_document()`), True for
@@ -696,5 +712,19 @@ def is_bill_version(jurisdiction_name: str, note: str) -> bool:
     OPEN-422) read the stored answer instead of holding a list of their own. It says nothing about
     the stage: a version `note_stage()` cannot place is still True here, and readers keep
     handling that on their own.
+
+    OPEN-498: for a state in `_REAL_MEASURE_TITLE_PATTERNS` the bill's own title is checked too, because
+    there the note cannot tell a report from a bill. An empty or missing `bill_title` is never a reason
+    to exclude a document (a caller that has no title keeps the OPEN-492 answer).
     """
-    return not is_procedural_document(jurisdiction_name, note)
+    if is_procedural_document(jurisdiction_name, note):
+        return False
+    pattern = _REAL_MEASURE_TITLE_PATTERNS.get(jurisdiction_name)
+    if (
+        pattern is not None
+        and bill_title
+        and bill_title.strip()
+        and not pattern.match(bill_title)
+    ):
+        return False
+    return True

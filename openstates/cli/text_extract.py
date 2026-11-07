@@ -2113,8 +2113,9 @@ def archive_bill_versions(
                         diff_from_previous_version=diff_from_previous_version,
                         # OPEN-492: decided once, here, from the same per-state rules the
                         # diff lineage uses; readers (api-v3) read this instead of a list.
+                        # OPEN-498: some states also need the bill's title (see is_bill_version).
                         is_bill_version=_is_bill_version(
-                            jurisdiction_name, version.note
+                            jurisdiction_name, version.note, bill.title
                         ),
                         archive_location=archive_location,
                         archived_at=archived_at,
@@ -2777,7 +2778,7 @@ def recompute_diff_order(state: str, session: str = None, commit: bool = False) 
                 doc.diff_from_previous_version = new_diff
                 fields_by_doc[doc.id] = (doc, {"diff_from_previous_version"})
         for doc in result["unchanged"] + [d for d, _ in result["changed"]]:
-            want = _is_bill_version(jurisdiction_name, doc.version_note)
+            want = _is_bill_version(jurisdiction_name, doc.version_note, bill.title)
             if not want:
                 flag_not_a_version += 1
             if doc.is_bill_version is None:
