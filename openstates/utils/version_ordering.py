@@ -233,6 +233,20 @@ def note_stage(note: str) -> tuple:
         # "engross" word check below but the same chamber-passage stage.
         return (STAGE_CHAMBER_PASSAGE, extract_ordinal(note))
 
+    # OPEN-510: Louisiana's successive engrossments, "<bill> Engrossed", "<bill> Reengrossed" and
+    # "<bill> Re-Reengrossed" (e.g. "SB217 Engrossed"). The generic rule below gives all three the
+    # same rank (no ordinal in the note) and Louisiana versions carry no date (10,468 of 10,468 on
+    # the Mac replica, 2026-11-08), so they tied and kept storage order, which was often reversed
+    # (Original, Re-Reengrossed, Reengrossed, Engrossed). Exact shapes, checked against every
+    # distinct stored note in every jurisdiction on the Mac replica (2026-11-08): only Louisiana's
+    # notes match (Virginia's bare "Reengrossed" does not, and keeps its rank).
+    la_engrossed = re.fullmatch(r"[a-z]+\d+ (re-re|re)?engrossed", lowered)
+    if la_engrossed:
+        return (
+            STAGE_CHAMBER_PASSAGE,
+            {None: 0.0, "re": 1.0, "re-re": 2.0}[la_engrossed.group(1)],
+        )
+
     if "engross" in lowered and not re.search(r"substitute|committee", lowered):
         # AZ-style whole-bill floor engrossment ("Senate Engrossed Version") -- a later,
         # chamber-passage-level stage, distinct from WA's per-substitute "Engrossed <N>
