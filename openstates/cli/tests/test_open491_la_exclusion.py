@@ -24,6 +24,8 @@ ENGROSSED = "AN ACT relating to bail.\nSection 1. A court shall consider the awa
         "House Committee Amendment, #4774, INS, Adopted",
         "Senate Floor Amendment, #512, Owen, Robert, Adopted",
         "Senate Floor Bureau Note, #1238, Fesi, Adopted",
+        # OPEN-511: a conference committee report is left out the same way
+        "Conference Committee Report, #4594, House Adopted, Senate Adopted",
     ],
 )
 def test_a_louisiana_amendment_paper_gets_no_diff_and_is_not_a_baseline(paper_note):

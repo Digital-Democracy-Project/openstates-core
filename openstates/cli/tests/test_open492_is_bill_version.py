@@ -37,6 +37,11 @@ MI = "ocd-jurisdiction/country:us/state:mi/government"
         ("Nebraska", "Slip Law", True),
         ("Louisiana", "House Committee Amendment, #12, COM, Draft", False),
         ("Louisiana", "Senate Floor Bureau Note, #2676, Cloud, Adopted", False),
+        (
+            "Louisiana",
+            "Conference Committee Report, #4594, House Adopted, Senate Adopted",
+            False,
+        ),
         ("Louisiana", "HB374 Enrolled", True),
         # a state with no rules: everything is a version, even a note another state excludes
         ("Michigan", "Conference Report", True),

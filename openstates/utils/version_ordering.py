@@ -640,18 +640,28 @@ _PROCEDURAL_DOCUMENT_NOTE_PATTERNS: dict[str, "re.Pattern"] = {
     # comma ("Owen, Robert"), so it is matched loosely between the number and the closing word.
     # Read on the production replica (2026-11-04): all 3,328 of Louisiana's non-version documents
     # match (committee 2,273, floor 811, bureau amendments 147, bureau notes 97), none of the
-    # 7,140 real versions (55 of them Conference Committee Reports) does, and no other state
-    # has a note of any of these shapes. 79% of their stored comparisons replaced the whole
+    # 7,140 other documents (55 of them Conference Committee Reports, OPEN-511 below) does, and
+    # no other state has a note of any of these shapes. 79% of their stored comparisons replaced the whole
     # document (OPEN-480 Stage 4 trial). Their stage is untouched (committee, floor and bureau
     # amendments already rank as amendments; the bureau note stays unknown, it is not bill text).
     # Prospective only: a Louisiana recompute-diff-order applies it to stored diffs, a separate,
     # authorised step.
+    # OPEN-511: Louisiana's Conference Committee Reports -- "Conference Committee Report, #<N>,
+    # House <status>, Senate <status>" -- are left out too. The report is the conferees' letter
+    # listing the amendments they recommend ("recommend the following concerning the Reengrossed
+    # bill: ... AMENDMENT NO. 1 On page 1, line 2, ..."), not a re-typeset bill, so comparing a
+    # version against it double-counts changes (OPEN-480 dev LegBot sample, 2026-11-08). Read on the
+    # Mac replica (2026-11-08): 55 documents, every one of this shape (statuses Adopted, Proposed,
+    # Rejected, Withdrawn), and no other state has a note of this shape. The next real version
+    # (Enrolled, Act) now diffs against the last real version instead. Its stage is untouched.
     "Louisiana": re.compile(
         r"\A(?:"
         r"(?:house|senate) committee amendment, #[1-9]\d*, .+, (?:draft|adopted|proposed)"
         r"|(?:house|senate) floor amendment, #[1-9]\d*, .+, (?:adopted|proposed|rejected|withdrawn)"
         r"|(?:house|senate) (?:floor )?legislative bureau amendment, #[1-9]\d*, .+, (?:adopted|proposed)"
         r"|senate floor bureau note, #[1-9]\d*, .+, adopted"
+        r"|conference committee report, #[1-9]\d*,"
+        r" house (?:adopted|proposed|rejected|withdrawn), senate (?:adopted|proposed|rejected|withdrawn)"
         r")\Z",
         re.IGNORECASE,
     ),
