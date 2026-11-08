@@ -907,8 +907,6 @@ def test_is_procedural_document_louisiana_amendment_papers(note):
         "SB12 Act",
         "HR167 Enrolled",
         "HCR12 Original",
-        # A conference report is a real document and stays in.
-        "Conference Committee Report, #5, House Adopted, Senate Adopted",
         # Anchored on both ends, needs a number of 1 or more and a known closing word.
         "House Committee Amendment, #4774, INS",
         "House Committee Amendment, #0, INS, Adopted",
@@ -942,3 +940,56 @@ def test_note_stage_louisiana_amendment_papers_keep_their_stage():
     assert note_stage(committee)[0] == STAGE_AMENDMENT
     assert note_stage(bureau_amendment)[0] == STAGE_AMENDMENT
     assert note_stage("Senate Floor Bureau Note, #1238, Fesi, Adopted")[0] == STAGE_UNKNOWN
+
+
+# --- OPEN-511: Louisiana's Conference Committee Reports are not versions of the bill ----------
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        # Real Louisiana notes read on the Mac replica (2026-11-08), one per status pair seen.
+        "Conference Committee Report, #4594, House Adopted, Senate Adopted",
+        "Conference Committee Report, #5430, House Adopted, Senate Adopted",
+        "Conference Committee Report, #6237, House Proposed, Senate Adopted",
+        "Conference Committee Report, #3422, House Proposed, Senate Proposed",
+        "Conference Committee Report, #4371, House Proposed, Senate Rejected",
+        "Conference Committee Report, #5523, House Withdrawn, Senate Proposed",
+        "Conference Committee Report, #6160, House Adopted, Senate Proposed",
+    ],
+)
+def test_is_procedural_document_louisiana_conference_committee_reports(note):
+    assert is_procedural_document("Louisiana", note) is True
+    assert is_procedural_document("Louisiana", note.upper()) is True
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        # Anchored on both ends, needs a number of 1 or more and a known status for each chamber.
+        "Conference Committee Report",
+        "Conference Committee Report, #4594",
+        "Conference Committee Report, #0, House Adopted, Senate Adopted",
+        "Conference Committee Report, #4594, House Adopted",
+        "Conference Committee Report, #4594, House Adopted, Senate Draft",
+        "Conference Committee Report, #4594, Senate Adopted, House Adopted",
+        "Conference Committee Report, #4594, House Adopted, Senate Adopted, Enrolled",
+        "Senate Concurs in Conference Committee Report",
+    ],
+)
+def test_is_procedural_document_louisiana_conference_near_misses_stay_in(note):
+    assert is_procedural_document("Louisiana", note) is False
+
+
+def test_is_procedural_document_louisiana_conference_entry_is_louisiana_only():
+    """Every other state keeps this shape; Michigan's "Conference Report" (a full bill text) stays in."""
+    report = "Conference Committee Report, #4594, House Adopted, Senate Adopted"
+    for state in ("Michigan", "Virginia", "Nebraska", "Pennsylvania", "Massachusetts"):
+        assert is_procedural_document(state, report) is False
+    assert is_procedural_document("Michigan", "Conference Report") is False
+
+
+def test_note_stage_louisiana_conference_report_keeps_its_stage():
+    """The exclusion is separate from the stage: note_stage() still places the report."""
+    report = "Conference Committee Report, #4594, House Adopted, Senate Adopted"
+    assert note_stage(report)[0] == STAGE_CHAMBER_PASSAGE
