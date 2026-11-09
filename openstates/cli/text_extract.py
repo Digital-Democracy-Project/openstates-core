@@ -30,6 +30,7 @@ from openstates.fulltext import (
     CONVERSION_FUNCTIONS,
     Metadata,
 )
+from openstates.fulltext.pa import ODT_MEDIA_TYPE, is_opendocument_text
 from ..utils.instrument import Instrumentation
 from ..utils.cookie_provider import (
     BLOCK_PAGE_MARKERS as _BLOCK_PAGE_MARKERS,
@@ -81,6 +82,7 @@ MIMETYPES = {
     "application/msword": "doc",
     "application/rtf": "rtf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    ODT_MEDIA_TYPE: "odt",  # OPEN-516: Pennsylvania's "DOC" printings
 }
 
 # Phase 2 (PLAN-bill-document-provenance.md): S3 Glacier Deep Archive upload + verify.
@@ -115,10 +117,24 @@ _BINARY_MAGIC_BYTES = {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (
         b"PK\x03\x04",
     ),
+    ODT_MEDIA_TYPE: (b"PK\x03\x04",),
 }
 # _BLOCK_PAGE_MARKERS itself now lives in openstates.utils.cookie_provider (OPEN-19) so
 # scrapers and this archiver share one block-detection heuristic instead of each keeping
 # its own copy that can drift out of sync.
+
+
+def _sniffed_media_type(data: bytes, media_type: str) -> str:
+    """The media type the bytes really are, where the site's label is known to be wrong.
+
+    OPEN-516: Pennsylvania serves OpenDocument text files labelled application/msword. Read
+    by the label, the magic-byte check below expects an OLE .doc header and rejects every one
+    as a block page, and the stored media_type would misname the file. So an msword-labelled
+    file whose bytes are OpenDocument text is treated, checked and stored as OpenDocument.
+    Every other label is returned unchanged."""
+    if media_type == "application/msword" and is_opendocument_text(data):
+        return ODT_MEDIA_TYPE
+    return media_type
 
 
 def _block_page_reason(data: bytes, media_type: str) -> typing.Optional[str]:
@@ -1701,9 +1717,18 @@ def _clean_ne_text(text: str) -> str:
 # What it does, line by line (the line structure is kept: Pennsylvania wraps both printings at the
 # same width, so there is no reflow): drop the printer's-number line, remove the trailing change
 # bar, collapse runs of spaces, and lower-case the line so a case-only difference is no change.
-# Struck-out words ("60 180 days") cannot be told from the text, because the PDF extraction has no
-# strike-through, so they are left alone; "[bracketed]" words are real text and are kept.
-_PA_PRINTER_NO_LINE_RE = re.compile(r"PRINTER'S NO\.\s*\d+", re.IGNORECASE)
+# Struck-out words ("60 180 days") cannot be told from the PDF's text, because the PDF extraction
+# has no strike-through; "[bracketed]" words are real text and are kept.
+# OPEN-516: Pennsylvania's text now comes from its OpenDocument printing (fulltext/pa.py), which
+# leaves struck words out and gives one line per paragraph instead of one per printed line. The
+# same cleaner applies to it unchanged (it has no change bars, and its capitals are already in
+# normal case); the PDF documents archived before it keep their own diff lineage (OPEN-217).
+# OPEN-516: also the "PRIOR PRINTER'S NO. 3586" / "PRIOR PRINTER'S NOS. 912, 934, 1427" line above
+# it in every amended printing. The OpenDocument text keeps it, and the list grows by one number
+# with each printing, so it was a changed line in every comparison.
+_PA_PRINTER_NO_LINE_RE = re.compile(
+    r"(?:PRIOR\s+)?PRINTER'S NOS?\.\s*\d+(?:\s*,\s*\d+)*", re.IGNORECASE
+)
 _PA_CHANGE_BAR_RE = re.compile(r"\s*<--\s*$")
 
 
@@ -2004,7 +2029,10 @@ def archive_bill_versions(
                 continue
 
             _reset_connect_failure_count()
-            block_reason = _block_page_reason(data, link.media_type)
+            # OPEN-516: from here on the document is handled as what its bytes are (the
+            # magic-byte check, the file extension, its diff lineage and the stored row).
+            media_type = _sniffed_media_type(data, link.media_type)
+            block_reason = _block_page_reason(data, media_type)
             if block_reason:
                 click.secho(
                     f"blocked response for {link.url}: {block_reason}", fg="red"
@@ -2016,7 +2044,7 @@ def archive_bill_versions(
             sha256_hash = hashlib.sha256(data).hexdigest()
             local_md5 = hashlib.md5(data).hexdigest()
 
-            ext = MIMETYPES.get(link.media_type, "bin")
+            ext = MIMETYPES.get(media_type, "bin")
             path = _archive_path(bill, version.note, version.date, link.url, ext)
             try:
                 os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -2046,12 +2074,12 @@ def archive_bill_versions(
                 counters["extract_errors"] += 1
 
             diff_from_previous_version = None
-            prior_text = prior_by_media.get(link.media_type)
+            prior_text = prior_by_media.get(media_type)
             # Same-media by construction now, so the cross-media reflow branch inside
             # _clean_michigan_text()/_clean_virginia_text() can no longer fire from this call
             # site. Left in place rather than removed: both are shared helpers with their own
             # tests, and dropping a parameter from them is a separate cleanup.
-            prior_media_type = link.media_type
+            prior_media_type = media_type
             if (
                 prior_text is not None
                 and not is_error
@@ -2067,7 +2095,7 @@ def archive_bill_versions(
                     jurisdiction_name=jurisdiction_name,
                     is_bill=is_bill,
                     prior_media_type=prior_media_type,
-                    cur_media_type=link.media_type,
+                    cur_media_type=media_type,
                 )
                 diff_from_previous_version = "\n".join(
                     difflib.unified_diff(
@@ -2106,7 +2134,7 @@ def archive_bill_versions(
                         version_note=version.note,
                         version_date=version.date,
                         source_url=link.url,
-                        media_type=link.media_type,
+                        media_type=media_type,
                         raw_text=raw_text,
                         is_error=is_error,
                         sha256_hash=sha256_hash,
@@ -2122,7 +2150,7 @@ def archive_bill_versions(
                     )
                 counters["archived"] += 1
                 if not is_error and _has_text(raw_text):
-                    this_version_texts[link.media_type] = raw_text
+                    this_version_texts[media_type] = raw_text
             except IntegrityError:
                 # OPEN-107: ask the database which of two very different things just
                 # happened, instead of reporting both as a "natural-key conflict" and

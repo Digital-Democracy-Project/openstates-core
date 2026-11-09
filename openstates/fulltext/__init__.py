@@ -19,6 +19,7 @@ from .de import handle_delaware
 from .va import handle_virginia_html
 from .ut import handle_utah_xml
 from .us import handle_us_bill_xml
+from .pa import handle_pennsylvania_odt, ODT_MEDIA_TYPE
 
 
 class DoNotDownload:
@@ -160,9 +161,17 @@ CONVERSION_FUNCTIONS = {
         DOCX_MIMETYPE: textract_extractor(extension="docx"),
     },
     "pa": {
-        "application/msword": DoNotDownload,
+        # OPEN-516: Pennsylvania's text comes from its "DOC" printing, which is an OpenDocument
+        # file (see fulltext/pa.py): struck-out words are marked there and left out, where the
+        # PDF printed them struck through and the extraction kept them as if still in the bill.
+        # The site labels it application/msword, and the archiver stores it under its real type
+        # (`_sniffed_media_type` in cli/text_extract.py), so both keys read it. Every
+        # Pennsylvania version has a DOC link (6,204 of 6,204 on the replica, 2026-11-09), so
+        # the PDF is no longer archived; PDF documents already archived stay as they are.
+        "application/msword": handle_pennsylvania_odt,
+        ODT_MEDIA_TYPE: handle_pennsylvania_odt,
         "text/html": DoNotDownload,
-        "application/pdf": extract_line_numbered_pdf,
+        "application/pdf": DoNotDownload,
     },
     "ri": {"application/pdf": extract_sometimes_numbered_pdf},
     # aggressive, but the Washington & Texas HTML are both basically bare
