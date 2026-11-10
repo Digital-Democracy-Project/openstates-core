@@ -114,7 +114,7 @@ def test_the_stored_text_is_not_touched_by_the_cleaner():
 
 @pytest.mark.parametrize(
     "jurisdiction",
-    ["Alabama", "Florida", "Louisiana", "Ohio", "Utah"],
+    ["Georgia", "Florida", "Louisiana", "Ohio", "Utah"],
 )
 def test_the_cleaner_is_pennsylvania_only(jurisdiction):
     prior, raw = "ONE   <--\nTwo", "ONE   <--\nThree"
