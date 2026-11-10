@@ -20,6 +20,7 @@ from .va import handle_virginia_html
 from .ut import handle_utah_xml
 from .us import handle_us_bill_xml
 from .pa import handle_pennsylvania_odt, ODT_MEDIA_TYPE
+from .al import handle_alabama_pdf
 
 
 class DoNotDownload:
@@ -31,7 +32,8 @@ DOCX_MIMETYPE = (
 )
 
 CONVERSION_FUNCTIONS = {
-    "al": {"application/pdf": extract_line_numbered_pdf},
+    # OPEN-530: struck-out words removed, see fulltext/al.py.
+    "al": {"application/pdf": handle_alabama_pdf},
     "ak": {"text/html": extractor_for_element_by_id("draftOverlay")},
     "az": {
         "text/html": extractor_for_elements_by_class("WordSection2"),

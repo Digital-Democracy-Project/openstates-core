@@ -50,6 +50,9 @@ pytz = "^2024.1"
 google-cloud-storage = "^2.18.0"
 gitpython = "^3.1.44"
 playwright = "^1.60.0"
+# OPEN-530: Alabama's struck-out words are found from the PDF's drawn strike lines. Same
+# version the scrapers image installs (ddp-open-states requirements-openstates.txt).
+pymupdf = "1.26.5"
 pytest = "^6.2.5"
 
 [tool.poetry.dev-dependencies]
