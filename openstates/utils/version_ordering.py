@@ -752,3 +752,72 @@ def is_bill_version(
     ):
         return False
     return True
+
+
+# OPEN-517: what a Massachusetts non-bill item IS, so `os-text-extract relabel-non-bills` can store a
+# label that says so instead of "bill" / "proposed bill" (Ramon, 2026-11-09: "a label per kind"; relabel,
+# never delete). Only items the OPEN-498 title rule above already calls not-a-bill are ever given a kind,
+# so a real measure can never be relabelled by these rules. Checked in this order, first match wins;
+# whatever matches nothing is a report (agency filings: inspection packages, audited statements,
+# budgets, plans, legislative recommendations). Committee study orders whose title is only their subject
+# ("Golf Carts", "rail and transit") are recognised by their action "Order reported favorably by
+# committee". Measured on the Mac replica of the 194th session (2026-11-09): 3,297 items fail the title
+# rule; see the OPEN-517 dry run for the counts per kind.
+NON_BILL_AMENDMENT = "amendment"  # amendment papers: not relabelled (OPEN-509 moves them; see the command)
+_NON_BILL_KIND_RULES = {
+    "Massachusetts": (
+        (NON_BILL_AMENDMENT, re.compile(r"\A\s*amendment\b", re.IGNORECASE)),
+        (
+            "communication",
+            re.compile(
+                r"\A\s*(?:(?:a|the)\s+)?communications?\s+from\b"
+                r"|\A\s*governor'?s\s+message\b"
+                r"|\A\s*so\s+much\s+of\s+the\s+message\b"
+                r"|\bmessage\s+from\b"
+                r"|\bstate\s+of\s+the\s+commonwealth\s+address\b",
+                re.IGNORECASE,
+            ),
+        ),
+        (
+            "study request",
+            re.compile(r"\A\s*study\s+order\b|\binvestigation\s+and\s+study\b", re.IGNORECASE),
+        ),
+        ("order", re.compile(r"\A\s*(?:an\s+)?order\b", re.IGNORECASE)),
+    ),
+}
+_NON_BILL_STUDY_ORDER_ACTION = {
+    "Massachusetts": re.compile(r"\A\s*order\s+reported\s+favorably\s+by\s+committee\b", re.IGNORECASE),
+}
+_NON_BILL_OTHER_ORDER = {
+    # an order not titled as one up front: "... - Extension Order", "Extension Order H.4819",
+    # "Proposed House Rules Amendment Order", a precept, a canvass of an election's votes
+    "Massachusetts": re.compile(
+        r"\border\b|\A\s*precept\b|\A\s*canvassing\s+the\s+votes\b", re.IGNORECASE
+    ),
+}
+
+
+def non_bill_kind(
+    jurisdiction_name: str,
+    bill_title: typing.Optional[str],
+    action_descriptions: typing.Iterable[str] = (),
+) -> typing.Optional[str]:
+    """
+    OPEN-517: the label for a bill row that is not a bill: "communication", "study request", "order"
+    or "report"; `NON_BILL_AMENDMENT` for an amendment paper; None for a real measure, a blank or
+    missing title, or a state without a title rule (the same fail-open cases as `is_bill_version`).
+    """
+    kinds = _NON_BILL_KIND_RULES.get(jurisdiction_name)
+    if kinds is None or not bill_title or not bill_title.strip():
+        return None
+    if is_bill_version(jurisdiction_name, "", bill_title):
+        return None
+    for kind, pattern in kinds:
+        if pattern.search(bill_title):
+            return kind
+    action_rule = _NON_BILL_STUDY_ORDER_ACTION[jurisdiction_name]
+    if any(action_rule.match(a or "") for a in action_descriptions):
+        return "study request"
+    if _NON_BILL_OTHER_ORDER[jurisdiction_name].search(bill_title):
+        return "order"
+    return "report"
