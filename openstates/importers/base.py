@@ -121,6 +121,9 @@ class BaseImporter:
     related_models: _RelatedModels = {}
     preserve_order: typing.Set[str] = set()
     merge_related: typing.Dict[str, typing.List[str]] = {}
+    # extras keys a scraper never sends but DDP tools write onto stored rows: kept on a re-import
+    # instead of being dropped when the scraped extras replace the stored ones (OPEN-518)
+    keep_extras_keys: typing.Tuple[str, ...] = ()
     cached_transformers: _TransformerMapping = {}
 
     def __init__(self, jurisdiction_id: str, do_postimport=True) -> None:
@@ -385,6 +388,10 @@ class BaseImporter:
                 raise DuplicateItemError(data, obj, related.get("sources", []))
             elif allow_duplicates and obj.id in self.json_to_db_id.values():
                 self.logger.warning(f"Ignored a DuplicateItemError for {obj.id}")
+            stored_extras = getattr(obj, "extras", None) or {}
+            for key in self.keep_extras_keys:
+                if key in stored_extras and key not in data.get("extras", {}):
+                    data["extras"] = {**data.get("extras", {}), key: stored_extras[key]}
             # check base object for changes
             for key, value in data.items():
                 if getattr(obj, key) != value:

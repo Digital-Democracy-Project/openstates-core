@@ -754,6 +754,12 @@ def is_bill_version(
     return True
 
 
+# Where `relabel-non-bills` keeps the label a bill had before it changed it (so --undo can put it back).
+# The bill import keeps this key on a re-scrape (OPEN-518): a scraper never sends it, and without that the
+# import would replace extras with the scraper's and lose the saved label.
+ORIGINAL_CLASSIFICATION_KEY = "ddp_open517_original_classification"
+
+
 # OPEN-517: what a Massachusetts non-bill item IS, so `os-text-extract relabel-non-bills` can store a
 # label that says so instead of "bill" / "proposed bill" (Ramon, 2026-11-09: "a label per kind"; relabel,
 # never delete). Only items the OPEN-498 title rule above already calls not-a-bill are ever given a kind,
