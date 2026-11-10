@@ -1,5 +1,13 @@
 # Changelog
 
+## 6.26.5 - Oct 28, 2026
+- Add `non-concurrence` to `BILL_ACTION_CLASSIFICATION_CHOICES` (DATA-5822)
+
+## 6.26.4 - Oct 23, 2026
+
+* Support multiple jurisdictions in param in people-to-database command
+* Address certificate authority vulnerability in dependencies
+
 ## 6.26.3 - Oct 8, 2026
 
 * Add path filter to release workflow so openstates_metadata only publishes when metadata files change
