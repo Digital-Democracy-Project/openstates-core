@@ -43,6 +43,7 @@ from ..utils.waf_circuit_breaker import raise_if_waf_block_threshold_reached
 from ..utils.version_ordering import (
     STAGE_UNKNOWN as _STAGE_UNKNOWN,
     NON_BILL_AMENDMENT as _NON_BILL_AMENDMENT,
+    ORIGINAL_CLASSIFICATION_KEY,
     is_bill_version as _is_bill_version,
     is_procedural_document as _is_procedural_document,
     non_bill_kind as _non_bill_kind,
@@ -2855,10 +2856,6 @@ def recompute_diff_order(
         f"not_a_version={flag_not_a_version}",
         fg="green" if commit else "yellow",
     )
-
-
-# OPEN-517: where the label a bill had before `relabel-non-bills` changed it is kept, so --undo can put it back.
-ORIGINAL_CLASSIFICATION_KEY = "ddp_open517_original_classification"
 
 
 @main.command(
