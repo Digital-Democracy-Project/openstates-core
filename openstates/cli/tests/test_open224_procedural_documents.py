@@ -111,6 +111,18 @@ class TestProceduralDocumentSkipsDiffAndBaseline:
                 "ocd-jurisdiction/country:us/state:al/government",
                 "Judiciary 1st Amendment",
             ),
+            # OPEN-525: Alabama's floor-motion papers (amendments and substitutes). They have a
+            # stage now, so only the not-a-version rule keeps them out of the comparisons.
+            (
+                "Alabama",
+                "ocd-jurisdiction/country:us/state:al/government",
+                "Orr motion to Table - Adopted Voice Vote",
+            ),
+            (
+                "Alabama",
+                "ocd-jurisdiction/country:us/state:al/government",
+                "Motion to Adopt - Adopted Roll Call 407",
+            ),
             # OPEN-379: Arizona's failed floor amendments.
             (
                 "Arizona",
