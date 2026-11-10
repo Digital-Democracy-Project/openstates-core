@@ -42,8 +42,10 @@ from ..utils.resilience_profiles import profile_for_netloc
 from ..utils.waf_circuit_breaker import raise_if_waf_block_threshold_reached
 from ..utils.version_ordering import (
     STAGE_UNKNOWN as _STAGE_UNKNOWN,
+    NON_BILL_AMENDMENT as _NON_BILL_AMENDMENT,
     is_bill_version as _is_bill_version,
     is_procedural_document as _is_procedural_document,
+    non_bill_kind as _non_bill_kind,
     note_stage as _note_stage,
     origin_chamber as _origin_chamber,
     version_sort_key as _version_sort_key,
@@ -2853,6 +2855,147 @@ def recompute_diff_order(
         f"not_a_version={flag_not_a_version}",
         fg="green" if commit else "yellow",
     )
+
+
+# OPEN-517: where the label a bill had before `relabel-non-bills` changed it is kept, so --undo can put it back.
+ORIGINAL_CLASSIFICATION_KEY = "ddp_open517_original_classification"
+
+
+@main.command(
+    help="OPEN-517: relabel bill rows that are not bills (Massachusetts reports, communications, "
+    "orders, study orders) with what they are; keeps the old label in extras so --undo restores it"
+)
+@click.argument("state")
+@click.option("--session", default=None)
+@click.option(
+    "--commit/--dry-run",
+    default=False,
+    help="write the new labels; default is a dry run that only reports counts",
+)
+@click.option(
+    "--undo",
+    is_flag=True,
+    default=False,
+    help="put back the label saved by an earlier --commit (with --commit; a dry run only counts)",
+)
+@click.option(
+    "--expect",
+    type=int,
+    default=None,
+    help="abort before writing unless exactly this many bills would change (the agreed dry-run count)",
+)
+@click.option(
+    "--list",
+    "list_path",
+    default=None,
+    help="write one CSV row per bill that would change (id, identifier, old, new, title)",
+)
+def relabel_non_bills(
+    state: str,
+    session: str = None,
+    commit: bool = False,
+    undo: bool = False,
+    expect: int = None,
+    list_path: str = None,
+) -> None:
+    """
+    Only bills whose title the OPEN-498 rule calls not-a-bill are touched, through `non_bill_kind()`.
+    Left alone, and counted: amendment papers (the scraper still yields them, so a new label would be
+    overwritten on the next run; OPEN-509 moves them) and any bill with a recorded vote (Ramon,
+    2026-11-08: those are looked at one by one). Nothing is deleted. The write is a queryset update,
+    so `updated_at` does not move: nothing downstream (broker sync, LegBot, search) reads the label,
+    and a bump would make them re-process thousands of items for no change of theirs.
+    """
+    init_django()
+    from openstates.data.models import Bill
+
+    bills = Bill.objects.filter(legislative_session__jurisdiction_id=abbr_to_jid(state))
+    if session:
+        bills = bills.filter(legislative_session__identifier=session)
+    bills = (
+        bills.select_related("legislative_session__jurisdiction")
+        .annotate(vote_count=Count("votes", distinct=True))
+        .order_by("id")
+    )
+
+    changes = []  # (bill, old classification, new classification, new extras)
+    skipped: dict[str, int] = {}
+    unchanged = 0
+    for bill in bills:
+        extras = dict(bill.extras or {})
+        if undo:
+            if ORIGINAL_CLASSIFICATION_KEY not in extras:
+                continue
+            original = extras.pop(ORIGINAL_CLASSIFICATION_KEY)
+            changes.append((bill, list(bill.classification), list(original), extras))
+            continue
+        kind = _non_bill_kind(
+            bill.legislative_session.jurisdiction.name,
+            bill.title,
+            bill.actions.values_list("description", flat=True),
+        )
+        if kind is None:
+            continue
+        if kind == _NON_BILL_AMENDMENT:
+            skipped["amendment paper"] = skipped.get("amendment paper", 0) + 1
+            continue
+        if bill.vote_count:
+            skipped["has recorded votes"] = skipped.get("has recorded votes", 0) + 1
+            continue
+        if list(bill.classification) == [kind]:
+            unchanged += 1
+            continue
+        # A second run keeps the first original: the label the scraper gave, not ours.
+        extras.setdefault(ORIGINAL_CLASSIFICATION_KEY, list(bill.classification))
+        changes.append((bill, list(bill.classification), [kind], extras))
+
+    by_label: dict[tuple, int] = {}
+    for _, old, new, _ in changes:
+        key = (", ".join(old) or "(none)", ", ".join(new) or "(none)")
+        by_label[key] = by_label.get(key, 0) + 1
+
+    if list_path:
+        with open(list_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["bill_id", "identifier", "session", "old", "new", "title"])
+            for bill, old, new, _ in changes:
+                writer.writerow(
+                    [
+                        bill.id,
+                        bill.identifier,
+                        bill.legislative_session.identifier,
+                        ";".join(old),
+                        ";".join(new),
+                        " ".join((bill.title or "").split()),
+                    ]
+                )
+
+    if commit and expect is not None and expect != len(changes):
+        raise click.ClickException(
+            f"{len(changes)} bills would change, not the expected {expect}; nothing written"
+        )
+
+    if commit:
+        with transaction.atomic():
+            for bill, _, new, extras in changes:
+                updated = Bill.objects.filter(pk=bill.pk).update(
+                    classification=new, extras=extras
+                )
+                if updated != 1:
+                    raise click.ClickException(
+                        f"{bill.id}: updated {updated} rows, expected 1; rolled back"
+                    )
+
+    mode = "COMMITTED" if commit else "DRY RUN"
+    action = "restored" if undo else "relabelled"
+    color = "green" if commit else "yellow"
+    click.secho(
+        f"{state}: [{mode}] {action}={len(changes)} already_labelled={unchanged} "
+        + " ".join(f"skipped_{k.replace(' ', '_')}={v}" for k, v in sorted(skipped.items())),
+        fg=color,
+    )
+    for (old, new), count in sorted(by_label.items(), key=lambda kv: (-kv[1], kv[0])):
+        click.secho(f"  {old} -> {new}: {count}", fg=color)
 
 
 _s3_client_cache = None

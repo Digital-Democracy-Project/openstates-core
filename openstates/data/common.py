@@ -72,6 +72,9 @@ BILL_CLASSIFICATION_CHOICES = (
     ("study request", "Study Request"),
     ("concurrent study request", "Concurrent Study Request"),
     ("bill of address", "Bill of Address"),
+    # OPEN-517: Massachusetts papers filed under bill numbers that are not bills
+    ("report", "Report"),
+    ("communication", "Communication"),
 )
 BILL_CLASSIFICATIONS = _keys(BILL_CLASSIFICATION_CHOICES)
 
