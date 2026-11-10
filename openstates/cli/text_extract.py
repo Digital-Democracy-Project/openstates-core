@@ -1340,17 +1340,75 @@ _AL_CHAMBER_LINES = frozenset({"Senate", "House of Representatives"})
 # All 232 history blocks run 10 to 14 non-blank lines from the marker to the end.
 _AL_HISTORY_MAX_TAIL_LINES = 20
 
+# OPEN-529: three more kinds of noise, measured 2026-11-10 on the Mac replica over all 917 stored
+# Alabama comparisons (every one a real bill version; the recompute path reproduces all 917 stored
+# diffs exactly before this change):
+#
+# 4. Every Enrolled text (616 of 616, and no other version) ends with the signature and
+#    certification block: two "____" lines for the Speaker and the President of the Senate, the
+#    bill number, the Clerk's or Secretary's certificate ("I hereby certify that the within Act
+#    originated in ..."), dated chamber actions ("Senate 09-Apr-26 Adopted") and "By: Senator
+#    ...", 10 to 18 non-blank lines. It was 5,933 changed lines, and it made 364 Enrolled
+#    comparisons 95% or more noise. Cut from the first "____" line immediately followed by an
+#    exact signature title, only within the last lines.
+# 5. The front header ("HB503", the tracking code, "By Representative ...", "RFD: Judiciary",
+#    "First Read: 24-Feb-26", "PFD: ..."): committee substitutes and "Reported Out of Committee"
+#    versions do not print it, and "RFD:" changes between versions, so it showed up as removed or
+#    added text. Cut only when the first line is a bare bill number and an "RFD:", "First Read:"
+#    or "PFD:" line follows within the first lines; everything up to the last of those is header
+#    (the sponsor list wraps onto up to 15 lines; checked over all 2,355 versions that start with
+#    a bill number).
+# 6. The same table line printed with a different number of spaces (the budget bills, SB 146 and
+#    HB 238), so each line is stripped and runs of spaces inside it become one space.
+_AL_SIGNATURE_RULE_RE = re.compile(r"_{10,}")
+_AL_SIGNATURE_TITLES = frozenset(
+    {
+        "Speaker of the House of Representatives",
+        "President and Presiding Officer of the Senate",
+    }
+)
+# All 616 signature blocks run 10 to 18 non-blank lines from the first "____" line to the end.
+_AL_SIGNATURE_MAX_TAIL_LINES = 25
+_AL_BILL_NUMBER_LINE_RE = re.compile(r"(?:HB|SB|HJR|SJR|HR|SR)\d+")
+_AL_HEADER_MARKER_RE = re.compile(r"(?:RFD|First Read|PFD):.*")
+# The last header marker was never past line 20.
+_AL_HEADER_REGION_LINES = 40
+
 
 def _clean_al_text(text: str) -> str:
-    """Alabama-only cleaner, see the block comment above: the synopsis block, the per-version
-    tracking code, the title block, and the legislative-history block at the end are removed.
+    """Alabama-only cleaner, see the block comment above: the front header, the synopsis block,
+    the per-version tracking code, the title block, the legislative-history block and the
+    Enrolled signature block are removed, and spacing inside a line is ignored.
 
     Every cut is anchored on the structure measured in the corpus, so text that merely resembles
     one is kept: the synopsis only when an "A BILL" line follows it; the title lines only in the
     first lines of the document; the history block only when the marker is immediately preceded
     by an exact chamber line and sits within the last few lines (a line that starts "Read for the
-    first time" anywhere else is bill text and is left alone)."""
-    lines = text.split("\n")
+    first time" anywhere else is bill text and is left alone); the header only when the first
+    line is a bare bill number and a header marker line follows it closely; the signature block
+    only when a "____" line is followed by an exact signature title within the last few lines."""
+    lines = [" ".join(ln.split()) for ln in text.split("\n")]
+
+    # The header and signature anchors are judged on the document as printed, before any other
+    # rule removes a line; `top` keeps the positions the older rules below are measured in.
+    top = 0
+    if lines and _AL_BILL_NUMBER_LINE_RE.fullmatch(lines[0]):
+        markers = [
+            i
+            for i, ln in enumerate(lines[:_AL_HEADER_REGION_LINES])
+            if _AL_HEADER_MARKER_RE.fullmatch(ln)
+        ]
+        if markers:
+            top = markers[-1] + 1
+    for i in range(top, len(lines) - 1):
+        if (
+            _AL_SIGNATURE_RULE_RE.fullmatch(lines[i])
+            and lines[i + 1] in _AL_SIGNATURE_TITLES
+            and sum(1 for rest in lines[i:] if rest) <= _AL_SIGNATURE_MAX_TAIL_LINES
+        ):
+            lines = lines[:i]
+            break
+    lines = lines[top:]
 
     synopsis = [i for i, ln in enumerate(lines) if ln.strip() == "SYNOPSIS:"]
     bill = [i for i, ln in enumerate(lines) if ln.strip() == "A BILL"]
@@ -1369,7 +1427,7 @@ def _clean_al_text(text: str) -> str:
             break
 
     kept = []
-    for i, ln in enumerate(lines):
+    for i, ln in enumerate(lines, start=top):
         stripped = ln.strip()
         if i == 1 and _AL_TRACKING_LINE_RE.fullmatch(stripped):
             continue
