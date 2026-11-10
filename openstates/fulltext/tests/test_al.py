@@ -9,6 +9,8 @@ page 1 of the Engrossed printing, which has nothing struck or underlined.
 
 from pathlib import Path
 
+import pytest
+
 from openstates.cli.text_extract import _clean_al_text
 from openstates.fulltext import CONVERSION_FUNCTIONS
 from openstates.fulltext.al import handle_alabama_pdf, without_struck_text
@@ -88,6 +90,13 @@ def test_the_comparison_sees_no_change_on_the_unchanged_line():
     )
     assert "property is a Class D felony." in introduced.split("\n")
     assert "property is a Class D felony." in engrossed.split("\n")
+
+
+def test_a_file_pymupdf_cannot_open_is_an_extraction_error():
+    # No quiet fallback to the old reader, which would bring the struck words back: the
+    # archiver counts the exception as an extraction error and stores the document as is_error.
+    with pytest.raises(Exception):
+        handle_alabama_pdf(b"%PDF-1.7\n" + b"\x00" * 64, AL)
 
 
 def test_only_alabama_uses_the_alabama_reader():

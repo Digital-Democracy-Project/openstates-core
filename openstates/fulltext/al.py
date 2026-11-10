@@ -9,13 +9,17 @@ from .common import Metadata, extract_line_numbered_pdf
 # "D felony" underlined), and LegBot described changes backwards. Alabama offers no other format
 # (ALISON's GraphQL has only the *FileUrl PDF links).
 #
-# The two kinds of rule are told apart by height on the line: in every Alabama 2026 PDF, a thin
-# rule (under 2pt tall) that runs under a character sits either at about half the line's height
-# (a strike, 0.53 of the span's height) or at its foot (an underline, 0.93), never in between.
+# The two kinds of rule are told apart by height on the line. Measured 2026-11-10 over all 2,923
+# Alabama 2026 PDFs: a thin rule (under 2pt tall) crossing a character sits at half the line's
+# height (a strike, 824,000 crossings at 0.5 of the span's height), at its foot (an underline,
+# 0.9 to 1.2) or at its top (the underline of the line above, -0.2 to 0), and never between 0.1
+# and 0.4 or between 0.6 and 0.8. 984 of the 2,923 documents (514 of 1,507 bills) strike text.
 # A character with a strike over more than half its width is removed from a copy of the PDF, and
 # the copy is read by the same pdftotext path as before, so a PDF with no strike gives exactly
 # the text it gave before. The removed words leave spaces behind (pdftotext places text by
-# position); Alabama's pre-diff cleaner already ignores spacing inside a line (OPEN-529).
+# position); Alabama's pre-diff cleaner already ignores spacing inside a line (OPEN-529). A file
+# PyMuPDF cannot open raises, so the archiver records an extraction error rather than quietly
+# reading it the old way with the struck words back in.
 _RULE_MAX_HEIGHT = 2.0
 _STRIKE_LOW = 0.35
 _STRIKE_HIGH = 0.7
