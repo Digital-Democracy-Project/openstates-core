@@ -43,6 +43,8 @@ MI = "ocd-jurisdiction/country:us/state:mi/government"
             False,
         ),
         ("Louisiana", "HB374 Enrolled", True),
+        ("Alabama", "Kelley motion to Adopt - Adopted Roll Call 686", False),
+        ("Alabama", "Judiciary 1st Substitute", True),
         # a state with no rules: everything is a version, even a note another state excludes
         ("Michigan", "Conference Report", True),
         ("Michigan", "Introduced", True),

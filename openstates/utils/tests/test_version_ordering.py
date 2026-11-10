@@ -18,6 +18,7 @@ from openstates.utils.version_ordering import (
     STAGE_INTRODUCED,
     STAGE_UNKNOWN,
     extract_ordinal,
+    is_bill_version,
     is_procedural_document,
     note_stage,
     version_sort_key,
@@ -329,6 +330,86 @@ def test_is_procedural_document_alabama_entry_is_alabama_only():
     """The pattern rests on Alabama's evidence; another state's notes are not judged by it."""
     assert is_procedural_document("Michigan", "Judiciary 1st Amendment") is False
     assert is_procedural_document("Arizona", "Judiciary 1st Amendment") is False
+
+
+# --- OPEN-525: Alabama's floor-motion papers (amendments and substitutes) ----------------------
+
+# One real note of each of the nine shapes seen on the Mac replica (2026-11-10, all 453 documents):
+# outcome Adopted or Lost, Roll Call or Voice Vote, with and without a member's name, and the one
+# note written "Adopt-" with no space before the dash.
+ALABAMA_FLOOR_MOTION_NOTES = [
+    "Motion to Adopt - Adopted Roll Call 1001",
+    "Motion to Adopt - Adopted Voice Vote",
+    "Motion to Adopt - Lost Roll Call 3",
+    "Albritton motion to Adopt - Adopted Roll Call 1125",
+    "Waggoner motion to Adopt - Adopted Voice Vote",
+    "Coleman-Madison motion to Adopt - Lost Roll Call 207",
+    "Albritton motion to Adopt- Adopted Roll Call 982",
+    "Brown motion to Table - Adopted Roll Call 1239",
+    "Albritton motion to Table - Adopted Voice Vote",
+]
+
+
+@pytest.mark.parametrize("note", ALABAMA_FLOOR_MOTION_NOTES)
+def test_alabama_floor_motion_paper_is_not_a_bill_version(note):
+    # The decision covers both kinds: the note is the same for an amendment ("Replace line 209 on
+    # page 8 with the following: ...") and a substitute (a full "A BILL TO BE ENTITLED AN ACT ...").
+    assert is_procedural_document("Alabama", note) is True
+    assert is_bill_version("Alabama", note) is False
+
+
+@pytest.mark.parametrize("note", ALABAMA_FLOOR_MOTION_NOTES)
+def test_alabama_floor_motion_paper_ranks_as_an_amendment_paper(note):
+    # Same stage as Alabama's "<Committee> 1st Amendment" / "... 1st Substitute"; before OPEN-525
+    # every one of these was STAGE_UNKNOWN (453 of Alabama's 2,922 versions).
+    assert note_stage(note)[0] == STAGE_AMENDMENT
+
+
+@pytest.mark.parametrize(
+    ("note", "expected_stage"),
+    [
+        # Every real Alabama version name on the Mac replica (2026-11-10) that is not a motion
+        # paper or an "... Amendment" paper: unchanged stage, still a bill version.
+        ("Introduced", STAGE_INTRODUCED),
+        ("Engrossed", STAGE_CHAMBER_PASSAGE),
+        ("Enrolled", STAGE_FINAL_PASSAGE),
+        ("Reported Out of Committee House of Origin", STAGE_CHAMBER_PASSAGE),
+        ("Reported Out of Committee Second House", STAGE_CHAMBER_PASSAGE),
+        ("Senate Concurs in Conference Committee Report", STAGE_CHAMBER_PASSAGE),
+        ("Judiciary 1st Substitute", STAGE_AMENDMENT),
+        ("Finance and Taxation General Fund 1st Substitute Offered", STAGE_AMENDMENT),
+        ("Economic Development and Tourism  Engrossed Substitute Offered", STAGE_AMENDMENT),
+    ],
+)
+def test_alabama_real_versions_are_unchanged(note, expected_stage):
+    assert is_bill_version("Alabama", note) is True
+    assert note_stage(note)[0] == expected_stage
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        # Near misses: not the shape, so not touched (stay versions, stay unknown).
+        "Motion to Adopt",
+        "Orr motion to Reconsider - Adopted Roll Call 12",
+        "Motion to Adopt - Adopted",
+        "Motion to Adopt - Adopted Roll Call 0",
+    ],
+)
+def test_alabama_floor_motion_rule_needs_the_whole_shape(note):
+    assert is_procedural_document("Alabama", note) is False
+    assert note_stage(note)[0] == STAGE_UNKNOWN
+
+
+def test_alabama_floor_motion_rule_is_alabama_only():
+    """The not-a-version rule is Alabama's: another state's note of this shape stays a version. The
+    stage is not per state (note_stage() takes no state, like Nebraska's "<name> AM<N>" shape,
+    OPEN-482/486), so such a note would rank as an amendment there; no other state has one today
+    (every stored note in all 13 jurisdictions on the Mac replica checked, 2026-11-10)."""
+    note = "Orr motion to Table - Adopted Voice Vote"
+    for state in ("Michigan", "Virginia", "Utah", "Louisiana", "Nebraska", "Arizona"):
+        assert is_bill_version(state, note) is True
+    assert note_stage(note)[0] == STAGE_AMENDMENT
 
 
 # --- OPEN-366: North Carolina's "Edition N" / "Ratified" / "SL <year>-<N>" and stamp pages ---

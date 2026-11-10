@@ -95,6 +95,16 @@ _STAMPED_AMENDED_RE = re.compile(
 )
 _STAMPED_AMENDED_EPOCH = datetime.date(2000, 1, 1)
 
+# OPEN-525: Alabama's floor-motion papers. The scraper adds the paper behind each floor motion on an
+# amendment or substitute (the action's amdSubFileUrl) as a version named after the action, e.g.
+# "Orr motion to Table - Adopted Voice Vote", "Motion to Adopt - Adopted Roll Call 407". All 453 such
+# notes on the Mac replica (2026-11-10, session 2026rs) have this shape and no other state has a note
+# of it. Used twice below: note_stage() ranks them as amendment papers and Alabama's entry in
+# _PROCEDURAL_DOCUMENT_NOTE_PATTERNS says they are not bill versions (see the evidence there).
+_AL_FLOOR_MOTION_PAPER = (
+    r"(?:.+ )?motion to (?:adopt|table) ?- ?(?:adopted|lost) (?:roll call [1-9]\d*|voice vote)"
+)
+
 
 def extract_ordinal(note: str) -> float:
     """
@@ -297,6 +307,12 @@ def note_stage(note: str) -> tuple:
         return (STAGE_FINAL_PASSAGE, 0.5)
     if re.fullmatch(r".+ (?:am|fa)\d+(?: .+)?", lowered):
         return (STAGE_AMENDMENT, extract_ordinal(note))
+    # OPEN-525: Alabama's floor-motion papers (amendments and substitutes, see
+    # _AL_FLOOR_MOTION_PAPER) rank as amendment papers, like Alabama's "<Committee> 1st Amendment"
+    # and "... 1st Substitute". They are not bill versions (is_procedural_document), so the rank
+    # never puts them in the diff lineage; it only stops them counting as versions with no stage.
+    if re.fullmatch(_AL_FLOOR_MOTION_PAPER, lowered):
+        return (STAGE_AMENDMENT, 0.0)
 
     return (STAGE_UNKNOWN, 0.0)
 
@@ -607,6 +623,20 @@ _PROCEDURAL_DOCUMENT_NOTES: dict[str, frozenset] = {
 # of them ends in "Amendment" or "Amendment Offered", so the end anchor keeps them out. Same
 # prospective-only reasoning as the entries above: a recompute for Alabama is a separate,
 # explicitly authorised step.
+# Alabama, OPEN-525: the floor-motion papers (_AL_FLOOR_MOTION_PAPER, "<Member> motion to Adopt -
+# Adopted Roll Call N", "Motion to Table - Adopted Voice Vote") are not bill versions either. Read on
+# the Mac replica (2026-11-10, 2026rs): 453 documents. 256 are amendments, short line-edit
+# instructions ("Replace line 209 on page 8 with the following: ...", "Remove line 113 ...", "On page
+# 18 after line 491, insert ..."; median 431, max 16,620 characters). 197 are substitutes, full bill
+# texts ("A BILL TO BE ENTITLED AN ACT ...", "SYNOPSIS: ...", "Substitute for SB146 ..."; median
+# 7,457, max 181,915). The note cannot tell the two apart (both kinds have every outcome shape), so
+# the rule takes both out: 185 of the 197 substitutes were adopted and their text is carried by the
+# bill's own real versions (after Alabama's pre-diff cleaner, OPEN-372, on both sides, 181 have at
+# least 90% of their six-word phrases in one of them; the other 4 have 83 to 88%: three of those bills
+# had a further floor amendment or substitute adopted, and HB 306 has no version after Introduced),
+# and the other 12 were tabled, so never became the bill (the same call as Arizona's failed
+# amendments, OPEN-379). The documents stay archived with their text. Before this, all 453 were
+# versions with no stage (15.5% of Alabama's versions). Prospective only, as above.
 # OPEN-379: Arizona publishes a document for every floor amendment offered, including ones the
 # chamber rejected ("SENATE - Ortiz flr amend (ref Bill) failed"). A failed amendment never became
 # part of the bill, so it is not a version of it (Ramon, 2026-10-15). Read on the production
@@ -631,7 +661,9 @@ _PROCEDURAL_DOCUMENT_NOTE_PATTERNS: dict[str, "re.Pattern"] = {
     ),
     "Virginia": re.compile(r"\A.+\bamendments?\Z", re.IGNORECASE),
     "North Carolina": re.compile(r"\AA([1-9]\d*)?: Amendment\Z", re.IGNORECASE),
-    "Alabama": re.compile(r"\A.+\bamendment( offered)?\Z", re.IGNORECASE),
+    "Alabama": re.compile(
+        r"\A(?:.+\bamendment( offered)?|" + _AL_FLOOR_MOTION_PAPER + r")\Z", re.IGNORECASE
+    ),
     "Arizona": re.compile(r"\A(house|senate) - .+\bfailed( \(\d+\))?\Z", re.IGNORECASE),
     # OPEN-486: Nebraska's amendment papers -- "<introducer or committee> AM<N>" (committee and
     # introducer amendments), "<introducer> FA<N>" (floor amendments) and "Enrollment and Review
