@@ -2982,7 +2982,7 @@ def relabel_non_bills(
                 # relabel) still no recorded vote. An import or a vote landing mid-run aborts the
                 # whole run instead of being overwritten.
                 current = Bill.objects.filter(
-                    pk=bill.pk, classification=old, extras=bill.extras or {}
+                    pk=bill.pk, classification=old, extras=bill.extras
                 )
                 if not undo:
                     current = current.filter(votes__isnull=True)

@@ -246,33 +246,37 @@ def test_another_state_is_never_touched(ma_items):
 def test_a_row_that_changes_mid_run_aborts_the_whole_run(ma_items, drift):
     from openstates.cli import text_extract
 
-    report = ma_items["report"]
+    # rows are written in id order (ids are random): the first is written, then the second
+    # fails, so this proves the first write is rolled back, not merely never attempted
+    first, last = sorted([ma_items["report"], ma_items["order"]], key=lambda b: b.pk)
     real_kind = text_extract._non_bill_kind
 
     def kind_then_drift(name, title, actions):
         kind = real_kind(name, title, actions)
-        if title == report.title:
+        if title == last.title:
             # an import or a vote lands after the row was read, before it is written
             if drift == "vote":
                 VoteEvent.objects.create(
-                    bill=report,
-                    legislative_session=report.legislative_session,
+                    bill=last,
+                    legislative_session=last.legislative_session,
                     motion_text="adopted",
-                    organization=report.from_organization,
+                    organization=last.from_organization,
                     start_date="2026-11-10",
                     result="pass",
                 )
             elif drift == "classification":
-                Bill.objects.filter(pk=report.pk).update(classification=["bill"])
+                Bill.objects.filter(pk=last.pk).update(classification=["resolution"])
             else:
-                Bill.objects.filter(pk=report.pk).update(extras={"new": "key"})
+                Bill.objects.filter(pk=last.pk).update(extras={"new": "key"})
         return kind
 
     with mock.patch.object(text_extract, "_non_bill_kind", kind_then_drift):
         result = _run("--commit")
 
     assert result.exit_code != 0
+    assert last.identifier in result.output
     assert "changed since it was read; rolled back, nothing written" in result.output
-    assert _fresh(ma_items["order"]).classification == ["bill"]
-    assert ORIGINAL_CLASSIFICATION_KEY not in _fresh(ma_items["order"]).extras
-    assert ORIGINAL_CLASSIFICATION_KEY not in _fresh(report).extras
+    fresh_first = _fresh(first)
+    assert fresh_first.classification == list(first.classification)
+    assert ORIGINAL_CLASSIFICATION_KEY not in fresh_first.extras
+    assert ORIGINAL_CLASSIFICATION_KEY not in _fresh(last).extras
