@@ -2977,13 +2977,20 @@ def relabel_non_bills(
 
     if commit:
         with transaction.atomic():
-            for bill, _, new, extras in changes:
-                updated = Bill.objects.filter(pk=bill.pk).update(
-                    classification=new, extras=extras
+            for bill, old, new, extras in changes:
+                # Write only if the row is still what was read: same label, same extras, and (for a
+                # relabel) still no recorded vote. An import or a vote landing mid-run aborts the
+                # whole run instead of being overwritten.
+                current = Bill.objects.filter(
+                    pk=bill.pk, classification=old, extras=bill.extras or {}
                 )
+                if not undo:
+                    current = current.filter(votes__isnull=True)
+                updated = current.update(classification=new, extras=extras)
                 if updated != 1:
                     raise click.ClickException(
-                        f"{bill.id}: updated {updated} rows, expected 1; rolled back"
+                        f"{bill.id} ({bill.identifier}) changed since it was read; "
+                        "rolled back, nothing written"
                     )
 
     mode = "COMMITTED" if commit else "DRY RUN"

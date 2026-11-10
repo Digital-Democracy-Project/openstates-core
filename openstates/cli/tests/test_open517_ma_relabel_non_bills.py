@@ -240,3 +240,39 @@ def test_another_state_is_never_touched(ma_items):
 
     assert _fresh(mi).classification == ["bill"]
     assert ORIGINAL_CLASSIFICATION_KEY not in _fresh(mi).extras
+
+
+@pytest.mark.parametrize("drift", ["vote", "classification", "extras"])
+def test_a_row_that_changes_mid_run_aborts_the_whole_run(ma_items, drift):
+    from openstates.cli import text_extract
+
+    report = ma_items["report"]
+    real_kind = text_extract._non_bill_kind
+
+    def kind_then_drift(name, title, actions):
+        kind = real_kind(name, title, actions)
+        if title == report.title:
+            # an import or a vote lands after the row was read, before it is written
+            if drift == "vote":
+                VoteEvent.objects.create(
+                    bill=report,
+                    legislative_session=report.legislative_session,
+                    motion_text="adopted",
+                    organization=report.from_organization,
+                    start_date="2026-11-10",
+                    result="pass",
+                )
+            elif drift == "classification":
+                Bill.objects.filter(pk=report.pk).update(classification=["bill"])
+            else:
+                Bill.objects.filter(pk=report.pk).update(extras={"new": "key"})
+        return kind
+
+    with mock.patch.object(text_extract, "_non_bill_kind", kind_then_drift):
+        result = _run("--commit")
+
+    assert result.exit_code != 0
+    assert "changed since it was read; rolled back, nothing written" in result.output
+    assert _fresh(ma_items["order"]).classification == ["bill"]
+    assert ORIGINAL_CLASSIFICATION_KEY not in _fresh(ma_items["order"]).extras
+    assert ORIGINAL_CLASSIFICATION_KEY not in _fresh(report).extras
