@@ -1670,17 +1670,74 @@ def _drop_page_footer_lines(text: str, footer_re: "re.Pattern[str]") -> str:
 # jurisdiction). Massachusetts is the heaviest case of the page-footer tail described at
 # _PAGE_FOOTER_TAIL_RE: 9,233 of 10,711 Massachusetts PDF documents contain one (48,688 lines;
 # the first footer is "of 1" in 86% of them) and none of the 297 HTML documents does. It is also
-# in 289 of the 291 stored Massachusetts diffs, 1,814 lines. Characterised before adding any other
-# rule (2026-10-19, every stored Massachusetts diff): the changed lines that recur across diffs are
-# real legal text ("Be it enacted by the Senate and House of Representatives ...", "SECTION N. This
-# act shall take effect upon its passage.", "Approved, <month> <day>, <year>."), not boilerplate, so
-# nothing else is stripped. Only whole lines are dropped; every other line is left exactly as it was, and
-# there is no reflow: since OPEN-217 both diff paths compare like-for-like media types, so a
-# cross-media reflow step (the Virginia and Michigan shape) could never run here.
-def _clean_massachusetts_text(text: str) -> str:
-    """Massachusetts-only cleaner, see the block comment above: drops lines that are only the tail
-    of a page footer ("of 12") and leaves everything else untouched."""
-    return _drop_page_footer_lines(text, _PAGE_FOOTER_TAIL_RE)
+# in 289 of the 291 stored Massachusetts diffs, 1,814 lines.
+#
+# OPEN-223: OPEN-400 stopped there, reasoning that both diff paths compare like-for-like media
+# types since OPEN-217. They do not for Massachusetts: every Massachusetts comparison is the
+# bill as filed (PDF "Bill Text") against the law as signed (HTML "Chapter Law Text (Enacted)"),
+# two versions with two renderings (see _diff_baseline). Measured 2026-11-13 on the production
+# replica, all 364 Massachusetts bills with two documents (291 with a stored comparison): 193 of
+# the 291 had no unchanged line at all, because the renderings differ, not the words.
+#   1. The chapter law alone opens with the act's title ("AN ACT ...") and the enacting clause
+#      ("Be it enacted by the Senate and House of Representatives ...", 362 of 364 as its own
+#      line, one joined to "SECTION 1.") and closes with "Approved, <date>." ("Approved (in part),"
+#      for a budget with vetoes). The bill as filed has none of the three (one PDF has the title).
+#   2. The PDF wraps at about 90 characters; the HTML has one long line per paragraph with runs
+#      of spaces.
+#   3. The PDF puts the text being inserted into a law between double quotes; the HTML does not.
+# What it does: drop the footer tail; for the bill-against-law comparison only (`cross_media`, a
+# PDF against an HTML), also drop the title line (one of the first three lines, all capitals), the
+# enacting clause and the "Approved" line, and remove double quotes; join everything with single
+# spaces; then put one clause per line, breaking after ". ; : ," and after ":-", the way
+# Massachusetts introduces inserted text. Two documents of the same rendering keep their title,
+# "Approved" line and quotes, so a change to any of them still shows (pm-review). Sentences alone (the Nebraska shape, OPEN-486) still
+# left 33 of the 291 with no unchanged line, H 4252 among them: its four edits fall in every one
+# of its sentences. The title, enacting clause and "Approved" line are real legal text, dropped
+# because each exists on one side only, so it can only ever be an addition.
+# Result over the 291 stored comparisons (words on changed lines, so line length does not count):
+#   no unchanged line   193 -> 7 (each a short bill reworded throughout; 8 more become empty)
+#   changed words       1,221,228 -> 591,483    worse (more changed words) 0
+#   title / enacting clause / "Approved" as additions   869 lines in 291 -> 0
+#   H 5555, H 4240: 1.50 MB comparisons of 1.33 MB documents -> 1.23 MB and 1.21 MB (budgets,
+#   whose line items really were rewritten)
+# The 73 bills whose chapter law was archived after OPEN-217 get a comparison too (4 with no
+# unchanged line).
+_MA_TITLE_LINE_RE = re.compile(r"AN ACT\b[^a-z]*")
+_MA_ENACTING_CLAUSE = (
+    "Be it enacted by the Senate and House of Representatives in General Court assembled, "
+    "and by the authority of the same, as follows:"
+)
+_MA_APPROVED_LINE_RE = re.compile(
+    r"Approved(?: \(in part\))?, [A-Z][a-z]+ \d{1,2}, \d{4}\."
+)
+_MA_DOUBLE_QUOTE_RE = re.compile('["\u201c\u201d]')
+_MA_CLAUSE_BREAK = re.compile(r"(?:(?<=[.;:,])|(?<=:-))\s+")
+
+
+def _clean_massachusetts_text(text: str, *, cross_media: bool) -> str:
+    """Massachusetts-only cleaner, see the block comment above: page-footer tails dropped (and,
+    across renderings, the title, the enacting clause, the "Approved" line and double quotes),
+    then one clause per line."""
+    kept = []
+    seen = 0
+    for line in _drop_page_footer_lines(text, _PAGE_FOOTER_TAIL_RE).split("\n"):
+        line = " ".join(line.split())
+        if not line:
+            continue
+        seen += 1
+        if cross_media:
+            if seen <= 3 and _MA_TITLE_LINE_RE.fullmatch(line):
+                continue
+            if line.startswith(_MA_ENACTING_CLAUSE):
+                line = line[len(_MA_ENACTING_CLAUSE):].lstrip()
+            if not line or _MA_APPROVED_LINE_RE.fullmatch(line):
+                continue
+        kept.append(line)
+    words = " ".join(kept)
+    if cross_media:
+        words = _MA_DOUBLE_QUOTE_RE.sub("", words)
+    words = " ".join(words.split())
+    return "\n".join(part for part in _MA_CLAUSE_BREAK.split(words) if part)
 
 
 # OPEN-496: Louisiana-only text cleaning, the same page-footer drop as Massachusetts above but for
@@ -1805,6 +1862,33 @@ def _clean_pa_text(text: str) -> str:
     return "\n".join(kept)
 
 
+# OPEN-223: Massachusetts prints a bill and the law it became as two versions with two
+# renderings: "Bill Text" (PDF, the bill as filed) and "Chapter Law Text (Enacted)" (HTML, the
+# law as signed). Every Massachusetts bill with two documents has exactly that pair (364 bills,
+# replica 2026-11-13), so with one baseline per media type (OPEN-217) the chapter law has no
+# predecessor of its own type and gets no comparison at all: `recompute-diff-order ma` proposed
+# nulling all 291 stored ones. Those comparisons are the only record of what changed between
+# filing and signature (H 4252: four real edits), so for Massachusetts only, an HTML document with
+# no HTML predecessor is compared with the previous version's PDF. _clean_massachusetts_text puts
+# both renderings into one shape first. Every other jurisdiction, and every other media type,
+# keeps the strict same-media baseline.
+_MA_CROSS_MEDIA_BASELINE = {"text/html": "application/pdf"}
+
+
+def _diff_baseline(
+    prior_by_media: dict, media_type: str, jurisdiction_name: str
+) -> typing.Tuple[typing.Optional[str], str]:
+    """The previous text this document is compared with, and that text's media type: the
+    previous version's document of the same media type (OPEN-217), or, for Massachusetts'
+    enacted chapter law only, the previous version's PDF (OPEN-223, see the comment above)."""
+    prior_text = prior_by_media.get(media_type)
+    if prior_text is None and jurisdiction_name == "Massachusetts":
+        fallback = _MA_CROSS_MEDIA_BASELINE.get(media_type)
+        if fallback is not None and fallback in prior_by_media:
+            return prior_by_media[fallback], fallback
+    return prior_text, media_type
+
+
 def apply_prediff_cleaning(
     prior_text: str,
     raw_text: str,
@@ -1815,7 +1899,7 @@ def apply_prediff_cleaning(
     cur_media_type: str,
 ) -> typing.Tuple[str, str]:
     """The per-jurisdiction text cleaning that runs immediately before
-    `difflib.unified_diff()` -- OPEN-7 (WA), OPEN-9 (VA), OPEN-10 (AZ), OPEN-11 (MI), OPEN-371 (NC), OPEN-400 (MA), OPEN-486 (NE), OPEN-495 (PA), OPEN-496 (LA).
+    `difflib.unified_diff()` -- OPEN-7 (WA), OPEN-9 (VA), OPEN-10 (AZ), OPEN-11 (MI), OPEN-371 (NC), OPEN-400 and OPEN-223 (MA), OPEN-486 (NE), OPEN-495 (PA), OPEN-496 (LA).
 
     OPEN-219: extracted so that BOTH diff-computing paths run it. It previously lived
     inline in `archive_bill_versions` only, so `recomputed_diffs_for_documents` --
@@ -1849,7 +1933,9 @@ def apply_prediff_cleaning(
     `_clean_virginia_text` take it, but note that since OPEN-217 both call sites diff
     like-for-like, so their cross-media reflow branch is unreachable from either. It is
     left in place rather than removed: both are shared helpers with their own unit
-    tests, and dropping a parameter from them is a separate cleanup.
+    tests, and dropping a parameter from them is a separate cleanup. The one cross-media
+    pair either path passes is Massachusetts' chapter law against its bill text (OPEN-223,
+    `_diff_baseline`); `_clean_massachusetts_text` is told so, and cleans both sides alike.
     """
     if jurisdiction_name == "Washington":
         prior_text = _clean_wa_text(prior_text)
@@ -1872,8 +1958,9 @@ def apply_prediff_cleaning(
         prior_text = _clean_nc_text(prior_text)
         raw_text = _clean_nc_text(raw_text)
     if jurisdiction_name == "Massachusetts":
-        prior_text = _clean_massachusetts_text(prior_text)
-        raw_text = _clean_massachusetts_text(raw_text)
+        cross_media = prior_media_type != cur_media_type
+        prior_text = _clean_massachusetts_text(prior_text, cross_media=cross_media)
+        raw_text = _clean_massachusetts_text(raw_text, cross_media=cross_media)
     if jurisdiction_name == "Nebraska":
         prior_text = _clean_ne_text(prior_text)
         raw_text = _clean_ne_text(raw_text)
@@ -2135,12 +2222,14 @@ def archive_bill_versions(
                 counters["extract_errors"] += 1
 
             diff_from_previous_version = None
-            prior_text = prior_by_media.get(media_type)
-            # Same-media by construction now, so the cross-media reflow branch inside
+            # Same-media by construction (OPEN-217), so the cross-media reflow branch inside
             # _clean_michigan_text()/_clean_virginia_text() can no longer fire from this call
             # site. Left in place rather than removed: both are shared helpers with their own
-            # tests, and dropping a parameter from them is a separate cleanup.
-            prior_media_type = media_type
+            # tests, and dropping a parameter from them is a separate cleanup. The one
+            # exception is Massachusetts' enacted chapter law (OPEN-223, see _diff_baseline).
+            prior_text, prior_media_type = _diff_baseline(
+                prior_by_media, media_type, jurisdiction_name
+            )
             if (
                 prior_text is not None
                 and not is_error
@@ -2774,7 +2863,9 @@ def recomputed_diffs_for_documents(
         group_texts: dict[str, str] = {}
         for doc in groups[(note, date)]:
             new_diff = None
-            prior_text = prior_by_media.get(doc.media_type)
+            prior_text, prior_media_type = _diff_baseline(
+                prior_by_media, doc.media_type, jurisdiction_name
+            )
             if (
                 prior_text is not None
                 and not doc.is_error
@@ -2782,15 +2873,16 @@ def recomputed_diffs_for_documents(
                 and not is_unknown_position
             ):
                 # OPEN-219: the same cleaning archive_bill_versions applies. Both paths are
-                # same-media since OPEN-217, so the media type is passed identically on both
-                # sides -- the cleaners' cross-media reflow branch is unreachable from here,
+                # same-media since OPEN-217 except Massachusetts' chapter law (OPEN-223), and
+                # both choose the baseline with the same _diff_baseline -- so the Michigan and
+                # Virginia cleaners' cross-media reflow branch stays unreachable from here,
                 # exactly as it is from the archive path.
                 diff_prior_text, diff_raw_text = apply_prediff_cleaning(
                     prior_text,
                     doc.raw_text,
                     jurisdiction_name=jurisdiction_name,
                     is_bill=is_bill,
-                    prior_media_type=doc.media_type,
+                    prior_media_type=prior_media_type,
                     cur_media_type=doc.media_type,
                 )
                 new_diff = "\n".join(

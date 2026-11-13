@@ -154,7 +154,8 @@ def test_a_real_change_survives_the_cleaner():
 
 
 @pytest.mark.parametrize(
-    "jurisdiction", ["Florida", "Massachusetts", "United States", "Utah"]
+    # OPEN-223: Massachusetts now joins lines too, so Georgia (no cleaner) replaces it here.
+    "jurisdiction", ["Florida", "Georgia", "United States", "Utah"]
 )
 def test_the_cleaner_is_alabama_only(jurisdiction):
     text = "HB1\nTRK12-1\nSYNOPSIS:\nx\nA BILL\nbody\n"

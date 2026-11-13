@@ -23,8 +23,6 @@ from openstates.cli.text_extract import (
     _strip_virginia_boilerplate,
     _reflow_virginia_text,
     _clean_wa_text,
-    _clean_massachusetts_text,
-    apply_prediff_cleaning,
     S3_BILL_ARCHIVE_BUCKET,
 )
 # STAGE_INTRODUCED/STAGE_ENACTED moved to openstates.utils.version_ordering (OPEN-91) --
@@ -1196,10 +1194,10 @@ class TestArchiveBillVersionsMichiganCleaningOPEN11:
         # across the whole archive, Michigan has 4,717 documents carrying a diff and every one
         # of them has a same-media predecessor within its own bill, so no real MI diff
         # disappears. This alternating-rendering shape is synthetic. The only jurisdiction that
-        # loses diffs is Massachusetts (291), where every bill pairs a "Bill Text" PDF with a
-        # "Chapter Law Text (Enacted)" HTML -- two different documents, of which 193 were
-        # already whole-document replacements. Dropping those is the correction, not a
-        # regression.
+        # lost diffs was Massachusetts (291), where every bill pairs a "Bill Text" PDF with a
+        # "Chapter Law Text (Enacted)" HTML. OPEN-223 gave Massachusetts alone a PDF baseline
+        # for that HTML (_diff_baseline) and a cleaner that makes the two comparable; Michigan,
+        # as this test pins, still records nothing.
         bill = self._make_mi_bill()
         introduced = bill.versions.create(note="Senate Introduced Bill", date="")
         passed = bill.versions.create(note="As Passed by the Senate", date="")
@@ -3157,67 +3155,5 @@ class TestFetchBytesRealScrapelibRetryInteractionOPEN53:
         assert len(warm_up_calls) == 2
 
 
-class TestCleanMassachusettsText:
-    """OPEN-400: Massachusetts drops the page footer's tail ("of 12") and nothing else."""
-
-    def test_drops_a_page_footer_tail_line(self):
-        # real shape: "of 5" between two unrelated paragraphs of a Massachusetts PDF
-        for marker in ("of 5", "OF 3", "  of 7  ", "of 5\r"):
-            text = f"defined in section 1 of chapter 19C.\n{marker}\n\u201cEligible adult\u201d means"
-            assert _clean_massachusetts_text(text) == (
-                "defined in section 1 of chapter 19C.\n\u201cEligible adult\u201d means"
-            ), marker
-
-    def test_keeps_text_that_only_looks_like_a_page_footer_tail(self):
-        for text in (
-            "of the General Laws",
-            "of 12 months",
-            "total of 12",
-            "Page 4 of 12",
-            "Page 4",
-            "of 1234",
-        ):
-            assert _clean_massachusetts_text(text) == text, text
-
-    def test_every_other_line_is_left_exactly_as_it_was(self):
-        # blank lines, indentation, a trailing newline and "Approved, ..." lines are real text
-        text = (
-            "  SECTION 1.  This act shall take effect upon its passage.\n\n"
-            "\tSECTION 2. Chapter 90 of the General Laws is hereby amended.\n"
-            "Approved, July 3, 2025.\n"
-        )
-        assert _clean_massachusetts_text(text) == text
-
-    def test_is_dispatched_for_massachusetts_only(self):
-        text = "kept\nof 12\nkept too"
-        args = dict(
-            is_bill=True,
-            prior_media_type="application/pdf",
-            cur_media_type="application/pdf",
-        )
-        cleaned, _ = apply_prediff_cleaning(
-            text, text, jurisdiction_name="Massachusetts", **args
-        )
-        assert cleaned == "kept\nkept too"
-        for other in ("Utah", "Florida", "United States", "Michigan"):
-            assert apply_prediff_cleaning(
-                text, text, jurisdiction_name=other, **args
-            ) == (text, text), other
-
-    def test_a_page_count_change_alone_is_not_a_diff_after_cleaning(self):
-        paragraph = (
-            "SECTION 1. The city of Boston, acting by and through its Public Facilities Commission,\n"
-            "may grant a highway easement to the commonwealth\n"
-            "{marker}\n"
-            "for the purposes described in this act.\n"
-        )
-        prior, raw = apply_prediff_cleaning(
-            paragraph.format(marker="of 1"),
-            paragraph.format(marker="of 2"),
-            jurisdiction_name="Massachusetts",
-            is_bill=True,
-            prior_media_type="application/pdf",
-            cur_media_type="application/pdf",
-        )
-        assert prior == raw
-        assert not list(difflib.unified_diff(prior.split("\n"), raw.split("\n"), lineterm=""))
+# OPEN-400's TestCleanMassachusettsText moved to test_open223_ma_cleaner.py with the cleaner's
+# OPEN-223 rules (footer tail, look-alikes kept, dispatched for Massachusetts only).
