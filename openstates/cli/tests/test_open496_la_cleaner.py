@@ -98,12 +98,10 @@ def test_the_cleaner_is_louisiana_only():
     assert _clean(prior, raw)[0] == _clean(prior, raw)[1]
 
 
-def test_massachusetts_still_drops_only_the_tail():
+def test_massachusetts_drops_its_tail_but_not_the_louisiana_footer():
+    # OPEN-223: Massachusetts now also joins lines and puts one clause per line.
     text = "Before.\nof 12\n" + FOOT.format(n=1, m=2) + "\nAfter."
-    assert (
-        _clean_massachusetts_text(text)
-        == "Before.\n" + FOOT.format(n=1, m=2) + "\nAfter."
-    )
+    assert _clean_massachusetts_text(text, cross_media=False) == "Before.\nPage 1 of 2 After."
 
 
 def _diff(prior, raw, jurisdiction):

@@ -350,6 +350,52 @@ def test_parity_holds_when_a_version_carries_two_media_types():
 
 
 @pytest.mark.django_db
+def test_massachusetts_chapter_law_against_the_bill_text_agrees_on_both_paths():
+    """OPEN-223: Massachusetts is the one comparison across media types -- the HTML "Chapter Law
+    Text (Enacted)" against the PDF "Bill Text" before it (`_diff_baseline`). Both paths must
+    choose that baseline and clean it the same way. H 4252's real texts (fixtures/open223_ma)."""
+    import pathlib
+
+    from openstates.cli.text_extract import recompute_bill_diff_order
+
+    fixtures = pathlib.Path(__file__).parent / "fixtures" / "open223_ma"
+    bill = _make_bill(
+        jid="ocd-jurisdiction/country:us/state:ma/government",
+        jurisdiction_name="Massachusetts",
+    )
+    bill.classification = ["bill"]
+    bill.save()
+    v1 = bill.versions.create(note="Bill Text", date="")
+    v1.links.create(url=V1_URL, media_type="application/pdf")
+    v2 = bill.versions.create(note="Chapter Law Text (Enacted)", date="")
+    v2.links.create(url="https://x.test/v2.htm", media_type="text/html")
+    _archive(
+        bill,
+        {
+            V1_URL: (fixtures / "h4252_bill_text.txt").read_text(),
+            "https://x.test/v2.htm": (fixtures / "h4252_chapter_law.txt").read_text(),
+        },
+    )
+
+    law = BillVersionDocument.objects.get(bill=bill, media_type="text/html")
+    diff = law.diff_from_previous_version
+    # pm-review: agreement alone would also hold if both paths stored the same whole-document
+    # replacement, so the stored comparison itself is pinned: the four edits, the three
+    # unchanged clauses around them, and none of the chapter law's one-sided lines.
+    assert [ln for ln in diff.split("\n") if ln.startswith(" ")] == [
+        " In between reviews,",
+        " updates to any exaction may be adjusted,",
+        " over time,",
+    ]
+    added = [ln for ln in diff.split("\n") if ln.startswith("+") and not ln.startswith("+++")]
+    assert len(added) == 3
+    assert "+based on changes in the Consumer Price Index" in diff
+    for one_sided in ("AN ACT", "Be it enacted", "Approved"):
+        assert one_sided not in diff
+    assert recompute_bill_diff_order(bill)["changed"] == []
+
+
+@pytest.mark.django_db
 def test_error_and_empty_documents_never_reach_the_cleaner():
     """Round 1: 'Are error and missing-text rows excluded before apply_prediff_cleaning?'
 

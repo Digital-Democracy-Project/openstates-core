@@ -246,15 +246,17 @@ def _law_pair(title):
 
 
 @pytest.mark.django_db
-def test_without_the_switch_a_recompute_nulls_a_cross_media_diff():
-    """Pins the behaviour the switch exists to avoid, so the next test proves a real difference."""
+def test_without_the_switch_a_recompute_rewrites_a_cross_media_diff():
+    """Pins what a recompute without the switch does, so the next test proves a real difference.
+    It used to null this diff (same-media only, OPEN-217); since OPEN-223 Massachusetts compares
+    its enacted law with the bill text again, so the stored diff is rewritten, not removed."""
     bill, _pdf, law = _law_pair("An Act relative to golf carts")
 
     out = _recompute(bill, "--commit")
 
-    assert "nulled=1" in out
+    assert "corrected=1 nulled=0" in out
     law.refresh_from_db()
-    assert law.diff_from_previous_version is None
+    assert law.diff_from_previous_version not in (None, STORED_DIFF)
 
 
 @pytest.mark.django_db
