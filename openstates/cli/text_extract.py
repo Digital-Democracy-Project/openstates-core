@@ -31,6 +31,7 @@ from openstates.fulltext import (
     Metadata,
 )
 from openstates.fulltext.pa import ODT_MEDIA_TYPE, is_opendocument_text
+from ..importers.computed_fields import update_bill_fields
 from ..utils.instrument import Instrumentation
 from ..utils.cookie_provider import (
     BLOCK_PAGE_MARKERS as _BLOCK_PAGE_MARKERS,
@@ -43,6 +44,7 @@ from ..utils.waf_circuit_breaker import raise_if_waf_block_threshold_reached
 from ..utils.version_ordering import (
     STAGE_UNKNOWN as _STAGE_UNKNOWN,
     NON_BILL_AMENDMENT as _NON_BILL_AMENDMENT,
+    ACTIONS_REVERSED_KEY,
     ORIGINAL_CLASSIFICATION_KEY,
     is_bill_version as _is_bill_version,
     is_procedural_document as _is_procedural_document,
@@ -3150,6 +3152,263 @@ def relabel_non_bills(
     )
     for (old, new), count in sorted(by_label.items(), key=lambda kv: (-kv[1], kv[0])):
         click.secho(f"  {old} -> {new}: {count}", fg=color)
+
+
+def _manifest_newest_first(manifest_path: str, state: str) -> typing.Optional[bool]:
+    """The state's `actions.newest_first` in ddp-open-states' jurisdictions.yaml, or None when the file, the
+    state or the value is missing (the caller refuses then, the same as for false)."""
+    import yaml
+
+    try:
+        with open(manifest_path) as f:
+            manifest = yaml.safe_load(f) or {}
+    except OSError:
+        return None
+    value = ((manifest.get(state.lower()) or {}).get("actions") or {}).get(
+        "newest_first"
+    )
+    return value if isinstance(value, bool) else None
+
+
+def _date_direction(dates: typing.List[str]) -> str:
+    """How a bill's stored action dates run, in stored order (day only: one source stamps a time, one doesn't)."""
+    days = [d[:10] for d in dates]
+    ups = any(b > a for a, b in zip(days, days[1:]))
+    downs = any(b < a for a, b in zip(days, days[1:]))
+    if ups and downs:
+        return "mixed"
+    if downs:
+        return "newest_first"
+    if ups:
+        return "oldest_first"
+    return "same_day"
+
+
+@main.command(
+    help="OPEN-541: reverse the stored action order of every bill of a state whose actions are stored newest "
+    "first (dry run by default; --commit writes, with --list naming the file that records every change)"
+)
+@click.argument("state")
+@click.option("--session", default=None)
+@click.option(
+    "--commit/--dry-run",
+    default=False,
+    help="write the new order; default is a dry run that only reports counts",
+)
+@click.option(
+    "--undo",
+    is_flag=True,
+    default=False,
+    help="reverse again every bill an earlier --commit reversed (rollback inside the silent window)",
+)
+@click.option(
+    "--expect",
+    type=int,
+    default=None,
+    help="abort before writing unless exactly this many bills would change (the agreed dry-run count)",
+)
+@click.option(
+    "--list",
+    "list_path",
+    default=None,
+    help="write one CSV row per bill that would change (old and new action order); required with --commit",
+)
+@click.option(
+    "--manifest",
+    "manifest_path",
+    default=lambda: os.environ.get("DDP_JURISDICTIONS_MANIFEST", "jurisdictions.yaml"),
+    show_default="$DDP_JURISDICTIONS_MANIFEST or ./jurisdictions.yaml",
+    help="ddp-open-states' jurisdictions.yaml, read for the state's actions.newest_first",
+)
+@click.option(
+    "--even-if-manifest-says-oldest-first",
+    "override_manifest",
+    is_flag=True,
+    default=False,
+    help="run although the manifest's actions.newest_first is false or missing for this state",
+)
+def reverse_action_order(
+    state: str,
+    session: str = None,
+    commit: bool = False,
+    undo: bool = False,
+    expect: int = None,
+    list_path: str = None,
+    manifest_path: str = "jurisdictions.yaml",
+    override_manifest: bool = False,
+) -> None:
+    """
+    Plan PLAN-state-specific-handling §6 Phase 2: once a state's scraper stores actions oldest first, its stored
+    history is reversed in the same silent window as the manifest flag flip, so one state never holds both orders.
+
+    A bill is reversed unless it already carries `ACTIONS_REVERSED_KEY` (an earlier commit reversed it), has fewer
+    than two actions, or its dates already run oldest first. Same-day and mixed-date bills follow the state's
+    order, so they are reversed and counted apart. The same set of `order` values is kept, handed out in reverse.
+    The bill's computed action fields are then recomputed the way an import does (`update_bill_fields`); a bill
+    whose latest action changes is saved, which moves its `updated_at`, exactly as a re-import would. The marker
+    itself is written by a queryset update and moves nothing. `--undo` is the rollback inside the same silent
+    window (scrape paused): it reverses each marked bill's actions as they stand, so it is not for use after a
+    re-scrape.
+    """
+    if commit and not list_path:
+        raise click.ClickException(
+            "--commit needs --list FILE: that file is the record of what changed"
+        )
+    if not undo and not override_manifest:
+        newest_first = _manifest_newest_first(manifest_path, state)
+        if newest_first is not True:
+            said = "missing" if newest_first is None else "false"
+            raise click.ClickException(
+                f"{state}: actions.newest_first is {said} in {manifest_path}; its actions are not stored newest "
+                "first by the manifest's account, so nothing is reversed (--even-if-manifest-says-oldest-first "
+                "to run anyway)"
+            )
+
+    init_django()
+    from openstates.data.models import Bill, BillAction
+
+    bills = Bill.objects.filter(legislative_session__jurisdiction_id=abbr_to_jid(state))
+    if session:
+        bills = bills.filter(legislative_session__identifier=session)
+    bills = bills.select_related("legislative_session").order_by("id")
+
+    changes = []  # (bill, actions in stored order, new extras)
+    skipped: dict[str, int] = {}
+    shapes: dict[str, int] = {}
+    for bill in bills:
+        extras = dict(bill.extras or {})
+        if undo:
+            if not extras.pop(ACTIONS_REVERSED_KEY, None):
+                continue
+        elif extras.get(ACTIONS_REVERSED_KEY):
+            skipped["already reversed"] = skipped.get("already reversed", 0) + 1
+            continue
+        actions = list(BillAction.objects.filter(bill=bill).order_by("order", "id"))
+        if not undo:
+            if len(actions) < 2:
+                skipped["single action"] = skipped.get("single action", 0) + 1
+                continue
+            shape = _date_direction([a.date for a in actions])
+            if shape == "oldest_first":
+                skipped["already oldest first"] = (
+                    skipped.get("already oldest first", 0) + 1
+                )
+                continue
+            shapes[shape] = shapes.get(shape, 0) + 1
+            extras[ACTIONS_REVERSED_KEY] = True
+        changes.append((bill, actions, extras))
+
+    # A commit's list is the audit record, so it is written aside and only takes its name once the transaction has
+    # committed: a refused or rolled-back run leaves no list that reads as done.
+    written_path = f"{list_path}.partial" if commit and list_path else list_path
+    if list_path:
+        with open(written_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    "bill_id",
+                    "identifier",
+                    "session",
+                    "actions",
+                    "old_order",
+                    "new_order",
+                    "old_dates",
+                    "new_dates",
+                ]
+            )
+            for bill, actions, _ in changes:
+                writer.writerow(
+                    [
+                        bill.id,
+                        bill.identifier,
+                        bill.legislative_session.identifier,
+                        len(actions),
+                        ";".join(str(a.id) for a in actions),
+                        ";".join(str(a.id) for a in reversed(actions)),
+                        ";".join(a.date for a in actions),
+                        ";".join(a.date for a in reversed(actions)),
+                    ]
+                )
+
+    latest_changed = 0
+    if commit:
+        try:
+            if expect is not None and expect != len(changes):
+                raise click.ClickException(
+                    f"{len(changes)} bills would change, not the expected {expect}; nothing written"
+                )
+            with transaction.atomic():
+                for bill, actions, extras in changes:
+                    # Write only if the bill is still what was read: same actions in the same order, same extras. An
+                    # import landing mid-run aborts the whole run instead of being overwritten. The re-read locks the
+                    # action rows until the commit, so an import (which deletes and recreates a bill's actions) waits.
+                    read = [(a.id, a.order) for a in actions]
+                    now = list(
+                        BillAction.objects.select_for_update()
+                        .filter(bill=bill)
+                        .order_by("order", "id")
+                        .values_list("id", "order")
+                    )
+                    marked = Bill.objects.filter(pk=bill.pk, extras=bill.extras).update(
+                        extras=extras
+                    )
+                    if now != read or marked != 1:
+                        raise click.ClickException(
+                            f"{bill.id} ({bill.identifier}) changed since it was read; "
+                            "rolled back, nothing written"
+                        )
+                    orders = [a.order for a in actions]
+                    for action, order in zip(reversed(actions), orders):
+                        action.order = order
+                    BillAction.objects.bulk_update(actions, ["order"])
+                    fresh = Bill.objects.get(pk=bill.pk)
+                    before = (
+                        fresh.first_action_date,
+                        fresh.latest_action_date,
+                        fresh.latest_action_description,
+                        fresh.latest_passage_date,
+                    )
+                    update_bill_fields(fresh, save=True)
+                    if before != (
+                        fresh.first_action_date,
+                        fresh.latest_action_date,
+                        fresh.latest_action_description,
+                        fresh.latest_passage_date,
+                    ):
+                        latest_changed += 1
+        except BaseException:
+            os.remove(written_path)
+            raise
+        try:
+            os.replace(written_path, list_path)
+        except OSError as e:
+            raise click.ClickException(
+                f"{state}: COMMITTED, but the change list could not take its name ({e}); "
+                f"it is complete at {written_path}. Do not run again: the commit is done"
+            )
+
+    mode = "COMMITTED" if commit else "DRY RUN"
+    color = "green" if commit else "yellow"
+    action_word = "restored" if undo else "reversed"
+    line = (
+        f"{state}: [{mode}] {action_word}={len(changes)} "
+        f"actions={sum(len(a) for _, a, _ in changes)} "
+        + " ".join(
+            f"skipped_{k.replace(' ', '_')}={v}" for k, v in sorted(skipped.items())
+        )
+    )
+    click.secho(line.rstrip(), fg=color)
+    if shapes:
+        click.secho(
+            "  stored dates: "
+            + " ".join(f"{k}={v}" for k, v in sorted(shapes.items())),
+            fg=color,
+        )
+    if commit:
+        click.secho(
+            f"  latest action fields recomputed and changed: {latest_changed}; change list: {list_path}",
+            fg=color,
+        )
 
 
 _s3_client_cache = None

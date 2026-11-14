@@ -791,6 +791,12 @@ def is_bill_version(
 # import would replace extras with the scraper's and lose the saved label.
 ORIGINAL_CLASSIFICATION_KEY = "ddp_open517_original_classification"
 
+# OPEN-541: set on a bill by `reverse-action-order --commit` once its stored actions are oldest first, so a
+# second run skips it (no double reversal) and `--undo` knows which bills to put back. Kept on a re-scrape for the
+# same reason as the key above: the pass runs after the scraper already stores that state oldest first, so a
+# re-scraped bill is still oldest first and must still be skipped.
+ACTIONS_REVERSED_KEY = "ddp_open541_actions_reversed"
+
 
 # OPEN-517: what a Massachusetts non-bill item IS, so `os-text-extract relabel-non-bills` can store a
 # label that says so instead of "bill" / "proposed bill" (Ramon, 2026-11-09: "a label per kind"; relabel,
