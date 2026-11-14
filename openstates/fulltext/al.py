@@ -1,6 +1,6 @@
 import fitz  # PyMuPDF
 
-from .common import Metadata, extract_line_numbered_pdf
+from .common import ExtractorFunc, Metadata, extract_line_numbered_pdf
 
 # OPEN-530: Alabama prints an amendment to existing law with the removed words struck through
 # and the new words underlined, both drawn as thin filled rectangles over the text, not as text
@@ -20,6 +20,17 @@ from .common import Metadata, extract_line_numbered_pdf
 # position); Alabama's pre-diff cleaner already ignores spacing inside a line (OPEN-529). A file
 # PyMuPDF cannot open raises, so the archiver records an extraction error rather than quietly
 # reading it the old way with the struck words back in.
+#
+# OPEN-560: Louisiana, Nebraska and Washington print struck words the same way (a thin drawn rule
+# across the characters, no font effect; Louisiana and Nebraska publish only the PDF), and their
+# rules fall inside the same window, so the same reader is reused for them unchanged. Measured
+# 2026-11-14 on 104 of their real PDFs: a rule crossing a character sits at 0.41 or 0.5 of the
+# span's height in Louisiana (strike) and 0.85 or more (underline); at 0.53 in Nebraska and
+# Washington (strike) and 0.85 (underline); nothing else between 0.1 and 0.9 but one Louisiana
+# crossing at 0.72, a signature rule after "APPROVED:" over a blank space (kept, rightly). In
+# every one of the 104 the new text is the old text with characters only taken out (spacing
+# aside, as for Alabama). Each state keeps its own text extractor; `read_without_struck_text`
+# runs it on the copy.
 _RULE_MAX_HEIGHT = 2.0
 _STRIKE_LOW = 0.35
 _STRIKE_HIGH = 0.7
@@ -89,3 +100,13 @@ def without_struck_text(data: bytes) -> bytes:
 
 def handle_alabama_pdf(data: bytes, metadata: Metadata) -> str:
     return extract_line_numbered_pdf(without_struck_text(data), metadata)
+
+
+def read_without_struck_text(extract: ExtractorFunc) -> ExtractorFunc:
+    """`extract`, run on the PDF with its struck-out characters removed (OPEN-560)."""
+
+    def read(data: bytes, metadata: Metadata) -> str:
+        return extract(without_struck_text(data), metadata)
+
+    read.__wrapped__ = extract  # type: ignore[attr-defined]
+    return read

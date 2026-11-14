@@ -20,7 +20,7 @@ from .va import handle_virginia_html
 from .ut import handle_utah_xml
 from .us import handle_us_bill_xml
 from .pa import handle_pennsylvania_odt, ODT_MEDIA_TYPE
-from .al import handle_alabama_pdf
+from .al import handle_alabama_pdf, read_without_struck_text
 
 
 class DoNotDownload:
@@ -83,7 +83,8 @@ CONVERSION_FUNCTIONS = {
     "in": {"application/pdf": extract_sometimes_numbered_pdf},
     "ks": {"application/pdf": extract_sometimes_numbered_pdf},
     "ky": {"application/pdf": extract_line_numbered_pdf},
-    "la": {"application/pdf": extract_sometimes_numbered_pdf},
+    # OPEN-560: struck-out words removed by Alabama's reader, see fulltext/al.py.
+    "la": {"application/pdf": read_without_struck_text(extract_sometimes_numbered_pdf)},
     "ma": {
         "application/pdf": extract_line_numbered_pdf,
         # Added 2026-08-14 (OPEN-37): the enacted Chapter-of-the-Acts page
@@ -128,7 +129,8 @@ CONVERSION_FUNCTIONS = {
     "mt": {"application/pdf": extract_sometimes_numbered_pdf},
     "nc": {"application/pdf": extract_sometimes_numbered_pdf},
     "nd": {"application/pdf": extract_sometimes_numbered_pdf},
-    "ne": {"application/pdf": extract_sometimes_numbered_pdf},
+    # OPEN-560: struck-out words removed by Alabama's reader, see fulltext/al.py.
+    "ne": {"application/pdf": read_without_struck_text(extract_sometimes_numbered_pdf)},
     "nh": {
         "application/pdf": extract_sometimes_numbered_pdf,
         "text/html": extract_from_p_tags_html,
@@ -215,7 +217,10 @@ CONVERSION_FUNCTIONS = {
         # or in this fork -- every WA PDF (5,800+) silently extracted as empty/is_error=True.
         # Verified directly against real WA bills: same printed-line-number PDF shape already
         # handled by extract_line_numbered_pdf for AL/FL/MA/MD/etc.
-        "application/pdf": extract_line_numbered_pdf,
+        # OPEN-560: struck-out words removed by Alabama's reader, see fulltext/al.py. The HTML
+        # printing marks them too (a line-through style) and is left as it is: LegBot reads the
+        # PDF when a version has both.
+        "application/pdf": read_without_struck_text(extract_line_numbered_pdf),
     },
     "wi": {
         "application/pdf": extract_sometimes_numbered_pdf,
