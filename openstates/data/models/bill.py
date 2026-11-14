@@ -368,3 +368,27 @@ class BillVersionDocument(models.Model):
         indexes = [
             models.Index(fields=["bill", "version_note", "version_date"]),
         ]
+
+
+class BillDocumentNotFound(models.Model):
+    """
+    OPEN-506: a bill document address the site answered "not found" (HTTP 404), so the archiver
+    stops asking for it on every run.
+
+    Only jurisdictions that opt in (`_REMEMBERS_NOT_FOUND` in openstates/cli/text_extract.py)
+    write or read these rows. Massachusetts lists about 20 bill PDFs that never existed on
+    malegislature.gov; on most days the site answers 404 at once, but on some days it does not
+    answer at all for them, and five of those no-answers in a row ended the whole archive run
+    (OPEN-323's guard) with nothing saved. A remembered address is skipped and asked again only
+    after `last_checked_at` is old enough; a successful fetch deletes the row.
+    """
+
+    source_url = models.URLField(max_length=2000, unique=True)
+    first_not_found_at = models.DateTimeField()
+    last_checked_at = models.DateTimeField()
+
+    def __str__(self):
+        return self.source_url
+
+    class Meta:
+        db_table = "ddp_bill_document_not_found"
