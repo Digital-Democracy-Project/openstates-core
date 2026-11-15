@@ -47,6 +47,7 @@ from ..utils.version_ordering import (
     NON_BILL_AMENDMENT as _NON_BILL_AMENDMENT,
     ACTIONS_REVERSED_KEY,
     ORIGINAL_CLASSIFICATION_KEY,
+    is_amendment_text as _is_amendment_text,
     is_bill_version as _is_bill_version,
     is_procedural_document as _is_procedural_document,
     non_bill_kind as _non_bill_kind,
@@ -1994,6 +1995,17 @@ def apply_prediff_cleaning(
     return prior_text, raw_text
 
 
+def _feeds_baseline(doc: typing.Any, jurisdiction_name: str) -> bool:
+    """A stored document whose text can take a diff and be the next version's baseline: extracted, with text, and
+    not a line-edit paper (OPEN-564, `is_amendment_text`). The version-level exclusions (unknown stage, procedural
+    note) are checked by the callers."""
+    return (
+        not doc.is_error
+        and _has_text(doc.raw_text)
+        and not _is_amendment_text(jurisdiction_name, doc.raw_text)
+    )
+
+
 def archive_bill_versions(
     bill: typing.Any, unsaved_documents: typing.Optional[list] = None
 ) -> dict[str, int]:
@@ -2152,7 +2164,7 @@ def archive_bill_versions(
             # as permanently done, silently, with no path back to a retry, ever.
             if existing and (existing.is_error or existing.archive_location):
                 counters["skipped"] += 1
-                if not existing.is_error and _has_text(existing.raw_text):
+                if _feeds_baseline(existing, jurisdiction_name):
                     this_version_texts[existing.media_type] = existing.raw_text
                 continue
             # OPEN-263 (review round 1): `existing` here, if present, is a stale row from a
@@ -2166,7 +2178,7 @@ def archive_bill_versions(
             # every early-exit below that skips the create falls back to the stale row's own
             # raw_text, matching what the skip branch above and the concurrent-write recovery
             # branch below both already do.
-            if existing and not existing.is_error and _has_text(existing.raw_text):
+            if existing and _feeds_baseline(existing, jurisdiction_name):
                 this_version_texts[existing.media_type] = existing.raw_text
 
             metadata: Metadata = {
@@ -2301,11 +2313,14 @@ def archive_bill_versions(
             prior_text, prior_media_type = _diff_baseline(
                 prior_by_media, media_type, jurisdiction_name
             )
+            # OPEN-564: a line-edit paper (is_amendment_text) is treated like a procedural one, per document.
+            is_amendment = _is_amendment_text(jurisdiction_name, raw_text)
             if (
                 prior_text is not None
                 and not is_error
                 and _has_text(raw_text)
                 and not is_unknown_position
+                and not is_amendment
             ):
                 # OPEN-219: shared with recomputed_diffs_for_documents below. Applied to
                 # a local copy of each text, so the stored raw_text is untouched and every
@@ -2363,14 +2378,15 @@ def archive_bill_versions(
                         # OPEN-492: decided once, here, from the same per-state rules the
                         # diff lineage uses; readers (api-v3) read this instead of a list.
                         # OPEN-498: some states also need the bill's title (see is_bill_version).
+                        # OPEN-564: and the document's own text.
                         is_bill_version=_is_bill_version(
-                            jurisdiction_name, version.note, bill.title
+                            jurisdiction_name, version.note, bill.title, raw_text
                         ),
                         archive_location=archive_location,
                         archived_at=archived_at,
                     )
                 counters["archived"] += 1
-                if not is_error and _has_text(raw_text):
+                if not is_error and _has_text(raw_text) and not is_amendment:
                     this_version_texts[media_type] = raw_text
             except IntegrityError:
                 # OPEN-107: ask the database which of two very different things just
@@ -2418,7 +2434,7 @@ def archive_bill_versions(
                     # so the NEXT version's document of the same rendering gets a diff
                     # against an older version, or none at all -- a silent lineage gap
                     # caused purely by having lost a race.
-                    if not stored.is_error and _has_text(stored.raw_text):
+                    if _feeds_baseline(stored, jurisdiction_name):
                         this_version_texts[stored.media_type] = stored.raw_text
                 else:
                     click.secho(
@@ -2941,8 +2957,7 @@ def recomputed_diffs_for_documents(
             )
             if (
                 prior_text is not None
-                and not doc.is_error
-                and _has_text(doc.raw_text)
+                and _feeds_baseline(doc, jurisdiction_name)
                 and not is_unknown_position
             ):
                 # OPEN-219: the same cleaning archive_bill_versions applies. Both paths are
@@ -2969,7 +2984,7 @@ def recomputed_diffs_for_documents(
                 changed.append((doc, new_diff))
             else:
                 unchanged.append(doc)
-            if not doc.is_error and _has_text(doc.raw_text):
+            if _feeds_baseline(doc, jurisdiction_name):
                 group_texts[doc.media_type] = doc.raw_text
         if group_texts and not is_unknown_position:
             prior_by_media.update(group_texts)
@@ -3050,7 +3065,9 @@ def recompute_diff_order(
                 doc.diff_from_previous_version = new_diff
                 fields_by_doc[doc.id] = (doc, {"diff_from_previous_version"})
         for doc in result["unchanged"] + [d for d, _ in result["changed"]]:
-            want = _is_bill_version(jurisdiction_name, doc.version_note, bill.title)
+            want = _is_bill_version(
+                jurisdiction_name, doc.version_note, bill.title, doc.raw_text
+            )
             if not want:
                 flag_not_a_version += 1
             if doc.is_bill_version is None:
@@ -3480,6 +3497,209 @@ def reverse_action_order(
             f"  latest action fields recomputed and changed: {latest_changed}; change list: {list_path}",
             fg=color,
         )
+
+
+def _stale_document_plan(bills: typing.Any) -> tuple:
+    """
+    OPEN-564: which saved documents of `bills` are stale copies that can go. A document is stale when its version
+    note is no longer a version note of its bill (the archiver keys documents on the note, so a renamed version is
+    saved again under the new note and the old row stays behind). A stale document is removed only when a
+    document that is NOT stale keeps the same file: same bill, same address, same `sha256_hash`. A stale document
+    without such a copy is kept and counted, so the last saved copy of a file is never removed.
+
+    Returns (rows read, the removals as (stale row, kept copy) value dicts in id order, counts of kept stale rows).
+    """
+    from openstates.data.models import BillVersion, BillVersionDocument
+
+    current = set(
+        BillVersion.objects.filter(bill__in=bills).values_list("bill_id", "note")
+    )
+    rows = list(
+        BillVersionDocument.objects.filter(bill__in=bills)
+        .order_by("id")
+        .values(
+            "id",
+            "bill_id",
+            "bill__identifier",
+            "version_note",
+            "version_date",
+            "source_url",
+            "sha256_hash",
+            "is_bill_version",
+            "archive_location",
+        )
+    )
+    kept_copy: dict[tuple, dict] = {}
+    for row in rows:
+        if (row["bill_id"], row["version_note"]) in current and row["sha256_hash"]:
+            kept_copy.setdefault(
+                (row["bill_id"], row["source_url"], row["sha256_hash"]), row
+            )
+    removals = []
+    kept = {"last copy": 0, "no file hash": 0}
+    for row in rows:
+        if (row["bill_id"], row["version_note"]) in current:
+            continue
+        copy = kept_copy.get((row["bill_id"], row["source_url"], row["sha256_hash"]))
+        if not row["sha256_hash"]:
+            kept["no file hash"] += 1
+        elif copy is None:
+            kept["last copy"] += 1
+        else:
+            removals.append((row, copy))
+    return rows, removals, kept
+
+
+@main.command(
+    help="OPEN-564: remove a state's saved documents whose version note no longer exists on the bill, only where "
+    "a current document keeps the same file (dry run by default; --commit writes, with --list naming the file that "
+    "records every removal)"
+)
+@click.argument("state")
+@click.option("--session", default=None)
+@click.option(
+    "--commit/--dry-run",
+    default=False,
+    help="remove the rows; default is a dry run that only reports counts",
+)
+@click.option(
+    "--expect",
+    type=int,
+    default=None,
+    help="abort before writing unless exactly this many rows would be removed (the agreed dry-run count)",
+)
+@click.option(
+    "--list",
+    "list_path",
+    default=None,
+    help="write one CSV row per document that would be removed, with the copy that stays; required with --commit",
+)
+def remove_stale_documents(
+    state: str,
+    session: str = None,
+    commit: bool = False,
+    expect: int = None,
+    list_path: str = None,
+) -> None:
+    """
+    Alabama, 2026-11-15: OPEN-528 reversed the action order, the scraper names each amendment or substitute paper
+    after the first action that carries it, so 456 papers got a new version note and the archive saved each one a
+    second time. The old rows match no version any more. This removes them, in one transaction, re-reading the plan
+    inside it and aborting if anything changed since the dry run. The files themselves are untouched: the kept row
+    has the same bytes (`sha256_hash`) and the archive copy in S3 stays where it is. Run `recompute-diff-order` on
+    the state afterwards, so every kept document's diff is taken against its real neighbours.
+    """
+    if commit and not list_path:
+        raise click.ClickException(
+            "--commit needs --list FILE: that file is the record of what was removed"
+        )
+
+    init_django()
+    from openstates.data.models import Bill, BillVersionDocument
+
+    bills = Bill.objects.filter(legislative_session__jurisdiction_id=abbr_to_jid(state))
+    if session:
+        bills = bills.filter(legislative_session__identifier=session)
+
+    rows, removals, kept = _stale_document_plan(bills)
+    stale = len(removals) + sum(kept.values())
+
+    # Written aside and named only after the commit, as in reverse-action-order: a refused or rolled-back run leaves
+    # no list that reads as done.
+    written_path = f"{list_path}.partial" if commit and list_path else list_path
+    if list_path:
+        with open(written_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    "removed_id",
+                    "bill_id",
+                    "identifier",
+                    "removed_note",
+                    "version_date",
+                    "source_url",
+                    "sha256_hash",
+                    "removed_is_bill_version",
+                    "archive_location",
+                    "kept_id",
+                    "kept_note",
+                ]
+            )
+            for row, copy in removals:
+                writer.writerow(
+                    [
+                        row["id"],
+                        row["bill_id"],
+                        row["bill__identifier"],
+                        row["version_note"],
+                        row["version_date"],
+                        row["source_url"],
+                        row["sha256_hash"],
+                        row["is_bill_version"],
+                        row["archive_location"] or "",
+                        copy["id"],
+                        copy["version_note"],
+                    ]
+                )
+
+    if commit:
+        try:
+            if expect is not None and expect != len(removals):
+                raise click.ClickException(
+                    f"{len(removals)} rows would be removed, not the expected {expect}; nothing written"
+                )
+            with transaction.atomic():
+                # Lock the state's documents, then plan again: an archive or import landing since the read aborts the
+                # whole run instead of removing a row that is no longer stale or whose copy is gone.
+                list(
+                    BillVersionDocument.objects.select_for_update()
+                    .filter(bill__in=bills)
+                    .values_list("id", flat=True)
+                )
+                _, again, _ = _stale_document_plan(bills)
+                if [(r["id"], c["id"]) for r, c in again] != [
+                    (r["id"], c["id"]) for r, c in removals
+                ]:
+                    raise click.ClickException(
+                        f"{state}: the documents changed since they were read; rolled back, nothing written"
+                    )
+                deleted, _ = BillVersionDocument.objects.filter(
+                    id__in=[r["id"] for r, _ in removals]
+                ).delete()
+                if deleted != len(removals):
+                    raise click.ClickException(
+                        f"{state}: removed {deleted}, not {len(removals)}; rolled back, nothing written"
+                    )
+        except BaseException:
+            if list_path:
+                os.remove(written_path)
+            raise
+        try:
+            os.replace(written_path, list_path)
+        except OSError as e:
+            raise click.ClickException(
+                f"{state}: COMMITTED, but the change list could not take its name ({e}); "
+                f"it is complete at {written_path}. Do not run again: the commit is done"
+            )
+
+    remaining = len(rows) - len(removals)
+    distinct_files = len({(r["bill_id"], r["source_url"]) for r in rows})
+    mode = "COMMITTED" if commit else "DRY RUN"
+    color = "green" if commit else "yellow"
+    click.secho(
+        f"{state}: [{mode}] documents={len(rows)} stale={stale} removed={len(removals)} "
+        + " ".join(
+            f"kept_{k.replace(' ', '_')}={v}" for k, v in sorted(kept.items())
+        ),
+        fg=color,
+    )
+    click.secho(
+        f"  after: documents={remaining} distinct (bill, address)={distinct_files} "
+        f"removed_versions={sum(1 for r, _ in removals if r['is_bill_version'])}",
+        fg=color,
+    )
+    if commit:
+        click.secho(f"  change list: {list_path}", fg=color)
 
 
 _s3_client_cache = None
