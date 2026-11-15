@@ -18,7 +18,7 @@ from ..data.models import (
 )
 from .computed_fields import update_bill_fields
 from .organizations import OrganizationImporter
-from ..utils.version_ordering import ORIGINAL_CLASSIFICATION_KEY
+from ..utils.version_ordering import ACTIONS_REVERSED_KEY, ORIGINAL_CLASSIFICATION_KEY
 
 
 def resolve_related_bills(jurisdiction_id: str, session: Union[str, None], logger) -> None:
@@ -101,7 +101,7 @@ class BillImporter(BaseImporter):
         ),
     }
     preserve_order = {"actions"}
-    keep_extras_keys = (ORIGINAL_CLASSIFICATION_KEY,)
+    keep_extras_keys = (ORIGINAL_CLASSIFICATION_KEY, ACTIONS_REVERSED_KEY)
 
     def __init__(self, jurisdiction_id: str, do_postimport=True):
         super(BillImporter, self).__init__(jurisdiction_id, do_postimport)
