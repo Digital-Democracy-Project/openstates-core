@@ -1844,10 +1844,13 @@ def _clean_ne_text(text: str) -> str:
 # OPEN-516: also the "PRIOR PRINTER'S NO. 3586" / "PRIOR PRINTER'S NOS. 912, 934, 1427" line above
 # it in every amended printing. The OpenDocument text keeps it, and the list grows by one number
 # with each printing, so it was a changed line in every comparison.
+# OPEN-499: some printings draw the change bar as an arrow glyph "\u25c4" (U+25C4) instead of
+# "<--" (12 PDF documents, 449 lines, replica 2026-11-14; every one at the end of its line, so
+# only a trailing glyph is a change bar and one inside a line is kept as text).
 _PA_PRINTER_NO_LINE_RE = re.compile(
     r"(?:PRIOR\s+)?PRINTER'S NOS?\.\s*\d+(?:\s*,\s*\d+)*", re.IGNORECASE
 )
-_PA_CHANGE_BAR_RE = re.compile(r"\s*<--\s*$")
+_PA_CHANGE_BAR_RE = re.compile(r"\s*(?:<--|\u25c4)\s*$")
 
 
 def _clean_pa_text(text: str) -> str:
