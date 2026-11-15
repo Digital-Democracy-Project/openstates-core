@@ -6,6 +6,7 @@ import difflib
 import typing
 import sys
 import csv
+import datetime
 import json
 import logging
 import math
@@ -201,6 +202,21 @@ def _note_fetch_failure(exc: Exception, url: str) -> None:
 def _reset_connect_failure_count() -> None:
     global _consecutive_connect_failures
     _consecutive_connect_failures = 0
+
+
+# OPEN-506: jurisdictions whose archive remembers an address the site answered 404 for (a
+# `BillDocumentNotFound` row) and skips it instead of asking again on every run. Massachusetts
+# lists about 20 bill PDFs (Bills/194/SD3039.pdf, HD2304.pdf, ...) that do not exist; most weeks
+# malegislature.gov answers 404 at once, but on 10-16 and 11-08 it did not answer at all for
+# them, and five of those no-answers in a row tripped OPEN-323's guard before any real fetch,
+# so the run saved nothing. Opt-in, so no other state's behaviour changes.
+_REMEMBERS_NOT_FOUND = frozenset({"Massachusetts"})
+# A remembered address is asked again once this long has passed (it may get published later);
+# a 404 then restarts the wait, a success deletes the row.
+_NOT_FOUND_RECHECK_AFTER = datetime.timedelta(days=28)
+# Set once a re-check of a remembered address gets no answer: the rest of the run skips every
+# other remembered address too, so a bad day costs one ~16-minute timeout, not one per address.
+_not_found_recheck_unanswered = False
 
 
 def _scraper_for_profile(profile) -> scrapelib.Scraper:
@@ -2028,7 +2044,9 @@ def archive_bill_versions(
     that function is OPEN-34's separate ordering-only backfill path, deliberately not in scope
     here per the ticket's no-backfill constraint).
     """
-    from openstates.data.models import BillVersionDocument
+    from openstates.data.models import BillDocumentNotFound, BillVersionDocument
+
+    global _not_found_recheck_unanswered
 
     counters = {
         "fetched": 0,
@@ -2057,6 +2075,7 @@ def archive_bill_versions(
     unsaved = unsaved_documents if unsaved_documents is not None else []
 
     jurisdiction_name = bill.legislative_session.jurisdiction.name
+    remembers_not_found = jurisdiction_name in _REMEMBERS_NOT_FOUND  # OPEN-506
     # OPEN-11: several of _clean_michigan_text()'s steps are deliberately not applied to
     # Resolutions (see that function's docstring), so it needs to know whether this is a
     # Bill. Every other jurisdiction's prior_text/raw_text still reach
@@ -2158,6 +2177,25 @@ def archive_bill_versions(
             if func == DoNotDownload:
                 continue
 
+            # OPEN-506: an address this site already answered 404 for is not asked again until
+            # it is due for a re-check, and not at all once a re-check this run went unanswered.
+            not_found = None
+            if remembers_not_found:
+                not_found = BillDocumentNotFound.objects.filter(
+                    source_url=link.url
+                ).first()
+                if not_found and (
+                    _not_found_recheck_unanswered
+                    or timezone.now() - not_found.last_checked_at
+                    < _NOT_FOUND_RECHECK_AFTER
+                ):
+                    click.echo(
+                        f"not fetched, answered 404 before: {link.url} (last checked "
+                        f"{not_found.last_checked_at:%Y-%m-%d})"
+                    )
+                    counters["skipped"] += 1
+                    continue
+
             try:
                 data = _fetch_bytes(link.url)
             except ScrapeError:
@@ -2176,9 +2214,37 @@ def archive_bill_versions(
             except Exception as e:
                 click.secho(f"failed to fetch {link.url}: {e}", fg="yellow")
                 counters["fetch_errors"] += 1
+                now = timezone.now()
+                if (
+                    remembers_not_found
+                    and isinstance(e, scrapelib.HTTPError)
+                    and getattr(e.response, "status_code", None) == 404
+                ):
+                    # OPEN-506: remember it (or restart the wait for a re-checked one).
+                    row, created = BillDocumentNotFound.objects.get_or_create(
+                        source_url=link.url,
+                        defaults={"first_not_found_at": now, "last_checked_at": now},
+                    )
+                    if not created:
+                        row.last_checked_at = now
+                        row.save(update_fields=["last_checked_at"])
+                elif not_found and isinstance(
+                    e,
+                    (requests.exceptions.ConnectionError, requests.exceptions.Timeout),
+                ):
+                    # OPEN-506: no answer on an address already known to be missing says
+                    # nothing new about the site, so it does not count toward OPEN-323's
+                    # five-in-a-row stop. Wait again before the next re-check, and skip the
+                    # other remembered addresses for the rest of this run.
+                    not_found.last_checked_at = now
+                    not_found.save(update_fields=["last_checked_at"])
+                    _not_found_recheck_unanswered = True
+                    continue
                 _note_fetch_failure(e, link.url)  # OPEN-323: may abort the run
                 continue
 
+            if not_found:
+                not_found.delete()  # OPEN-506: published after all, so archive it as usual
             _reset_connect_failure_count()
             # OPEN-516: from here on the document is handled as what its bytes are (the
             # magic-byte check, the file extension, its diff lineage and the stored row).
@@ -2659,6 +2725,8 @@ def archive(state: str, session: str = None, n: int = None) -> None:
     # OPEN-323: the connection-failure count is per RUN (it spans bills), so a run starts at zero
     # rather than inheriting whatever an earlier archive() call in this process left behind.
     _reset_connect_failure_count()
+    global _not_found_recheck_unanswered
+    _not_found_recheck_unanswered = False  # OPEN-506: per run too
     init_django()
     from openstates.data.models import Bill
 

@@ -28,6 +28,7 @@ from .bill import (
     BillAction,
     SearchableBill,
     BillVersionDocument,
+    BillDocumentNotFound,
 )
 from .vote import VoteEvent, VoteCount, PersonVote, VoteSource
 from .event import (
