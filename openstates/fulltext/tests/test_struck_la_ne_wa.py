@@ -8,16 +8,23 @@ cut page exactly as it reads that page in the whole file):
   ("in excess of fifty two hundred dollars", the figure LegBot got wrong).
 * Nebraska LB 778 (109th), Final Reading, page 2: "2023" and "2024" are struck after the
   underlined "2027" and "2028"; page 1 has nothing struck.
+* Louisiana HB 434 (2026), Act 645, the whole two-page file: "the written recommendation of the local" and
+  more are struck on page 1; page 2 has the signature rule after "APPROVED:" at 0.72 of the
+  line height, which is not a strike.
+* Louisiana SB 116 (2026), Original, page 13: the congressional map, on a page turned 90
+  degrees, whose parish borders cross the upright parish labels.
 * Washington SB 5681 (2025-26), Substitute Bill, page 1: "21" and "access" are struck inside
   Washington's "((...))" deletion marks, with "20" and "inclusion" underlined.
 """
 
+import re
 from pathlib import Path
 
+import fitz  # PyMuPDF
 import pytest
 
 from openstates.fulltext import CONVERSION_FUNCTIONS
-from openstates.fulltext.al import handle_alabama_pdf, without_struck_text
+from openstates.fulltext.al import _struck_runs, handle_alabama_pdf, without_struck_text
 from openstates.fulltext.common import (
     extract_line_numbered_pdf,
     extract_sometimes_numbered_pdf,
@@ -90,6 +97,162 @@ def test_only_characters_are_taken_out(state, name, extract):
         rest = iter(before.replace(" ", ""))
         assert all(ch in rest for ch in after.replace(" ", "")), (before, after)
     assert old != new
+
+
+# Every line that changes on each fixture page, old reading then new, spacing aside; every other
+# line must come back exactly as before. The subsequence check above cannot see an unstruck
+# neighbour being eaten (a redaction box a few points too wide still only takes characters
+# out); pinning the whole page can (OPEN-560 review, 2026-11-15).
+EXPECTED_CHANGES = {
+    "la_sb495": (
+        "la",
+        "la_sb495_engrossed_p6.pdf",
+        extract_sometimes_numbered_pdf,
+        [
+            (
+                "(iv) Any person for the purpose of funding an expenditure to support or",
+                "(iv)",
+            ),
+            (
+                "oppose a proposition or question submitted to the voters. Any recognized political",
+                "Any recognized political",
+            ),
+            (
+                "Paragraph, having an attributable monetary value in excess of fifty two hundred",
+                "Paragraph, having an attributable monetary value in excess of two hundred",
+            ),
+            (
+                "employees, the value of which services exceeds fifty two hundred dollars, such",
+                "employees, the value of which services exceeds two hundred dollars, such",
+            ),
+            (
+                "candidate, the chairman of the accepting political committee, or accepting person",
+                "candidate, the chairman of the accepting committee, or accepting person",
+            ),
+        ],
+    ),
+    # Louisiana's struck words in SB 495 sit between wide spaces, so a box a few points too wide
+    # reaches no neighbour there; in HB 434 "the written recommendation of the local" is struck
+    # right after "upon", and a box 4 points too wide eats its "n".
+    "la_hb434": (
+        "la",
+        "la_hb434_act645.pdf",
+        extract_sometimes_numbered_pdf,
+        [
+            (
+                "probationary term, the superintendent city, parish, or other local public school board",
+                "probationary term, the superintendent",
+            ),
+            (
+                "may dismiss or discharge any operator upon the written recommendation of the local",
+                "may dismiss or discharge any operator upon",
+            ),
+            (
+                "superintendent of schools accompanied by valid reasons therefor providing the",
+                "providing the",
+            ),
+        ],
+    ),
+    "ne_lb778": (
+        "ne",
+        "ne_lb778_final_reading_p2.pdf",
+        extract_sometimes_numbered_pdf,
+        [
+            (
+                "(4) From July 1, 2027 2023, to June 30, 2028 2024, a municipality",
+                "(4) From July 1, 2027 , to June 30, 2028 , a municipality",
+            ),
+            (
+                "Center Financing Act only if such municipality (a) partners with a",
+                "Center Financing Act only if such municipality",
+            ),
+            (
+                "certified creative district and (b) is not prohibited from receiving a",
+                "is not prohibited from receiving a",
+            ),
+            (
+                "of section 82-312. After June 30, 2028 2024, this subsection no longer",
+                "of section 82-312. After June 30, 2028 , this subsection no longer",
+            ),
+        ],
+    ),
+    "wa_sb5681": (
+        "wa",
+        "wa_sb5681_s_p1.pdf",
+        extract_line_numbered_pdf,
+        [
+            (
+                "(1) Clients age ((21)) 20 and older who are receiving employment",
+                "(1) Clients age (( )) 20 and older who are receiving employment",
+            ),
+            (
+                "((access)) inclusion program after nine months of enrollment in an",
+                "(( )) inclusion program after nine months of enrollment in an",
+            ),
+        ],
+    ),
+}
+
+
+@pytest.mark.parametrize("fixture", sorted(EXPECTED_CHANGES))
+def test_exactly_the_struck_words_are_taken_out(fixture):
+    state, name, extract, expected = EXPECTED_CHANGES[fixture]
+    data = _read(name)
+    old = _lines(extract(data, META))
+    new = _lines(_pdf(state)(data, META))
+    assert len(new) == len(old)
+    assert [(a, b) for a, b in zip(old, new) if a != b] == expected
+
+
+def test_washington_removes_only_text_inside_its_deletion_marks():
+    # Washington prints every deletion inside "((" "))": with the inside of each pair emptied,
+    # the old and new lines are the same characters (spacing aside). A removal outside the
+    # marks, of any size, fails this.
+    def outside_marks(line: str) -> str:
+        return re.sub(r"\(\(.*?\)\)", "(())", line.replace(" ", ""))
+
+    data = _read("wa_sb5681_s_p1.pdf")
+    old = _lines(extract_line_numbered_pdf(data, META))
+    new = _lines(_pdf("wa")(data, META))
+    assert len(new) == len(old)
+    assert [outside_marks(line) for line in new] == [outside_marks(line) for line in old]
+    assert new != old
+
+
+def test_louisiana_signature_rule_is_not_read_as_a_strike():
+    # The rule after "APPROVED:" on the last page of a Louisiana Act sits at 0.72 of the line's
+    # height, just above the strike band's top (0.70). It must not be taken for a strike: no
+    # struck run on that line, so a signature or fill-in rule never removes what it crosses.
+    doc = fitz.open(stream=_read("la_hb434_act645.pdf"), filetype="pdf")
+    page = doc[1]
+    rules = [d["rect"] for d in page.get_drawings() if d["rect"].height < 2.0]
+    [approved] = [
+        span
+        for block in page.get_text("rawdict")["blocks"]
+        for line in block.get("lines", [])
+        for span in line["spans"]
+        if "".join(c["c"] for c in span["chars"]).startswith("APPROVED:")
+    ]
+    x0, top, x1, bottom = approved["bbox"]
+    crossing = [
+        ((rule.y0 + rule.y1) / 2 - top) / (bottom - top)
+        for rule in rules
+        if rule.x1 > x0 and rule.x0 < x1
+    ]
+    assert any(0.71 < pos < 0.73 for pos in crossing)  # the fixture still shows the case
+    assert not [run for run in _struck_runs(page, rules) if top <= run[2] <= bottom]
+
+
+def test_louisiana_map_labels_are_not_read_as_struck():
+    # A redistricting map on a page turned 90 degrees: the parish labels run up the page and the
+    # parish borders cross them where a strike would sit if the text ran left to right. Found by
+    # the whole-archive comparison; only left-to-right text is measured, so the page is left
+    # alone.
+    data = _read("la_sb116_original_p13_map.pdf")
+    assert without_struck_text(data) is data
+    text = _pdf("la")(data, META)
+    for parish in ("Allen", "Calcasieu", "Caldwell", "Orleans"):
+        assert parish in text
 
 
 def test_a_page_with_nothing_struck_is_read_exactly_as_before():

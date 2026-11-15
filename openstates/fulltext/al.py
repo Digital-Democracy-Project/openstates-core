@@ -31,6 +31,14 @@ from .common import ExtractorFunc, Metadata, extract_line_numbered_pdf
 # every one of the 104 the new text is the old text with characters only taken out (spacing
 # aside, as for Alabama). Each state keeps its own text extractor; `read_without_struck_text`
 # runs it on the copy.
+#
+# Only left-to-right lines are measured. The whole-archive comparison (2026-11-15, all 10,468
+# Louisiana, 3,383 Nebraska and 5,818 Washington PDFs, scripts/open560_compare_struck_text.py)
+# found one false strike: on Louisiana's redistricting maps (SB 116, 117, 121, 130, 136, 407 and
+# their amendments, a page turned 90 degrees) the parish labels run up the page, a "line height"
+# measured across them is a label's length, and the map's parish borders fell inside the band, so
+# "Allen", "Calcasieu", "Caldwell" and "Orleans" were removed. Text in any other direction is now
+# read as before, struck or not.
 _RULE_MAX_HEIGHT = 2.0
 _STRIKE_LOW = 0.35
 _STRIKE_HIGH = 0.7
@@ -42,6 +50,9 @@ def _struck_runs(page: "fitz.Page", rules: list) -> list:
     runs = []
     for block in page.get_text("rawdict")["blocks"]:
         for line in block.get("lines", []):
+            dx, dy = line["dir"]
+            if abs(dx - 1) > 1e-3 or abs(dy) > 1e-3:
+                continue  # not left-to-right text: no strike band to measure (OPEN-560)
             for span in line["spans"]:
                 x0, top, x1, bottom = span["bbox"]
                 if bottom <= top:
