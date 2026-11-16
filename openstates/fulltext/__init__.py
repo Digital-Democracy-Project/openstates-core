@@ -127,7 +127,8 @@ CONVERSION_FUNCTIONS = {
         "application/pdf": extract_line_numbered_pdf,
     },
     "mt": {"application/pdf": extract_sometimes_numbered_pdf},
-    "nc": {"application/pdf": extract_sometimes_numbered_pdf},
+    # OPEN-584: struck-out words removed by Alabama's reader, see fulltext/al.py.
+    "nc": {"application/pdf": read_without_struck_text(extract_sometimes_numbered_pdf)},
     "nd": {"application/pdf": extract_sometimes_numbered_pdf},
     # OPEN-560: struck-out words removed by Alabama's reader, see fulltext/al.py.
     "ne": {"application/pdf": read_without_struck_text(extract_sometimes_numbered_pdf)},
