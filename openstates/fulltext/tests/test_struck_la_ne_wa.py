@@ -17,6 +17,7 @@ cut page exactly as it reads that page in the whole file):
   Washington's "((...))" deletion marks, with "20" and "inclusion" underlined.
 """
 
+import inspect
 import re
 from pathlib import Path
 
@@ -72,8 +73,12 @@ def test_washington_sb5681_reads_the_new_words_only():
     new = "\n".join(_lines(_pdf("wa")(data, META)))
     assert "Clients age ((21)) 20 and older" in old
     assert "community ((access)) inclusion" in old.replace("\n", " ")
-    # Washington's "((" "))" marks are printed, not struck, so they stay around the gap.
-    assert "Clients age (( )) 20 and older" in new
+    # Washington's "((" "))" marks are printed, not struck, so the strike reader leaves them
+    # around the gap; OPEN-580 then takes the empty pair out (fulltext/wa.py).
+    assert "Clients age (( )) 20 and older" in "\n".join(
+        _lines(_pdf("wa").__wrapped__(data, META))
+    )
+    assert "Clients age 20 and older" in new
     assert "access" not in new
     assert "inclusion" in new
 
@@ -183,11 +188,11 @@ EXPECTED_CHANGES = {
         [
             (
                 "(1) Clients age ((21)) 20 and older who are receiving employment",
-                "(1) Clients age (( )) 20 and older who are receiving employment",
+                "(1) Clients age 20 and older who are receiving employment",
             ),
             (
                 "((access)) inclusion program after nine months of enrollment in an",
-                "(( )) inclusion program after nine months of enrollment in an",
+                "inclusion program after nine months of enrollment in an",
             ),
         ],
     ),
@@ -213,7 +218,8 @@ def test_washington_removes_only_text_inside_its_deletion_marks():
 
     data = _read("wa_sb5681_s_p1.pdf")
     old = _lines(extract_line_numbered_pdf(data, META))
-    new = _lines(_pdf("wa")(data, META))
+    # The strike reader alone, before OPEN-580 takes the emptied marks out.
+    new = _lines(_pdf("wa").__wrapped__(data, META))
     assert len(new) == len(old)
     assert [outside_marks(line) for line in new] == [outside_marks(line) for line in old]
     assert new != old
@@ -271,8 +277,9 @@ def test_a_file_pymupdf_cannot_open_is_an_extraction_error():
 def test_only_these_four_states_read_pdfs_without_struck_text():
     # Each of the three keeps its own text extractor underneath, and no other state's
     # reader or media type changes.
+    # (Washington's is wrapped twice: OPEN-580 takes the emptied "((" "))" marks out.)
     wrapped = {
-        state: funcs["application/pdf"].__wrapped__
+        state: inspect.unwrap(funcs["application/pdf"])
         for state, funcs in CONVERSION_FUNCTIONS.items()
         if hasattr(funcs.get("application/pdf"), "__wrapped__")
     }

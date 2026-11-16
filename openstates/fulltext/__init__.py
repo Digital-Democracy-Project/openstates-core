@@ -21,6 +21,7 @@ from .ut import handle_utah_xml
 from .us import handle_us_bill_xml
 from .pa import handle_pennsylvania_odt, ODT_MEDIA_TYPE
 from .al import handle_alabama_pdf, read_without_struck_text
+from .wa import handle_washington_html, without_deletion_marks
 
 
 class DoNotDownload:
@@ -212,15 +213,18 @@ CONVERSION_FUNCTIONS = {
         # Substitute Senate Bill 5167 stored as bill "516769". Every other jurisdiction using
         # this helper measures clean today and is deliberately left on the old path here; see
         # text_from_element_xpath's docstring.
-        "text/html": extractor_for_element_by_xpath("//html", preserve_element_boundaries=True),
+        # OPEN-580: read the same way, with struck-out words and their "((" "))" marks left out
+        # (see fulltext/wa.py).
+        "text/html": handle_washington_html,
         # Found 2026-08-09 (OPEN-49): no application/pdf entry ever existed here, upstream
         # or in this fork -- every WA PDF (5,800+) silently extracted as empty/is_error=True.
         # Verified directly against real WA bills: same printed-line-number PDF shape already
         # handled by extract_line_numbered_pdf for AL/FL/MA/MD/etc.
-        # OPEN-560: struck-out words removed by Alabama's reader, see fulltext/al.py. The HTML
-        # printing marks them too (a line-through style) and is left as it is: LegBot reads the
-        # PDF when a version has both.
-        "application/pdf": read_without_struck_text(extract_line_numbered_pdf),
+        # OPEN-560: struck-out words removed by Alabama's reader, see fulltext/al.py. OPEN-580:
+        # the empty "((" "))" marks the reader leaves are taken out, as in the HTML printing.
+        "application/pdf": without_deletion_marks(
+            read_without_struck_text(extract_line_numbered_pdf)
+        ),
     },
     "wi": {
         "application/pdf": extract_sometimes_numbered_pdf,
