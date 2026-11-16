@@ -758,8 +758,43 @@ _REAL_MEASURE_TITLE_PATTERNS = {
 }
 
 
+# OPEN-564: a paper whose TEXT is a line edit to the bill, not the bill. Alabama names the paper behind a committee
+# or floor action after the action ("Reported Out of Committee Second House"), so the note cannot tell a full
+# substitute from a short amendment; the text can. An amendment opens with its instruction ("Replace line 54 on page
+# 2 with the following: ...") and has no enacting clause; a full substitute is a whole bill ("A BILL TO BE ENTITLED
+# AN ACT ... BE IT ENACTED BY THE LEGISLATURE OF ALABAMA"). Measured on the Mac replica (2026-11-15, all 3,379
+# Alabama documents with text): 548 open with an instruction and have no enacting clause; 547 of them are already
+# not-a-version by their note (the floor-motion papers above) and the 548th is HB 248's "Replace line 54", the one
+# short amendment among the 200 papers the 11-15 archive re-saved as versions. The other 199 are full substitutes,
+# which stay versions (Ramon, 2026-11-15). The only versions without an enacting clause, HB 511's Engrossed and
+# Enrolled constitutional amendment, do not open with an instruction and stay versions.
+_AMENDMENT_TEXT_OPENING = {
+    "Alabama": re.compile(r"\A\s*(?:replace|delete|insert|strike|add|amend)\b", re.IGNORECASE),
+}
+_ENACTING_CLAUSE_RE = re.compile(r"\bbe\s+it\s+(?:enacted|resolved)\b", re.IGNORECASE)
+
+
+def is_amendment_text(jurisdiction_name: str, raw_text: typing.Optional[str]) -> bool:
+    """
+    True if a document's extracted text is a line edit to the bill rather than a bill text, by the per-state rule
+    in `_AMENDMENT_TEXT_OPENING` (OPEN-564). Such a document is not a bill version (`is_bill_version`) and, like a
+    procedural paper, neither takes a diff nor becomes the next version's baseline. No text, or a state without a
+    rule, is never a reason to exclude a document.
+    """
+    pattern = _AMENDMENT_TEXT_OPENING.get(jurisdiction_name)
+    return bool(
+        pattern is not None
+        and raw_text
+        and pattern.match(raw_text)
+        and not _ENACTING_CLAUSE_RE.search(raw_text)
+    )
+
+
 def is_bill_version(
-    jurisdiction_name: str, note: str, bill_title: typing.Optional[str] = None
+    jurisdiction_name: str,
+    note: str,
+    bill_title: typing.Optional[str] = None,
+    raw_text: typing.Optional[str] = None,
 ) -> bool:
     """
     The value the archiver stores in `BillVersionDocument.is_bill_version` (OPEN-492): False for a
@@ -772,8 +807,13 @@ def is_bill_version(
     OPEN-498: for a state in `_REAL_MEASURE_TITLE_PATTERNS` the bill's own title is checked too, because
     there the note cannot tell a report from a bill. An empty or missing `bill_title` is never a reason
     to exclude a document (a caller that has no title keeps the OPEN-492 answer).
+
+    OPEN-564: for a state in `_AMENDMENT_TEXT_OPENING` the document's own text is checked too
+    (`is_amendment_text`); a caller with no text keeps the answer from the note and title.
     """
     if is_procedural_document(jurisdiction_name, note):
+        return False
+    if is_amendment_text(jurisdiction_name, raw_text):
         return False
     pattern = _REAL_MEASURE_TITLE_PATTERNS.get(jurisdiction_name)
     if (
