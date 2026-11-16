@@ -22,8 +22,20 @@ OPEN-584 adds North Carolina, read the same way:
   provided by the owner of the vehicle." is struck and "renewal." underlined, in a section of
   existing law "reads as rewritten".
 * North Carolina SB 809 (2025), Edition 3, page 1: words underlined, nothing struck.
+
+OPEN-591 adds Nevada, read the same way. Nevada prints removed law inside brackets and struck
+through, brackets included. Its pages are cut as above, then their fonts subset (PyMuPDF
+`subset_fonts`) to keep the files small; pdftotext reads each cut page exactly as it reads that
+page in the whole file, before and after the struck words are removed:
+
+* Nevada AB 4 (2025, 36th Special), First Reprint, page 6: "[(c)]" is struck before the new
+  "(e)" ("[(c)] (e) “Health care facility” means ...", the line the ticket reports).
+* Nevada AB 4, First Reprint, page 28: "[suspends]", "[,]" and a whole struck sub-section
+  ("[permitting the child to drive a motor vehicle: (a) To and from work ...]") over 8 lines.
+* Nevada AB 4, First Reprint, page 2: nothing struck.
 """
 
+import difflib
 import inspect
 import re
 from pathlib import Path
@@ -100,12 +112,67 @@ def test_north_carolina_hb613_reads_the_new_words_only():
     assert "vehicle any required notice of\nrenewal." in new
 
 
+def test_nevada_ab4_reads_the_new_letter_only():
+    data = _read("nv_ab4_r1_p6.pdf")
+    old = "\n".join(_lines(extract_sometimes_numbered_pdf(data, META)))
+    new = "\n".join(_lines(_pdf("nv")(data, META)))
+    assert "[(c)] (e) “Health care facility” means" in old
+    assert "\n(e) “Health care facility” means" in new
+    assert "[" not in new and "]" not in new
+
+
+def test_nevada_whole_struck_sub_section_is_taken_out():
+    # Nevada's struck text runs over whole lines; those lines drop out of the reading, and every
+    # other line comes back exactly as before.
+    data = _read("nv_ab4_r1_p28.pdf")
+    old = _lines(extract_sometimes_numbered_pdf(data, META))
+    new = _lines(_pdf("nv")(data, META))
+    assert sum(line.count("[") for line in old) == 3
+    assert not [line for line in new if "[" in line or "]" in line]
+    changes = [
+        (old[i1:i2], new[j1:j2])
+        for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(
+            None, old, new, autojunk=False
+        ).get_opcodes()
+        if tag != "equal"
+    ]
+    assert changes == [
+        (
+            [
+                "3. If the juvenile court [suspends] finds that the suspension of",
+                "the driver’s license of a child pursuant to this section [,] is not in the",
+            ],
+            [
+                "3. If the juvenile court finds that the suspension of",
+                "the driver’s license of a child pursuant to this section is not in the",
+            ],
+        ),
+        (
+            [
+                "license pursuant to NRS 483.490 . [permitting the child to drive a",
+                "motor vehicle:",
+                "(a) To and from work or in the course of his or her work, or",
+                "both;",
+                "(b) To and from school; or",
+                "(c) To acquire supplies of medicine or food or receive regularly",
+                "scheduled medical care for himself, herself or a member of his or",
+                "her immediate family.]",
+            ],
+            ["license pursuant to NRS 483.490 ."],
+        ),
+    ]
+    # Characters only taken out, never added, over the whole page (spacing aside).
+    rest = iter("".join(old).replace(" ", ""))
+    assert all(ch in rest for ch in "".join(new).replace(" ", ""))
+
+
 @pytest.mark.parametrize(
     "state,name,extract",
     [
         ("la", "la_sb495_engrossed_p6.pdf", extract_sometimes_numbered_pdf),
         ("nc", "nc_hb613_edition2_p1.pdf", extract_sometimes_numbered_pdf),
         ("ne", "ne_lb778_final_reading_p2.pdf", extract_sometimes_numbered_pdf),
+        ("nv", "nv_ab4_r1_p6.pdf", extract_sometimes_numbered_pdf),
         ("wa", "wa_sb5681_s_p1.pdf", extract_line_numbered_pdf),
     ],
 )
@@ -211,6 +278,17 @@ EXPECTED_CHANGES = {
             ),
         ],
     ),
+    "nv_ab4_r1_p6": (
+        "nv",
+        "nv_ab4_r1_p6.pdf",
+        extract_sometimes_numbered_pdf,
+        [
+            (
+                "[(c)] (e) “Health care facility” means a facility licensed",
+                "(e) “Health care facility” means a facility licensed",
+            ),
+        ],
+    ),
     "wa_sb5681": (
         "wa",
         "wa_sb5681_s_p1.pdf",
@@ -305,15 +383,21 @@ def test_a_north_carolina_page_with_underlines_only_is_read_exactly_as_before():
     assert _pdf("nc")(data, META) == extract_sometimes_numbered_pdf(data, META)
 
 
+def test_a_nevada_page_with_nothing_struck_is_read_exactly_as_before():
+    data = _read("nv_ab4_r1_p2.pdf")
+    assert without_struck_text(data) is data
+    assert _pdf("nv")(data, META) == extract_sometimes_numbered_pdf(data, META)
+
+
 def test_a_file_pymupdf_cannot_open_is_an_extraction_error():
     # As for Alabama: no quiet fallback that would bring the struck words back.
-    for state in ("la", "nc", "ne", "wa"):
+    for state in ("la", "nc", "ne", "nv", "wa"):
         with pytest.raises(Exception):
             _pdf(state)(b"%PDF-1.7\n" + b"\x00" * 64, META)
 
 
-def test_only_these_five_states_read_pdfs_without_struck_text():
-    # Each of the four keeps its own text extractor underneath, and no other state's
+def test_only_these_six_states_read_pdfs_without_struck_text():
+    # Each of the five keeps its own text extractor underneath, and no other state's
     # reader or media type changes.
     # (Washington's is wrapped twice: OPEN-580 takes the emptied "((" "))" marks out.)
     wrapped = {
@@ -325,10 +409,12 @@ def test_only_these_five_states_read_pdfs_without_struck_text():
         "la": extract_sometimes_numbered_pdf,
         "nc": extract_sometimes_numbered_pdf,
         "ne": extract_sometimes_numbered_pdf,
+        "nv": extract_sometimes_numbered_pdf,
         "wa": extract_line_numbered_pdf,
     }
     assert CONVERSION_FUNCTIONS["al"]["application/pdf"] is handle_alabama_pdf
     assert set(CONVERSION_FUNCTIONS["la"]) == {"application/pdf"}
     assert set(CONVERSION_FUNCTIONS["nc"]) == {"application/pdf"}
     assert set(CONVERSION_FUNCTIONS["ne"]) == {"application/pdf"}
+    assert set(CONVERSION_FUNCTIONS["nv"]) == {"application/pdf"}
     assert set(CONVERSION_FUNCTIONS["wa"]) == {"text/html", "application/pdf"}
