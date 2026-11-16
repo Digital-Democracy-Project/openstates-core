@@ -32,7 +32,6 @@ from openstates.fulltext import (
     Metadata,
 )
 from openstates.fulltext.pa import ODT_MEDIA_TYPE, is_opendocument_text
-from ..importers.computed_fields import update_bill_fields
 from ..utils.instrument import Instrumentation
 from ..utils.cookie_provider import (
     BLOCK_PAGE_MARKERS as _BLOCK_PAGE_MARKERS,
@@ -3336,6 +3335,9 @@ def reverse_action_order(
             )
 
     init_django()
+    # Imported here, after init_django(): the importers load the Django models at import time, and a module-level
+    # import made every os-text-extract command (archive included) fail before Django was set up.
+    from ..importers.computed_fields import update_bill_fields
     from openstates.data.models import Bill, BillAction
 
     bills = Bill.objects.filter(legislative_session__jurisdiction_id=abbr_to_jid(state))
