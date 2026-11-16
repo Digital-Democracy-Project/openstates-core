@@ -22,8 +22,19 @@ OPEN-584 adds North Carolina, read the same way:
   provided by the owner of the vehicle." is struck and "renewal." underlined, in a section of
   existing law "reads as rewritten".
 * North Carolina SB 809 (2025), Edition 3, page 1: words underlined, nothing struck.
+
+OPEN-601 adds Georgia, read the same way:
+
+* Georgia SR 1 (2026 special session), As introduced (LC 33 9932), pages 2 to 4: Senate rules
+  rewritten with whole sentences struck and the new words underlined ("five (5) days" struck
+  before the underlined "twenty-four (24)", "no" struck before "No", "ten (10)" before
+  "three (3)").
+* Georgia SB 3 (2026 special session), As introduced (LC 47 4392), page 3: "United States
+  Senate, Governor, Lieutenant Governor, Secretary of State, Attorney General," struck from the
+  ballot-order list.
 """
 
+import difflib
 import inspect
 import re
 from pathlib import Path
@@ -305,15 +316,162 @@ def test_a_north_carolina_page_with_underlines_only_is_read_exactly_as_before():
     assert _pdf("nc")(data, META) == extract_sometimes_numbered_pdf(data, META)
 
 
+# Georgia strikes whole printed lines, and a line left with only its line number is dropped, so
+# the old and new readings do not have the same number of lines: each change is pinned as the
+# run of old lines and the run of new lines that replaces it (spacing aside); every other line
+# must come back exactly as before.
+GA_EXPECTED_CHANGES = {
+    "ga_sr1_introduced_p2_p4.pdf": [
+        (
+            [
+                "on the legislative day prior to consideration of the same during the first thirty-six (36) days",
+                "of any regular session. During the thirty-seventh (37th) through the fortieth (40th) days of",
+                "any regular session, such reports shall be printed and distributed to the Senators at least two",
+            ],
+            ["at least two"],
+        ),
+        (
+            [
+                "After a Committee of Conference has been in existence for five (5) days twenty-four (24)"
+            ],
+            [
+                "After a Committee of Conference has been in existence for twenty-four (24)"
+            ],
+        ),
+        (
+            [
+                "contrary to the Rules of the Senate; provided that, after the thirty-fifth (35th) legislative"
+            ],
+            ["contrary to the Rules of the Senate"],
+        ),
+        (
+            [
+                "day, the above motions may be made and passed at any time, but not more often than every",
+                'twenty-four hours."',
+            ],
+            ['."'],
+        ),
+        (
+            [
+                "as otherwise provided in paragraph (2) of this subsection, no No bill or resolution"
+            ],
+            [
+                "as otherwise provided in paragraph (2) of this subsection, no bill or resolution"
+            ],
+        ),
+        (
+            [
+                "Any general bill or resolution shall be automatically passed to a second reading Every",
+                "general bill and resolution shall be read a second time on the same legislative day following",
+                "the day that the bill or resolution is reported by the committee to which it was referred.",
+                "Except that after the thirty-fifth (35th) day of any regular session, every bill and resolution",
+                "shall be read a second time on the same legislative day that the bill or resolution is reported",
+                "by the committee to which it was referred. No debate shall be admitted upon any bill at the",
+            ],
+            [
+                "Every",
+                "general bill and resolution shall be read a second time on the same legislative day",
+                "that the bill or resolution is reported by the committee to which it was referred.",
+                "No debate shall be admitted upon any bill at the",
+            ],
+        ),
+        (
+            [
+                'the proponents and opponents shall each be limited to ten (10) three (3) minutes."'
+            ],
+            [
+                'the proponents and opponents shall each be limited to three (3) minutes."'
+            ],
+        ),
+        (
+            [
+                "otherwise than in the order and manner fixed by such calendar, except by a three-fourths"
+            ],
+            [
+                "otherwise than in the order and manner fixed by such calendar, except by a"
+            ],
+        ),
+        (
+            [
+                "members elected to the Senate. This Rule may not be suspended by a two-thirds"
+            ],
+            ["members elected to the Senate. This Rule may not be suspended by a"],
+        ),
+    ],
+    "ga_sb3_introduced_p3.pdf": [
+        (
+            ["(A) The contest at the top of a ballot; and"],
+            ["(A) The contest at the top of a ballot;"],
+        ),
+        (
+            [
+                "selected pursuant to subsection (d) of this Code section: United States Senate,",
+                "Governor, Lieutenant Governor, Secretary of State, Attorney General, State School",
+            ],
+            [
+                "selected pursuant to subsection (d) of this Code section:",
+                "State School",
+            ],
+        ),
+    ],
+}
+
+
+@pytest.mark.parametrize("name", sorted(GA_EXPECTED_CHANGES))
+def test_georgia_exactly_the_struck_words_are_taken_out(name):
+    data = _read(name)
+    old = _lines(extract_sometimes_numbered_pdf(data, META))
+    new = _lines(_pdf("ga")(data, META))
+    matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
+    changes = [
+        (old[i1:i2], new[j1:j2])
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes()
+        if tag != "equal"
+    ]
+    assert changes == GA_EXPECTED_CHANGES[name]
+    # Over the whole page, characters are only taken out, never added (spacing aside).
+    rest = iter("".join(old).replace(" ", ""))
+    assert all(ch in rest for ch in "".join(new).replace(" ", ""))
+
+
+def test_georgia_sr1_keeps_the_new_underlined_words():
+    # The ticket's three examples: the struck words go, the underlined new words stay.
+    data = _read("ga_sr1_introduced_p2_p4.pdf")
+    old = "\n".join(_lines(extract_sometimes_numbered_pdf(data, META)))
+    new = "\n".join(_lines(_pdf("ga")(data, META)))
+    assert "in existence for five (5) days twenty-four (24)" in old
+    assert "in existence for twenty-four (24)" in new
+    assert "five (5) days" not in new
+    assert "this subsection, no No bill" in old
+    assert "this subsection, no bill" in new
+    assert "limited to three (3) minutes" in new
+    assert "ten (10)" not in new
+    assert "automatically passed to a second reading" not in new
+
+
+def test_georgia_sb3_drops_the_struck_offices_from_the_ballot_order():
+    data = _read("ga_sb3_introduced_p3.pdf")
+    new = "\n".join(_lines(_pdf("ga")(data, META)))
+    # The old order is struck; the new order, printed further down the page and underlined,
+    # names the same offices and is kept.
+    assert "Code section: United States Senate," not in new
+    assert "Secretary of State, Attorney General, State School" not in new
+    assert "Code section:\nState School" in new
+    assert (
+        "United States Representative, Governor, Lieutenant Governor, Secretary of"
+        in new
+    )
+
+
 def test_a_file_pymupdf_cannot_open_is_an_extraction_error():
     # As for Alabama: no quiet fallback that would bring the struck words back.
-    for state in ("la", "nc", "ne", "wa"):
+    for state in ("ga", "la", "nc", "ne", "wa"):
         with pytest.raises(Exception):
             _pdf(state)(b"%PDF-1.7\n" + b"\x00" * 64, META)
 
 
-def test_only_these_five_states_read_pdfs_without_struck_text():
-    # Each of the four keeps its own text extractor underneath, and no other state's
+def test_only_these_six_states_read_pdfs_without_struck_text():
+    # Each of the five keeps its own text extractor underneath, and no other state's
     # reader or media type changes.
     # (Washington's is wrapped twice: OPEN-580 takes the emptied "((" "))" marks out.)
     wrapped = {
@@ -322,12 +480,14 @@ def test_only_these_five_states_read_pdfs_without_struck_text():
         if hasattr(funcs.get("application/pdf"), "__wrapped__")
     }
     assert wrapped == {
+        "ga": extract_sometimes_numbered_pdf,
         "la": extract_sometimes_numbered_pdf,
         "nc": extract_sometimes_numbered_pdf,
         "ne": extract_sometimes_numbered_pdf,
         "wa": extract_line_numbered_pdf,
     }
     assert CONVERSION_FUNCTIONS["al"]["application/pdf"] is handle_alabama_pdf
+    assert set(CONVERSION_FUNCTIONS["ga"]) == {"application/pdf"}
     assert set(CONVERSION_FUNCTIONS["la"]) == {"application/pdf"}
     assert set(CONVERSION_FUNCTIONS["nc"]) == {"application/pdf"}
     assert set(CONVERSION_FUNCTIONS["ne"]) == {"application/pdf"}
