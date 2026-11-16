@@ -329,16 +329,43 @@ _AZ_DOCUMENT_NUMBER_RE = re.compile(
 )
 
 
+# OPEN-593: Virginia's committee and subcommittee substitutes ("Criminal Subcommittee Substitute",
+# "Courts of Justice Substitute", "Delegate Mehta Substitute") all rank as amendments with no
+# ordinal and no date, so they tied on everything above and kept the database's walk order, which
+# for Virginia is backward (OPEN-33). With the ordinal rule below, 528 bills of the 2026 session
+# change order and 108 change their latest version (Mac replica, 2026-11-16). Their links are LIS
+# files (lis.blob.core.windows.net/files/<n>.PDF, an .HTML twin at n+1), numbered as they are
+# published, so the number is the tiebreaker, as it is for Arizona. A version can hold several
+# files (a committee's substitute re-issued: HB 1432 "Courts of Justice Substitute" has 1135485
+# and 1142380); the largest is taken, the file whose text the
+# version stands for (the archiver and recompute-diff-order take the last file by URL, OPEN-578),
+# and the one that puts HB 1432's Criminal Subcommittee (1136021) before Courts of Justice. Checked
+# against the dates of each bill's own "Reported from <committee> with substitute" / "Floor offered"
+# actions: 462 consecutive pairs agree, 1 contradicts (HB 298, two files a day apart). The 2027
+# session's carried-over bills were re-published in bulk, so there the numbers are only mostly
+# right (23 agree, 7 contradict, against 0 and 29 for the walk order).
+# No Virginia substitute carries a real ordinal either: extract_ordinal() reads the subcommittee's
+# number in "Subcommittee #3 Subcommittee Substitute" (135 versions) and the "second" in "Elementary
+# & Secondary Education Subcommittee Substitute" (9) as one, which put the subcommittee's text after
+# the full committee's in 121 of the 135 bills that have a "Subcommittee #N" one. So for Virginia
+# an amendment-stage version's ordinal is 0 and the file number alone orders them
+# (version_sort_key). Read on the Mac replica 2026-11-16: every Virginia amendment-stage note with
+# an ordinal is one of these two shapes.
+_VA_LIS_FILE_RE = re.compile(
+    r"\Ahttps?://lis\.blob\.core\.windows\.net/files/(\d+)\.", re.IGNORECASE
+)
+
+
 def document_number(urls: typing.Iterable[typing.Optional[str]]) -> int:
-    """The Arizona site's document number from any of a version's link URLs (the smallest, if
-    several carry one), or 0 when none does -- which is every other jurisdiction, and Arizona's
-    own versions that have a distinct stage rank anyway."""
-    numbers = [
-        int(m.group(1))
-        for m in (_AZ_DOCUMENT_NUMBER_RE.match(u or "") for u in urls)
-        if m
-    ]
-    return min(numbers) if numbers else 0
+    """The site's own document number from a version's link URLs, read by the link's host: for
+    Arizona's GetDocumentPdf links the smallest (OPEN-368), for Virginia's LIS file links the
+    largest (OPEN-593), and 0 when no link is of either kind -- every other state's links."""
+    urls = [u or "" for u in urls]
+    numbers = [int(m.group(1)) for m in map(_AZ_DOCUMENT_NUMBER_RE.match, urls) if m]
+    if numbers:
+        return min(numbers)
+    numbers = [int(m.group(1)) for m in map(_VA_LIS_FILE_RE.match, urls) if m]
+    return max(numbers) if numbers else 0
 
 
 # OPEN-382: Arizona's "House/Senate Engrossed Version" notes get a lower ordinal than every
@@ -424,11 +451,14 @@ def version_sort_key(
     heuristic alone would.
 
     `urls` (the version's link URLs) adds a last element that only matters between versions that
-    tie on everything above: Arizona's document number (OPEN-368), 0 for everything else.
+    tie on everything above: Arizona's document number (OPEN-368) or Virginia's LIS file number
+    (OPEN-593), 0 for everything else.
     `origin` (origin_chamber() of the bill's identifier) places Arizona's Engrossed Versions
     among its action documents (OPEN-382); it changes nothing for any other note.
     `jurisdiction_name` (`Jurisdiction.name`): for a state in `_DATE_ORDERED_JURISDICTIONS`
     (Alabama, OPEN-569) the date comes first, (date-or-empty, stage, ordinal, document-number).
+    For Virginia an amendment-stage version's ordinal is 0, so its LIS file number orders it
+    (OPEN-593).
 
     A note matching none of the known patterns returns stage STAGE_UNKNOWN -- the caller
     excludes those versions from the diff lineage entirely rather than guessing a position for
@@ -437,6 +467,8 @@ def version_sort_key(
     stage, ordinal = note_stage(note)
     if origin:
         ordinal = _az_chamber_ordinal(note, origin, ordinal)
+    if jurisdiction_name == "Virginia" and stage == STAGE_AMENDMENT:
+        ordinal = 0.0  # OPEN-593: Virginia's substitutes are ordered by LIS file number alone
     has_date = bool(date) and bool(_DATE_RE.match(date))
     if jurisdiction_name in _DATE_ORDERED_JURISDICTIONS:
         return (date if has_date else "", stage, ordinal, document_number(urls))
