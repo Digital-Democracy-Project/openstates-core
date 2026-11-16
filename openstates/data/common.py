@@ -75,6 +75,8 @@ BILL_CLASSIFICATION_CHOICES = (
     # OPEN-517: Massachusetts papers filed under bill numbers that are not bills
     ("report", "Report"),
     ("communication", "Communication"),
+    # OPEN-509: Massachusetts amendment papers ("Amendment S.2512"), listed under their real bill instead
+    ("amendment", "Amendment"),
 )
 BILL_CLASSIFICATIONS = _keys(BILL_CLASSIFICATION_CHOICES)
 
