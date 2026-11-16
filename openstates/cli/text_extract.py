@@ -3226,7 +3226,8 @@ def _comparison_change_rows(bill: typing.Any, result: dict) -> list:
     """OPEN-578: `recompute-diff-order --list` without `--baseline-only`: one CSV row per document of `bill` whose
     stored comparison or `diff_baseline_id` the recompute would change. `comparison` is corrected, nulled, new or
     unchanged; the old baseline is the stored `diff_baseline_id` and, since comparisons stored before OPEN-539 name
-    none, also the document whose text reproduces the stored comparison (`old_comparison_made_against`)."""
+    none, also every document whose text reproduces the stored comparison (`old_comparison_made_against`; for an
+    unchanged comparison whose baseline moves, both the old and the new baseline)."""
     jurisdiction_name = bill.legislative_session.jurisdiction.name
     is_bill = bill.classification == ["bill"]
     new_diff = {id(doc): diff for doc, diff in result["changed"]}
@@ -3238,14 +3239,11 @@ def _comparison_change_rows(bill: typing.Any, result: dict) -> list:
             continue
         if id(doc) not in new_diff:
             comparison = "unchanged"
-            made_against = "" if new_id is None else str(new_id)
+        elif doc.diff_from_previous_version is None:
+            comparison = "new"
         else:
-            comparison = (
-                "new" if doc.diff_from_previous_version is None
-                else "nulled" if new_diff[id(doc)] is None
-                else "corrected"
-            )
-            made_against = _stored_comparison_source(doc, docs, jurisdiction_name, is_bill)
+            comparison = "nulled" if new_diff[id(doc)] is None else "corrected"
+        made_against = _stored_comparison_source(doc, docs, jurisdiction_name, is_bill)
         rows.append(
             [
                 doc.id,
@@ -3461,7 +3459,15 @@ def recompute_diff_order(
     flag_not_a_version = 0  # documents the rules say are NOT a bill version, whatever was stored
     # OPEN-539: diff_baseline_id, written with each comparison: (old, new) per document that changes
     baseline_changes: list = []
-    change_rows: list = []  # OPEN-578: --list, one row per document whose comparison or baseline changes
+    # OPEN-578: --list, one row per document whose comparison or baseline changes. Opened before anything is written,
+    # and each bill's rows are written before that bill's saves; a commit writes to FILE.partial and names it FILE
+    # only when it finishes, so an interrupted commit leaves the record of what it wrote as FILE.partial.
+    change_list = None
+    if list_path:
+        change_list = open(f"{list_path}.partial" if commit else list_path, "w", newline="")
+        change_writer = csv.writer(change_list)
+        change_writer.writerow(_COMPARISON_LIST_HEADER)
+    change_count = 0
     bill_count = 0
 
     for bill in bills:
@@ -3477,6 +3483,11 @@ def recompute_diff_order(
         else:
             result = recompute_bill_diff_order(bill)
             total_unchanged += len(result["unchanged"])
+            if change_list is not None:  # before a commit below sets the new values on the same objects
+                rows = _comparison_change_rows(bill, result)
+                change_writer.writerows(rows)
+                change_list.flush()
+                change_count += len(rows)
         jurisdiction_name = bill.legislative_session.jurisdiction.name
         fields_by_doc: dict[int, tuple] = {}
         for doc, new_diff in result["changed"]:
@@ -3488,8 +3499,6 @@ def recompute_diff_order(
                 doc.diff_from_previous_version = new_diff
                 fields_by_doc[doc.id] = (doc, {"diff_from_previous_version"})
         if not flags_only:
-            if list_path:  # before the commit below sets the new values on the same objects
-                change_rows.extend(_comparison_change_rows(bill, result))
             # OPEN-539: every comparison this run leaves stored names the document it was taken against.
             for doc, old_id, new_id, _ in _baseline_changes(result, diffs_written=True)[0]:
                 baseline_changes.append((old_id, new_id))
@@ -3533,12 +3542,11 @@ def recompute_diff_order(
             f"{state}: [{mode}] diff_baseline_id: {_baseline_counts_text(baseline_changes)}",
             fg="green" if commit else "yellow",
         )
-    if list_path:
-        with open(list_path, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(_COMPARISON_LIST_HEADER)
-            writer.writerows(change_rows)
-        click.secho(f"  change list: {list_path} ({len(change_rows)} documents)", fg="green" if commit else "yellow")
+    if change_list is not None:
+        change_list.close()
+        if commit:
+            os.replace(f"{list_path}.partial", list_path)
+        click.secho(f"  change list: {list_path} ({change_count} documents)", fg="green" if commit else "yellow")
 
 
 @main.command(

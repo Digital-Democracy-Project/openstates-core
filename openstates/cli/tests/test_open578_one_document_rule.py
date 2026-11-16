@@ -235,18 +235,33 @@ def test_dry_run_lists_each_changed_comparison_with_old_and_new_baseline(tmp_pat
     html = by_doc[str(rows[FILES + "1100765.HTML"].id)]
     assert html["comparison"] == "unchanged"
     assert html["new_diff_baseline_id"] == str(rows[FILES + "1100769.HTML"].id)
-    # an unchanged comparison was made against its new baseline
+    # its stored comparison is reproduced by both Finance Substitute HTMLs: the old baseline and the new one
+    assert set(html["old_comparison_made_against"].split(";")) == {
+        str(rows[FILES + "1098529.HTML"].id),
+        str(rows[FILES + "1100769.HTML"].id),
+    }
+    # an unchanged comparison is reproduced by its new baseline
     for r in listed:
         if r["comparison"] == "unchanged":
-            assert r["old_comparison_made_against"] == r["new_diff_baseline_id"]
+            assert r["new_diff_baseline_id"] in r["old_comparison_made_against"].split(";")
 
 
 @pytest.mark.django_db
 def test_after_the_commit_baseline_only_has_nothing_to_refuse(tmp_path):
     bill = _real_bill()
     rows = _stored_rows(bill)
-    out = _cli("--commit")
+    listing = tmp_path / "committed.csv"
+    out = _cli("--commit", "--list", str(listing))
     assert "corrected=1 nulled=0" in out
+    assert not Path(f"{listing}.partial").exists()
+    # the list a commit writes records the values before it, as the dry run's does
+    with open(listing) as f:
+        pdf = {r["doc_id"]: r for r in csv.DictReader(f)}[str(rows[FILES + "1100764.PDF"].id)]
+    assert (pdf["comparison"], pdf["old_comparison_made_against"], pdf["new_diff_baseline_id"]) == (
+        "corrected",
+        str(rows[FILES + "1098528.PDF"].id),
+        str(rows[FILES + "1100768.PDF"].id),
+    )
     for url, (_old, new) in MOVES.items():
         rows[url].refresh_from_db()
         assert rows[url].diff_baseline_id == rows[new].id
@@ -255,3 +270,21 @@ def test_after_the_commit_baseline_only_has_nothing_to_refuse(tmp_path):
     out = _cli("--baseline-only", "--commit", "--list", str(tmp_path / "stamped.csv"))
     assert "after: comparisons_without_baseline=0" in out
     assert "corrected=0 nulled=0" in _cli("--dry-run")  # a second full run changes nothing
+
+
+@pytest.mark.django_db
+def test_a_commit_whose_list_cannot_be_written_writes_nothing(tmp_path):
+    bill = _real_bill()
+    _stored_rows(bill)
+    before = {
+        d.id: (d.diff_from_previous_version, d.diff_baseline_id) for d in BillVersionDocument.objects.filter(bill=bill)
+    }
+    with mock.patch("openstates.cli.text_extract.init_django"), mock.patch(
+        "openstates.cli.text_extract.abbr_to_jid", return_value=REAL["jid"]
+    ):
+        result = CliRunner().invoke(recompute_diff_order, ["va", "--commit", "--list", str(tmp_path / "no" / "x.csv")])
+    assert result.exit_code != 0
+    after = {
+        d.id: (d.diff_from_previous_version, d.diff_baseline_id) for d in BillVersionDocument.objects.filter(bill=bill)
+    }
+    assert after == before
