@@ -59,6 +59,17 @@ from .common import ExtractorFunc, Metadata, extract_line_numbered_pdf
 # 284 PDFs of the 2026 special session, scripts/open560_compare_struck_text.py ga): 10 lose
 # struck text (HR 11, HR 12, HR 14, SB 3 x5, SB 10, SR 1), no stored text gains a character,
 # no rule at 0.6 or higher removes anything, no errors.
+#
+# OPEN-591: Nevada prints removed law inside brackets and struck through, brackets included
+# (AB 4 First Reprint: "[(c)] (e) “Health care facility” means ...", where "[(c)]" is struck).
+# Its bills strike at 0.55-0.60 of the span's height (one crossing at 0.45). Its amendment papers
+# (A_AB4_13 and the like) mark the original bill's deletions with a red strike at 0.60-0.65 and
+# the amendment's own with a purple double strike (0.55 and 0.65), all inside the band, and their
+# orange double underline at 0.87, outside it. Comparison (2026-11-16, the 42 version PDFs of the
+# 10-31 probe sample, 36th (2025) Special Session, scripts/open560_compare_struck_text.py nv): 33
+# stored texts change, none gains a character, 2,405 "[" and 2,405 "]" before, 0 after, no
+# errors. The struck sample words of the colour legend ("[omitted material]", "red
+# strikethrough") go too.
 _RULE_MAX_HEIGHT = 2.0
 _STRIKE_LOW = 0.35
 _STRIKE_HIGH = 0.7

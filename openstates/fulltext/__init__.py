@@ -148,7 +148,8 @@ CONVERSION_FUNCTIONS = {
         "application/pdf": extract_sometimes_numbered_pdf,
         "text/html": DoNotDownload,
     },
-    "nv": {"application/pdf": extract_sometimes_numbered_pdf},
+    # OPEN-591: struck-out words removed by Alabama's reader, see fulltext/al.py.
+    "nv": {"application/pdf": read_without_struck_text(extract_sometimes_numbered_pdf)},
     "oh": {"application/pdf": extract_line_post_numbered_pdf},
     "or": {"application/pdf": extract_sometimes_numbered_pdf},
     "ok": {"application/pdf": extract_sometimes_numbered_pdf},

@@ -27,6 +27,9 @@ characters taken out. Per state it reports:
   the line prints whole and those words come back;
 * Washington: documents where a removed character of the print lies outside the printed
   `((...))` deletion marks (Washington prints every deletion inside them);
+* Nevada: the brackets (`[` and `]`) in the stored text before and after (Nevada prints every
+  deletion inside `[...]` and strikes it, brackets included), and the lines where a bracket is
+  left, to be read: a bracket that survives must be one that was not struck;
 * documents where text was removed by a rule at 0.6 of the line height or higher (strikes sit at
   0.41 to 0.55; Louisiana's signature rule at 0.72 is outside the reader's 0.35-0.70 band, so a
   removal this high would mean a signature or fill-in line eating real text), and documents with
@@ -215,6 +218,12 @@ def compare_one(args: tuple) -> dict:
         out["new_error"] = f"{type(e).__name__}: {e}"[:200]
         return out
     out["changed"] = old != new
+    if state == "nv":
+        out["brackets_old"] = [old.count("["), old.count("]")]
+        out["brackets_new"] = [new.count("["), new.count("]")]
+        out["bracket_lines_left"] = [
+            line.strip() for line in new.split("\n") if "[" in line or "]" in line
+        ][:3]
     if copy is not data:
         old_print, new_print = pdfdata_to_text(data), pdfdata_to_text(copy)
         out["print_gained"] = gains_characters(old_print, new_print)
@@ -242,7 +251,7 @@ def compare_one(args: tuple) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("state", choices=["ga", "la", "nc", "ne", "wa"])
+    parser.add_argument("state", choices=["ga", "la", "nc", "ne", "nv", "wa"])
     parser.add_argument(
         "--root",
         default=os.environ.get("ARCHIVE_ROOT_DIR", "/Volumes/DDP-HOT/bills/raw"),
@@ -324,6 +333,18 @@ def main() -> int:
         summary["wa_documents_with_removal_outside_marks"] = len(outside)
         summary["examples"]["wa_outside_marks"] = [
             (r["path"], r["outside_marks"]) for r in outside[:10]
+        ]
+    if args.state == "nv":
+        for when in ("old", "new"):
+            counts = [r.get(f"brackets_{when}", [0, 0]) for r in results]
+            summary[f"nv_brackets_in_stored_text_{when}"] = {
+                "[": sum(c[0] for c in counts),
+                "]": sum(c[1] for c in counts),
+            }
+        left = where("bracket_lines_left")
+        summary["nv_documents_with_a_bracket_left"] = len(left)
+        summary["examples"]["nv_bracket_lines_left"] = [
+            (r["path"], r["bracket_lines_left"]) for r in left[:10]
         ]
     print(json.dumps(summary, indent=2, ensure_ascii=False))
     failed = summary["documents_print_gains_characters"] or summary[
