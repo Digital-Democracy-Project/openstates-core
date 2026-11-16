@@ -2121,6 +2121,9 @@ def archive_bill_versions(
     # A media type absent from one version does not reset its lineage -- only the types present
     # are updated -- so a version that ships PDF-only does not orphan the XML chain.
     prior_by_media: dict[str, str] = {}
+    # OPEN-539: the id of the stored row behind each baseline text, kept beside it, so every new
+    # comparison is stored with the document it was actually made against (`diff_baseline_id`).
+    prior_id_by_media: dict[str, int] = {}
 
     ordered_versions = sorted(
         bill.versions.all(),
@@ -2142,6 +2145,7 @@ def archive_bill_versions(
             or _is_procedural_document(jurisdiction_name, version.note)
         )
         this_version_texts: dict[str, str] = {}
+        this_version_ids: dict[str, int] = {}  # OPEN-539: the row behind each text above
 
         # OPEN-217 (review round 1): 3,744 production versions have more than one
         # successfully-extracted document of the SAME media type, so `this_version_texts`
@@ -2167,6 +2171,7 @@ def archive_bill_versions(
                 counters["skipped"] += 1
                 if _feeds_baseline(existing, jurisdiction_name):
                     this_version_texts[existing.media_type] = existing.raw_text
+                    this_version_ids[existing.media_type] = existing.id
                 continue
             # OPEN-263 (review round 1): `existing` here, if present, is a stale row from a
             # prior run whose upload never completed -- retryable, not done. Deleting it is
@@ -2181,6 +2186,7 @@ def archive_bill_versions(
             # branch below both already do.
             if existing and _feeds_baseline(existing, jurisdiction_name):
                 this_version_texts[existing.media_type] = existing.raw_text
+                this_version_ids[existing.media_type] = existing.id
 
             metadata: Metadata = {
                 "url": link.url,
@@ -2306,6 +2312,7 @@ def archive_bill_versions(
                 counters["extract_errors"] += 1
 
             diff_from_previous_version = None
+            diff_baseline_id = None  # OPEN-539: set exactly when a comparison is made below
             # Same-media by construction (OPEN-217), so the cross-media reflow branch inside
             # _clean_michigan_text()/_clean_virginia_text() can no longer fire from this call
             # site. Left in place rather than removed: both are shared helpers with their own
@@ -2341,6 +2348,8 @@ def archive_bill_versions(
                         lineterm="",
                     )
                 )
+                # OPEN-539: the row whose text was just compared (the media type _diff_baseline chose).
+                diff_baseline_id = prior_id_by_media[prior_media_type]
 
             try:
                 # OPEN-107: the insert gets its own savepoint so a duplicate-key
@@ -2363,10 +2372,17 @@ def archive_bill_versions(
                 # collision the delete exists for in the first place: two racing runs are
                 # exactly the pre-existing IntegrityError case below, just one INSERT away
                 # from the delete instead of several.
+                replaced_id = existing.id if existing else None  # delete() sets existing.id to None
                 with transaction.atomic():
                     if existing:
+                        # OPEN-539: a comparison taken against the row being replaced no longer
+                        # names a stored document; clear it (a recompute restamps it) rather
+                        # than leave an id that points nowhere. Baselines never cross bills.
+                        BillVersionDocument.objects.filter(
+                            bill=bill, diff_baseline_id=replaced_id
+                        ).update(diff_baseline_id=None)
                         existing.delete()
-                    BillVersionDocument.objects.create(
+                    created = BillVersionDocument.objects.create(
                         bill=bill,
                         version_note=version.note,
                         version_date=version.date,
@@ -2376,6 +2392,7 @@ def archive_bill_versions(
                         is_error=is_error,
                         sha256_hash=sha256_hash,
                         diff_from_previous_version=diff_from_previous_version,
+                        diff_baseline_id=diff_baseline_id,  # OPEN-539
                         # OPEN-492: decided once, here, from the same per-state rules the
                         # diff lineage uses; readers (api-v3) read this instead of a list.
                         # OPEN-498: some states also need the bill's title (see is_bill_version).
@@ -2389,6 +2406,12 @@ def archive_bill_versions(
                 counters["archived"] += 1
                 if not is_error and _has_text(raw_text) and not is_amendment:
                     this_version_texts[media_type] = raw_text
+                    this_version_ids[media_type] = created.id
+                elif existing and this_version_ids.get(existing.media_type) == replaced_id:
+                    # OPEN-539: the replaced row's text no longer exists in the table, so it is
+                    # no baseline either (as `recompute-diff-order` would see the bill).
+                    del this_version_texts[existing.media_type]
+                    del this_version_ids[existing.media_type]
             except IntegrityError:
                 # OPEN-107: ask the database which of two very different things just
                 # happened, instead of reporting both as a "natural-key conflict" and
@@ -2437,6 +2460,7 @@ def archive_bill_versions(
                     # caused purely by having lost a race.
                     if _feeds_baseline(stored, jurisdiction_name):
                         this_version_texts[stored.media_type] = stored.raw_text
+                        this_version_ids[stored.media_type] = stored.id
                 else:
                     click.secho(
                         f"WARNING unexplained integrity error archiving "
@@ -2452,6 +2476,7 @@ def archive_bill_versions(
             # representative text here is gone -- with per-media baselines there is nothing
             # left to prefer.
             prior_by_media.update(this_version_texts)
+            prior_id_by_media.update(this_version_ids)
 
     return counters
 
@@ -2932,7 +2957,12 @@ def recomputed_diffs_for_documents(
     every stored document whose pair is no longer a version of the bill out of the lineage (no diff, not a baseline),
     as `archive_bill_versions` does by walking only the current versions. Such a document is a copy saved under an
     old note or date (a version re-dated or renamed by the scraper) or a paper that is no longer a version (Alabama's
-    substitutes that were offered and never adopted). None treats every document as current."""
+    substitutes that were offered and never adopted). None treats every document as current.
+
+    OPEN-539: the result also has "baselines", a list of (doc, baseline_doc_or_None) for every document, in walk
+    order: the document the recomputed comparison is taken against (the one `_diff_baseline` chose), None exactly
+    when the recomputed comparison is None. Callers store `baseline_doc.id` as `diff_baseline_id` with the
+    comparison."""
     groups: dict[tuple, list] = {}
     for doc in docs:
         groups.setdefault((doc.version_note, doc.version_date), []).append(doc)
@@ -2963,6 +2993,8 @@ def recomputed_diffs_for_documents(
     # A media type absent from one version does not reset its lineage -- only the types present
     # are updated -- so a version that happens to ship PDF-only does not orphan the XML chain.
     prior_by_media: dict[str, str] = {}
+    prior_doc_by_media: dict[str, typing.Any] = {}  # OPEN-539: the document behind each text
+    baselines = []
     for note, date in ordered_keys:
         # OPEN-224: parity with archive_bill_versions() above -- same helper, same inputs.
         is_unknown_position = (
@@ -2971,8 +3003,10 @@ def recomputed_diffs_for_documents(
             or (current_versions is not None and (note, date) not in current_versions)
         )
         group_texts: dict[str, str] = {}
+        group_docs: dict[str, typing.Any] = {}
         for doc in groups[(note, date)]:
             new_diff = None
+            baseline_doc = None
             prior_text, prior_media_type = _diff_baseline(
                 prior_by_media, doc.media_type, jurisdiction_name
             )
@@ -3001,16 +3035,202 @@ def recomputed_diffs_for_documents(
                         lineterm="",
                     )
                 )
+                baseline_doc = prior_doc_by_media[prior_media_type]
+            baselines.append((doc, baseline_doc))
             if new_diff != doc.diff_from_previous_version:
                 changed.append((doc, new_diff))
             else:
                 unchanged.append(doc)
             if _feeds_baseline(doc, jurisdiction_name):
                 group_texts[doc.media_type] = doc.raw_text
+                group_docs[doc.media_type] = doc
         if group_texts and not is_unknown_position:
             prior_by_media.update(group_texts)
+            prior_doc_by_media.update(group_docs)
 
-    return {"unchanged": unchanged, "changed": changed}
+    return {"unchanged": unchanged, "changed": changed, "baselines": baselines}
+
+
+def _baseline_changes(result: dict, *, diffs_written: bool) -> typing.Tuple[list, int]:
+    """
+    OPEN-539: from one bill's `recomputed_diffs_for_documents` result, [(doc, old_id, new_id, baseline_doc)] for each
+    document whose stored `diff_baseline_id` is not the document its comparison is taken against (None where there
+    is no comparison), and how many documents were left out.
+
+    A document is left out only when `diffs_written` is False (`--baseline-only`) and its recomputed comparison
+    differs from the stored one: the recomputed baseline did not produce the stored text, so stamping it would name a
+    document the stored comparison was not made against. A full recompute writes that comparison and its baseline
+    together.
+    """
+    would_change = {id(doc) for doc, _ in result["changed"]}
+    changes = []
+    left_out = 0
+    for doc, baseline_doc in result["baselines"]:
+        if not diffs_written and id(doc) in would_change:
+            left_out += 1
+            continue
+        want = baseline_doc.id if baseline_doc is not None else None
+        if doc.diff_baseline_id != want:
+            changes.append((doc, doc.diff_baseline_id, want, baseline_doc))
+    return changes, left_out
+
+
+def _baseline_stamp_plan(bills: typing.Any) -> tuple:
+    """OPEN-539: the `--baseline-only` plan for `bills`: (bills walked, CSV rows to stamp, counts). Reads only."""
+    rows = []
+    counts = {"comparisons": 0, "comparison_would_change": 0}
+    bill_count = 0
+    for bill in bills:
+        bill_count += 1
+        result = recompute_bill_diff_order(bill)
+        counts["comparisons"] += sum(
+            1 for doc, _ in result["baselines"] if doc.diff_from_previous_version is not None
+        )
+        changes, left_out = _baseline_changes(result, diffs_written=False)
+        counts["comparison_would_change"] += left_out
+        for doc, old_id, new_id, baseline_doc in changes:
+            rows.append(
+                {
+                    "doc": doc,
+                    "csv": [
+                        doc.id,
+                        bill.id,
+                        bill.identifier,
+                        bill.legislative_session.identifier,
+                        doc.version_note,
+                        doc.version_date,
+                        doc.media_type,
+                        "" if old_id is None else old_id,
+                        "" if new_id is None else new_id,
+                        baseline_doc.version_note if baseline_doc is not None else "",
+                        baseline_doc.version_date if baseline_doc is not None else "",
+                        baseline_doc.media_type if baseline_doc is not None else "",
+                    ],
+                    "old": old_id,
+                    "new": new_id,
+                }
+            )
+    return bill_count, rows, counts
+
+
+_BASELINE_LIST_HEADER = [
+    "doc_id",
+    "bill_id",
+    "identifier",
+    "session",
+    "version_note",
+    "version_date",
+    "media_type",
+    "old_diff_baseline_id",
+    "new_diff_baseline_id",
+    "baseline_note",
+    "baseline_date",
+    "baseline_media_type",
+]
+
+
+def _write_baseline_list(path: str, rows: list) -> None:
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(_BASELINE_LIST_HEADER)
+        for row in rows:
+            writer.writerow(row["csv"])
+
+
+def _baseline_counts_text(changes: typing.Iterable[tuple]) -> str:
+    """`set=N changed=N cleared=N` over (old_id, new_id) pairs."""
+    tally = {"set": 0, "changed": 0, "cleared": 0}
+    for old_id, new_id in changes:
+        if old_id is None:
+            tally["set"] += 1
+        elif new_id is None:
+            tally["cleared"] += 1
+        else:
+            tally["changed"] += 1
+    return " ".join(f"{k}={v}" for k, v in tally.items())
+
+
+def _stamp_baselines_only(
+    state: str, bills: typing.Any, commit: bool, expect: typing.Optional[int], list_path: typing.Optional[str]
+) -> None:
+    """
+    OPEN-539: `recompute-diff-order --baseline-only`, the stamping pass for comparisons stored before
+    `diff_baseline_id` existed. Same shape as `remove-stale-documents`: a dry run by default; `--commit` needs
+    `--list` (one CSV row per stamped document, named only after the commit), `--expect N` aborts unless exactly N
+    documents would be stamped. Writes only `diff_baseline_id` (never the comparison, never `updated_at`, so no
+    reader sees the documents as changed), and only where the recomputed comparison equals the stored one. The plan's
+    stamping pass also confirms that no stored comparison changes, so `--commit` refuses a state where any stored
+    comparison is not reproduced (`not_stamped_comparison_would_change` above 0): there the answer is the full
+    recompute, which writes each comparison with its baseline. After the commit it prints the state's completeness
+    count (stored comparisons still without a baseline; 0 means the state is stamped).
+
+    The commit locks the documents and plans again inside the transaction, so the stamps written are the ones the
+    list records. An archive inserting a new document meanwhile cannot make a stamp wrong: it never rewrites a stored
+    comparison, and a stamp is written only where the stored comparison is reproduced from its baseline.
+    """
+    from openstates.data.models import BillVersionDocument
+
+    written_path = f"{list_path}.partial" if commit and list_path else list_path
+    if commit:
+        try:
+            with transaction.atomic():
+                list(
+                    BillVersionDocument.objects.select_for_update()
+                    .filter(bill__in=bills)
+                    .values_list("id", flat=True)
+                )
+                bill_count, rows, counts = _baseline_stamp_plan(bills)
+                if counts["comparison_would_change"]:
+                    raise click.ClickException(
+                        f"{counts['comparison_would_change']} stored comparisons are not what the recompute gives, so "
+                        "they cannot be stamped; run the full recompute for this state instead (dry run first). "
+                        "Nothing written"
+                    )
+                if expect is not None and expect != len(rows):
+                    raise click.ClickException(
+                        f"{len(rows)} documents would be stamped, not the expected {expect}; nothing written"
+                    )
+                _write_baseline_list(written_path, rows)
+                docs = []
+                for row in rows:
+                    row["doc"].diff_baseline_id = row["new"]
+                    docs.append(row["doc"])
+                BillVersionDocument.objects.bulk_update(docs, ["diff_baseline_id"], batch_size=1000)
+                without_baseline = BillVersionDocument.objects.filter(
+                    bill__in=bills, diff_from_previous_version__isnull=False, diff_baseline_id__isnull=True
+                ).count()
+        except BaseException:
+            if os.path.exists(written_path):
+                os.remove(written_path)
+            raise
+        try:
+            os.replace(written_path, list_path)
+        except OSError as e:
+            raise click.ClickException(
+                f"{state}: COMMITTED, but the change list could not take its name ({e}); "
+                f"it is complete at {written_path}. Do not run again: the commit is done"
+            )
+    else:
+        bill_count, rows, counts = _baseline_stamp_plan(bills)
+        if list_path:
+            _write_baseline_list(list_path, rows)
+
+    mode = "COMMITTED" if commit else "DRY RUN"
+    color = "green" if commit else "yellow"
+    click.secho(
+        f"{state}: [{mode}] {bill_count} bills checked | diffs untouched (--baseline-only)",
+        fg=color,
+    )
+    click.secho(
+        f"{state}: [{mode}] diff_baseline_id: comparisons={counts['comparisons']} stamp={len(rows)} "
+        f"({_baseline_counts_text((r['old'], r['new']) for r in rows)}) "
+        f"not_stamped_comparison_would_change={counts['comparison_would_change']}",
+        fg=color,
+    )
+    if commit:
+        click.secho(f"  after: comparisons_without_baseline={without_baseline}", fg=color)
+    if list_path:
+        click.secho(f"  change list: {list_path}", fg=color)
 
 
 @main.command(
@@ -3031,9 +3251,51 @@ def recomputed_diffs_for_documents(
     help="OPEN-498: set is_bill_version only and leave every stored diff exactly as it is "
     "(Massachusetts: its stored diffs are the only record of which bill became which law)",
 )
+@click.option(
+    "--baseline-only",
+    is_flag=True,
+    default=False,
+    help="OPEN-539: set diff_baseline_id only, on documents whose stored comparison the recompute "
+    "reproduces; every stored diff and is_bill_version stays exactly as it is",
+)
+@click.option(
+    "--expect",
+    type=int,
+    default=None,
+    help="with --baseline-only: abort before writing unless exactly this many documents would be "
+    "stamped (the agreed dry-run count)",
+)
+@click.option(
+    "--list",
+    "list_path",
+    default=None,
+    help="with --baseline-only: write one CSV row per document whose diff_baseline_id would change; "
+    "required with --commit",
+)
 def recompute_diff_order(
-    state: str, session: str = None, commit: bool = False, flags_only: bool = False
+    state: str,
+    session: str = None,
+    commit: bool = False,
+    flags_only: bool = False,
+    baseline_only: bool = False,
+    expect: int = None,
+    list_path: str = None,
 ) -> None:
+    if baseline_only and flags_only:
+        raise click.ClickException("--baseline-only and --flags-only each leave the other's column alone; pick one")
+    if (expect is not None or list_path) and not baseline_only:
+        raise click.ClickException("--expect and --list go with --baseline-only")
+    if baseline_only and commit and not list_path:
+        raise click.ClickException(
+            "--commit needs --list FILE: that file is the record of what was stamped"
+        )
+    if baseline_only and commit and (
+        os.path.exists(list_path) or os.path.exists(f"{list_path}.partial")
+    ):
+        raise click.ClickException(
+            f"{list_path} (or its .partial) already exists: an earlier record is never overwritten; nothing written"
+        )
+
     init_django()
     from openstates.data.models import Bill, BillVersionDocument
 
@@ -3053,6 +3315,10 @@ def recompute_diff_order(
     # command's job (correcting already-archived data), not archive()'s (fetching new data).
     bills = bills.filter(version_documents__isnull=False).distinct()
 
+    if baseline_only:
+        _stamp_baselines_only(state, bills, commit, expect, list_path)
+        return
+
     total_unchanged = 0
     total_corrected = 0
     total_nulled = 0
@@ -3060,6 +3326,8 @@ def recompute_diff_order(
     flag_set = 0  # was empty (not decided yet), now has a value
     flag_changed = 0  # had the other value
     flag_not_a_version = 0  # documents the rules say are NOT a bill version, whatever was stored
+    # OPEN-539: diff_baseline_id, written with each comparison: (old, new) per document that changes
+    baseline_changes: list = []
     bill_count = 0
 
     for bill in bills:
@@ -3085,6 +3353,13 @@ def recompute_diff_order(
             if commit:
                 doc.diff_from_previous_version = new_diff
                 fields_by_doc[doc.id] = (doc, {"diff_from_previous_version"})
+        if not flags_only:
+            # OPEN-539: every comparison this run leaves stored names the document it was taken against.
+            for doc, old_id, new_id, _ in _baseline_changes(result, diffs_written=True)[0]:
+                baseline_changes.append((old_id, new_id))
+                if commit:
+                    doc.diff_baseline_id = new_id
+                    fields_by_doc.setdefault(doc.id, (doc, set()))[1].add("diff_baseline_id")
         for doc in result["unchanged"] + [d for d, _ in result["changed"]]:
             want = _is_bill_version(
                 jurisdiction_name, doc.version_note, bill.title, doc.raw_text
@@ -3117,6 +3392,11 @@ def recompute_diff_order(
         f"not_a_version={flag_not_a_version}",
         fg="green" if commit else "yellow",
     )
+    if not flags_only:
+        click.secho(
+            f"{state}: [{mode}] diff_baseline_id: {_baseline_counts_text(baseline_changes)}",
+            fg="green" if commit else "yellow",
+        )
 
 
 @main.command(
@@ -3693,8 +3973,14 @@ def remove_stale_documents(
                     raise click.ClickException(
                         f"{state}: the documents changed since they were read; rolled back, nothing written"
                     )
+                removed_ids = [r["id"] for r, _ in removals]
+                # OPEN-539: a comparison taken against a removed row no longer names a stored document; clear it
+                # (the recompute this command asks for afterwards restamps it). Baselines never cross bills.
+                BillVersionDocument.objects.filter(
+                    bill__in=bills, diff_baseline_id__in=removed_ids
+                ).update(diff_baseline_id=None)
                 deleted, _ = BillVersionDocument.objects.filter(
-                    id__in=[r["id"] for r, _ in removals]
+                    id__in=removed_ids
                 ).delete()
                 if deleted != len(removals):
                     raise click.ClickException(
@@ -4121,10 +4407,16 @@ def refresh_extraction(
                 doc.is_error = new_is_error
                 doc.save(update_fields=["raw_text", "is_error", "updated_at"])
 
-            for doc, new_diff in recompute_bill_diff_order(bill)["changed"]:
+            result = recompute_bill_diff_order(bill)
+            for doc, new_diff in result["changed"]:
                 doc.diff_from_previous_version = new_diff
                 doc.save(update_fields=["diff_from_previous_version", "updated_at"])
                 diffs_corrected += 1
+            # OPEN-539: each stored comparison names the document it was taken against. Only the id
+            # is written here, so a document whose comparison did not change keeps its updated_at.
+            for doc, _, new_id, _ in _baseline_changes(result, diffs_written=True)[0]:
+                doc.diff_baseline_id = new_id
+                doc.save(update_fields=["diff_baseline_id"])
 
     mode = "COMMITTED" if commit else "DRY RUN"
     click.secho(

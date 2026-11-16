@@ -351,6 +351,22 @@ class BillVersionDocument(models.Model):
         ),
     )
 
+    diff_baseline_id = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text=(
+            "OPEN-539: the id of the ddp_bill_version_document row this row's "
+            "diff_from_previous_version was actually computed against (same bill), written in "
+            "the same statement as the comparison by the archiver and by "
+            "`recompute-diff-order`. Null when there is no stored comparison (a bill's first "
+            "version, a not-a-version paper, an unknown stage), and on a comparison stored "
+            "before this column existed until `recompute-diff-order <state> --baseline-only "
+            "--commit` stamps it. A plain id, not a foreign key: no constraint or index on "
+            "the table; a removed baseline row clears it (archiver retry, "
+            "remove-stale-documents)."
+        ),
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
