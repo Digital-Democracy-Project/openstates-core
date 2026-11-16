@@ -557,10 +557,12 @@ def test_only_these_six_states_read_pdfs_without_struck_text():
     # Each of the five keeps its own text extractor underneath, and no other state's
     # reader or media type changes.
     # (Washington's is wrapped twice: OPEN-580 takes the emptied "((" "))" marks out.)
+    # Oregon's is wrapped too, but by its bracket reader (OPEN-600, test_or_bracketed.py): it
+    # prints no strike line.
     wrapped = {
         state: inspect.unwrap(funcs["application/pdf"])
         for state, funcs in CONVERSION_FUNCTIONS.items()
-        if hasattr(funcs.get("application/pdf"), "__wrapped__")
+        if hasattr(funcs.get("application/pdf"), "__wrapped__") and state != "or"
     }
     assert wrapped == {
         "ga": extract_sometimes_numbered_pdf,
