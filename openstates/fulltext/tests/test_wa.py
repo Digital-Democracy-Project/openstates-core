@@ -39,7 +39,8 @@ def lines_of(doc: bytes) -> list:
 def test_wa_html_uses_structured_extraction():
     """Regression pin. The bug is invisible from the output of any single element -- it only
     appears where two blocks abut -- so pin the wiring itself."""
-    assert CONVERSION_FUNCTIONS["wa"]["text/html"].__name__ == "_my_extractor"
+    # OPEN-580: Washington's own reader, which serializes the same way (fulltext/wa.py).
+    assert CONVERSION_FUNCTIONS["wa"]["text/html"].__name__ == "handle_washington_html"
     assert "516769" not in CONVERSION_FUNCTIONS["wa"]["text/html"](WA_HTML, WA_METADATA)
 
 
