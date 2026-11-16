@@ -22,6 +22,7 @@ from .us import handle_us_bill_xml
 from .pa import handle_pennsylvania_odt, ODT_MEDIA_TYPE
 from .al import handle_alabama_pdf, read_without_struck_text
 from .wa import handle_washington_html, without_deletion_marks
+from .oregon import without_bracketed_text
 
 
 class DoNotDownload:
@@ -149,7 +150,9 @@ CONVERSION_FUNCTIONS = {
     },
     "nv": {"application/pdf": extract_sometimes_numbered_pdf},
     "oh": {"application/pdf": extract_line_post_numbered_pdf},
-    "or": {"application/pdf": extract_sometimes_numbered_pdf},
+    # OPEN-600: the words a bill deletes from current law, printed [italic and bracketed], are
+    # left out (see fulltext/oregon.py).
+    "or": {"application/pdf": without_bracketed_text(extract_sometimes_numbered_pdf)},
     "ok": {"application/pdf": extract_sometimes_numbered_pdf},
     "sc": {"text/html": extract_from_p_tags_html},
     "sd": {"text/html": extractor_for_elements_by_class("fullContent")},
