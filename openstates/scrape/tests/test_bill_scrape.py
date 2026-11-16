@@ -342,3 +342,19 @@ def test_duplicate_sponsor_warning():
         )
         assert len(w) == 1
         assert "duplicate sponsor" in str(w[0].message)
+
+
+def test_open509_amendment_is_a_bill_label():
+    # OPEN-509: the Massachusetts scraper labels an amendment paper with version_ordering's
+    # NON_BILL_AMENDMENT; the bill schema must accept that same word, or the scrape fails validation.
+    from openstates.utils.version_ordering import NON_BILL_AMENDMENT
+
+    b = Bill(
+        identifier="S 2954",
+        legislative_session="194th",
+        title="Amendment S.2954",
+        classification=NON_BILL_AMENDMENT,
+    )
+    b.add_source("https://malegislature.gov/Bills/194/S2954")
+    b.validate()
+    assert b.classification == ["amendment"]
