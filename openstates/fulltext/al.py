@@ -50,6 +50,16 @@ from .common import ExtractorFunc, Metadata, extract_line_numbered_pdf
 # ACC-8-V-2" and the like, outside the diff lineage) pdftotext moves the "A1" label beside the
 # "AMENDMENT NO." line once struck lines go; no word is added.
 #
+# OPEN-601: Georgia prints struck words the same way, in every change to existing law or to the
+# Senate's rules (SR 1, 2026 special session: "in existence for five (5) days twenty-four (24)
+# hours", where "five (5) days" is struck), and publishes only the PDF. Its strike sits at 0.5 of
+# the span's height and its underline at 0.9 (and -0.5, the line above's underline), nothing in
+# between, so the same reader is reused unchanged. Georgia often strikes whole printed lines;
+# a line left with only its number is dropped, as before. Whole-set comparison (2026-11-16, all
+# 284 PDFs of the 2026 special session, scripts/open560_compare_struck_text.py ga): 10 lose
+# struck text (HR 11, HR 12, HR 14, SB 3 x5, SB 10, SR 1), no stored text gains a character,
+# no rule at 0.6 or higher removes anything, no errors.
+#
 # OPEN-591: Nevada prints removed law inside brackets and struck through, brackets included
 # (AB 4 First Reprint: "[(c)] (e) “Health care facility” means ...", where "[(c)]" is struck).
 # Its bills strike at 0.55-0.60 of the span's height (one crossing at 0.45). Its amendment papers

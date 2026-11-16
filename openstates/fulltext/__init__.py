@@ -71,7 +71,8 @@ CONVERSION_FUNCTIONS = {
         "text/html": extract_pre_tag_html,
         "application/pdf": extract_line_numbered_pdf,
     },
-    "ga": {"application/pdf": extract_sometimes_numbered_pdf},
+    # OPEN-601: struck-out words removed by Alabama's reader, see fulltext/al.py.
+    "ga": {"application/pdf": read_without_struck_text(extract_sometimes_numbered_pdf)},
     "hi": {
         "text/html": extractor_for_element_by_xpath(
             './/*[@class="Section2"] | .//*[@class="WordSection2"]'
