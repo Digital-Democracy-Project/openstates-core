@@ -15,6 +15,13 @@ cut page exactly as it reads that page in the whole file):
   degrees, whose parish borders cross the upright parish labels.
 * Washington SB 5681 (2025-26), Substitute Bill, page 1: "21" and "access" are struck inside
   Washington's "((...))" deletion marks, with "20" and "inclusion" underlined.
+
+OPEN-584 adds North Carolina, read the same way:
+
+* North Carolina HB 613 (2025), Edition 2, page 1: "renewal electronically to an e-mail address
+  provided by the owner of the vehicle." is struck and "renewal." underlined, in a section of
+  existing law "reads as rewritten".
+* North Carolina SB 809 (2025), Edition 3, page 1: words underlined, nothing struck.
 """
 
 import inspect
@@ -83,10 +90,21 @@ def test_washington_sb5681_reads_the_new_words_only():
     assert "inclusion" in new
 
 
+def test_north_carolina_hb613_reads_the_new_words_only():
+    data = _read("nc_hb613_edition2_p1.pdf")
+    old = "\n".join(_lines(extract_sometimes_numbered_pdf(data, META)))
+    new = "\n".join(_lines(_pdf("nc")(data, META)))
+    assert "notice of renewal electronically to an e-mail address" in old
+    assert "of the vehicle.renewal." in old
+    assert "electronically" not in new
+    assert "vehicle any required notice of\nrenewal." in new
+
+
 @pytest.mark.parametrize(
     "state,name,extract",
     [
         ("la", "la_sb495_engrossed_p6.pdf", extract_sometimes_numbered_pdf),
+        ("nc", "nc_hb613_edition2_p1.pdf", extract_sometimes_numbered_pdf),
         ("ne", "ne_lb778_final_reading_p2.pdf", extract_sometimes_numbered_pdf),
         ("wa", "wa_sb5681_s_p1.pdf", extract_line_numbered_pdf),
     ],
@@ -156,6 +174,18 @@ EXPECTED_CHANGES = {
                 "superintendent of schools accompanied by valid reasons therefor providing the",
                 "providing the",
             ),
+        ],
+    ),
+    "nc_hb613": (
+        "nc",
+        "nc_hb613_edition2_p1.pdf",
+        extract_sometimes_numbered_pdf,
+        [
+            (
+                "vehicle any required notice of renewal electronically to an e-mail address provided by the owner",
+                "vehicle any required notice of",
+            ),
+            ("of the vehicle.renewal.", "renewal."),
         ],
     ),
     "ne_lb778": (
@@ -267,15 +297,23 @@ def test_a_page_with_nothing_struck_is_read_exactly_as_before():
     assert _pdf("ne")(data, META) == extract_sometimes_numbered_pdf(data, META)
 
 
+def test_a_north_carolina_page_with_underlines_only_is_read_exactly_as_before():
+    # North Carolina underlines inserted words at 0.93 of the line height, outside the strike
+    # band; a page with underlines and no strike keeps every word.
+    data = _read("nc_sb809_edition3_p1.pdf")
+    assert without_struck_text(data) is data
+    assert _pdf("nc")(data, META) == extract_sometimes_numbered_pdf(data, META)
+
+
 def test_a_file_pymupdf_cannot_open_is_an_extraction_error():
     # As for Alabama: no quiet fallback that would bring the struck words back.
-    for state in ("la", "ne", "wa"):
+    for state in ("la", "nc", "ne", "wa"):
         with pytest.raises(Exception):
             _pdf(state)(b"%PDF-1.7\n" + b"\x00" * 64, META)
 
 
-def test_only_these_four_states_read_pdfs_without_struck_text():
-    # Each of the three keeps its own text extractor underneath, and no other state's
+def test_only_these_five_states_read_pdfs_without_struck_text():
+    # Each of the four keeps its own text extractor underneath, and no other state's
     # reader or media type changes.
     # (Washington's is wrapped twice: OPEN-580 takes the emptied "((" "))" marks out.)
     wrapped = {
@@ -285,10 +323,12 @@ def test_only_these_four_states_read_pdfs_without_struck_text():
     }
     assert wrapped == {
         "la": extract_sometimes_numbered_pdf,
+        "nc": extract_sometimes_numbered_pdf,
         "ne": extract_sometimes_numbered_pdf,
         "wa": extract_line_numbered_pdf,
     }
     assert CONVERSION_FUNCTIONS["al"]["application/pdf"] is handle_alabama_pdf
     assert set(CONVERSION_FUNCTIONS["la"]) == {"application/pdf"}
+    assert set(CONVERSION_FUNCTIONS["nc"]) == {"application/pdf"}
     assert set(CONVERSION_FUNCTIONS["ne"]) == {"application/pdf"}
     assert set(CONVERSION_FUNCTIONS["wa"]) == {"text/html", "application/pdf"}

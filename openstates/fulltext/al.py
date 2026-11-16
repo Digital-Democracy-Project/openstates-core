@@ -39,6 +39,16 @@ from .common import ExtractorFunc, Metadata, extract_line_numbered_pdf
 # measured across them is a label's length, and the map's parish borders fell inside the band, so
 # "Allen", "Calcasieu", "Caldwell" and "Orleans" were removed. Text in any other direction is now
 # read as before, struck or not.
+#
+# OPEN-584: North Carolina prints struck words the same way, in every section of existing law that
+# "reads as rewritten" (HB 613 Edition 2: "notice of renewal electronically to an e-mail address
+# provided by the owner of the vehicle.renewal.", where all but the last "renewal." is struck). Its
+# strike sits at 0.59 of the span's height and its underline at 0.93, so the same reader is reused
+# unchanged. Whole-archive comparison (2026-11-16, all 12,399 local North Carolina PDFs,
+# scripts/open560_compare_struck_text.py nc): 6,080 lose struck text, no stored text gains a
+# character, no rule at 0.6 or higher removes anything, no errors. In 24 amendment papers ("A1:
+# ACC-8-V-2" and the like, outside the diff lineage) pdftotext moves the "A1" label beside the
+# "AMENDMENT NO." line once struck lines go; no word is added.
 _RULE_MAX_HEIGHT = 2.0
 _STRIKE_LOW = 0.35
 _STRIKE_HIGH = 0.7
