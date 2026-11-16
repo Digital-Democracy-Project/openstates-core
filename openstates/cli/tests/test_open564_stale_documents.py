@@ -285,6 +285,43 @@ def test_a_change_between_read_and_write_rolls_everything_back(hb248, tmp_path):
 
 
 @pytest.mark.django_db
+def test_an_earlier_list_is_never_overwritten(hb248, tmp_path):
+    bill = hb248[0]
+    before = _ids(bill)
+    for existing in ("l.csv", "l.csv.partial"):
+        path = tmp_path / existing
+        path.write_text("earlier record")
+        result = _run("--commit", "--list", str(tmp_path / "l.csv"))
+        assert result.exit_code != 0 and "already exists" in result.output
+        assert path.read_text() == "earlier record"
+        path.unlink()
+    assert _ids(bill) == before
+
+
+@pytest.mark.django_db
+def test_a_version_renamed_between_read_and_write_rolls_back(hb248, tmp_path):
+    """The current note of the kept copy goes away after the read: its stale twin is no longer safe to remove."""
+    bill, intro, stale, current = hb248
+    before = _ids(bill)
+    from openstates.cli import text_extract
+
+    real = text_extract._stale_document_plan
+    calls = []
+
+    def rename_after_first_read(bills):
+        result = real(bills)
+        calls.append(1)
+        if len(calls) == 1:
+            bill.versions.filter(note="Reported Out of Committee Second House").update(note="Renamed")
+        return result
+
+    with mock.patch.object(text_extract, "_stale_document_plan", side_effect=rename_after_first_read):
+        result = _run("--commit", "--list", str(tmp_path / "l.csv"))
+    assert result.exit_code != 0 and "changed since they were read" in result.output
+    assert _ids(bill) == before
+
+
+@pytest.mark.django_db
 def test_session_scopes_the_run(hb248, tmp_path):
     bill = hb248[0]
     out = _ok("--session", "1999", "--dry-run")

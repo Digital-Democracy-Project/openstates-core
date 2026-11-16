@@ -3593,9 +3593,13 @@ def remove_stale_documents(
         raise click.ClickException(
             "--commit needs --list FILE: that file is the record of what was removed"
         )
+    if commit and (os.path.exists(list_path) or os.path.exists(f"{list_path}.partial")):
+        raise click.ClickException(
+            f"{list_path} (or its .partial) already exists: an earlier record is never overwritten; nothing written"
+        )
 
     init_django()
-    from openstates.data.models import Bill, BillVersionDocument
+    from openstates.data.models import Bill, BillVersion, BillVersionDocument
 
     bills = Bill.objects.filter(legislative_session__jurisdiction_id=abbr_to_jid(state))
     if session:
@@ -3649,17 +3653,18 @@ def remove_stale_documents(
                     f"{len(removals)} rows would be removed, not the expected {expect}; nothing written"
                 )
             with transaction.atomic():
-                # Lock the state's documents, then plan again: an archive or import landing since the read aborts the
-                # whole run instead of removing a row that is no longer stale or whose copy is gone.
-                list(
-                    BillVersionDocument.objects.select_for_update()
-                    .filter(bill__in=bills)
-                    .values_list("id", flat=True)
-                )
+                # Lock the state's documents and versions (an import replaces a bill's versions by deleting them, so it
+                # waits), then plan again: an archive or import landing since the read aborts the whole run instead of
+                # removing a row that is no longer stale or whose copy is gone. The plan compared is the whole of what
+                # the list records, so the list describes exactly what was removed.
+                for model in (BillVersionDocument, BillVersion):
+                    list(
+                        model.objects.select_for_update()
+                        .filter(bill__in=bills)
+                        .values_list("id", flat=True)
+                    )
                 _, again, _ = _stale_document_plan(bills)
-                if [(r["id"], c["id"]) for r, c in again] != [
-                    (r["id"], c["id"]) for r, c in removals
-                ]:
+                if again != removals:
                     raise click.ClickException(
                         f"{state}: the documents changed since they were read; rolled back, nothing written"
                     )
