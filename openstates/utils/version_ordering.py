@@ -389,11 +389,23 @@ def _az_chamber_ordinal(note: str, origin: str, ordinal: float) -> float:
     return base
 
 
+# OPEN-569: Alabama names an amendment or substitute version after the action that first carries its
+# file ("Tillman 1st Substitute Offered", "Jefferson County Legislation 1st Substitute", "Reported Out
+# of Committee Second House"), so the note cannot place it in time: HB 315's Senate committee
+# substitute (2026-04-02) and the House floor substitute (2026-03-17) share a stage and an ordinal,
+# and both rank before the House's Engrossed bill. From OPEN-569 the Alabama scraper dates every
+# version from the action that carries it, so for Alabama the date leads and the note's stage only
+# breaks a same-day tie (a floor substitute adopted, then the bill engrossed, the same day). An
+# Alabama version without a date ranks first, as every Alabama version did before (all undated).
+_DATE_ORDERED_JURISDICTIONS = frozenset({"Alabama"})
+
+
 def version_sort_key(
     note: str,
     date: typing.Optional[str],
     urls: typing.Iterable[typing.Optional[str]] = (),
     origin: typing.Optional[str] = None,
+    jurisdiction_name: typing.Optional[str] = None,
 ) -> tuple:
     """
     Rank a single version (by its note + date) for chronological ordering, without ever
@@ -415,6 +427,8 @@ def version_sort_key(
     tie on everything above: Arizona's document number (OPEN-368), 0 for everything else.
     `origin` (origin_chamber() of the bill's identifier) places Arizona's Engrossed Versions
     among its action documents (OPEN-382); it changes nothing for any other note.
+    `jurisdiction_name` (`Jurisdiction.name`): for a state in `_DATE_ORDERED_JURISDICTIONS`
+    (Alabama, OPEN-569) the date comes first, (date-or-empty, stage, ordinal, document-number).
 
     A note matching none of the known patterns returns stage STAGE_UNKNOWN -- the caller
     excludes those versions from the diff lineage entirely rather than guessing a position for
@@ -424,6 +438,8 @@ def version_sort_key(
     if origin:
         ordinal = _az_chamber_ordinal(note, origin, ordinal)
     has_date = bool(date) and bool(_DATE_RE.match(date))
+    if jurisdiction_name in _DATE_ORDERED_JURISDICTIONS:
+        return (date if has_date else "", stage, ordinal, document_number(urls))
     return (stage, date if has_date else "", ordinal, document_number(urls))
 
 
