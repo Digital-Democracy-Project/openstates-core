@@ -330,8 +330,8 @@ def test_stamping_pass_expect_mismatch_writes_nothing(tmp_path):
     [
         (["--baseline-only", "--commit"], "--commit needs --list FILE"),
         (["--baseline-only", "--flags-only"], "pick one"),
-        (["--list", "x.csv"], "--expect and --list go with --baseline-only"),
-        (["--expect", "1"], "--expect and --list go with --baseline-only"),
+        (["--expect", "1"], "--expect goes with --baseline-only"),
+        (["--flags-only", "--list", "x.csv"], "--flags-only leaves them alone"),
     ],
 )
 def test_stamping_pass_refuses(args, message):

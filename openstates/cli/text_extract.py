@@ -2006,6 +2006,52 @@ def _feeds_baseline(doc: typing.Any, jurisdiction_name: str) -> bool:
     )
 
 
+def _version_document_order(
+    rows: typing.Iterable, media_type: typing.Callable, source_url: typing.Callable
+) -> list:
+    """OPEN-578: the one rule for which document of a version stands for its media type, for both diff paths.
+
+    A version's documents are walked in (media type, source_url) order and the last one of each media type that can
+    be a baseline (`_feeds_baseline`) becomes that type's baseline for the next version: within a type, the document
+    with the last source_url. This is the rule api-v3's `preferred_document` (api/document_choice.py, OPEN-369/533)
+    applies within a type, so the bill page, search, the archiver and `recompute-diff-order` name the same document.
+
+    `recomputed_diffs_for_documents` used to walk a version's stored rows by row id instead, so a version with two
+    documents of one type (Virginia HB 854 "Finance Substitute": 1100768.PDF is row 25019, 1098528.PDF row 25023)
+    took the last by row id as the baseline where the archiver took the last by URL (OPEN-578; measured on the Mac
+    replica 2026-11-16 with OPEN-539's baseline comparison: Virginia 774, Arizona 358)."""
+    return sorted(rows, key=lambda row: (media_type(row), source_url(row)))
+
+
+def _compare_texts(
+    prior_text: str,
+    raw_text: str,
+    *,
+    jurisdiction_name: str,
+    is_bill: bool,
+    prior_media_type: typing.Optional[str],
+    cur_media_type: str,
+) -> str:
+    """The stored comparison of `raw_text` against `prior_text`: the jurisdiction's pre-diff cleaning
+    (`apply_prediff_cleaning`, OPEN-219) on local copies, then a unified diff. One function for the archiver,
+    `recompute-diff-order` and its change list (OPEN-578)."""
+    diff_prior_text, diff_raw_text = apply_prediff_cleaning(
+        prior_text,
+        raw_text,
+        jurisdiction_name=jurisdiction_name,
+        is_bill=is_bill,
+        prior_media_type=prior_media_type,
+        cur_media_type=cur_media_type,
+    )
+    return "\n".join(
+        difflib.unified_diff(
+            diff_prior_text.splitlines(),
+            diff_raw_text.splitlines(),
+            lineterm="",
+        )
+    )
+
+
 def archive_bill_versions(
     bill: typing.Any, unsaved_documents: typing.Optional[list] = None
 ) -> dict[str, int]:
@@ -2151,8 +2197,11 @@ def archive_bill_versions(
         # successfully-extracted document of the SAME media type, so `this_version_texts`
         # last-write-wins had to stop depending on `links.all()`'s unspecified row order --
         # media type is the lineage key now, and that choice propagates to every later
-        # comparison. Sorted by url so the same link wins on every run.
-        for link in sorted(version.links.all(), key=lambda ln: (ln.media_type, ln.url)):
+        # comparison. Sorted by url so the same link wins on every run. OPEN-578: the order is
+        # `_version_document_order`, which `recomputed_diffs_for_documents` walks too.
+        for link in _version_document_order(
+            version.links.all(), lambda ln: ln.media_type, lambda ln: ln.url
+        ):
             existing = BillVersionDocument.objects.filter(
                 bill=bill,
                 version_note=version.note,
@@ -2333,20 +2382,13 @@ def archive_bill_versions(
                 # OPEN-219: shared with recomputed_diffs_for_documents below. Applied to
                 # a local copy of each text, so the stored raw_text is untouched and every
                 # jurisdiction without a cleaner is byte-for-byte unchanged.
-                diff_prior_text, diff_raw_text = apply_prediff_cleaning(
+                diff_from_previous_version = _compare_texts(
                     prior_text,
                     raw_text,
                     jurisdiction_name=jurisdiction_name,
                     is_bill=is_bill,
                     prior_media_type=prior_media_type,
                     cur_media_type=media_type,
-                )
-                diff_from_previous_version = "\n".join(
-                    difflib.unified_diff(
-                        diff_prior_text.splitlines(),
-                        diff_raw_text.splitlines(),
-                        lineterm="",
-                    )
                 )
                 # OPEN-539: the row whose text was just compared (the media type _diff_baseline chose).
                 diff_baseline_id = prior_id_by_media[prior_media_type]
@@ -3004,7 +3046,11 @@ def recomputed_diffs_for_documents(
         )
         group_texts: dict[str, str] = {}
         group_docs: dict[str, typing.Any] = {}
-        for doc in groups[(note, date)]:
+        # OPEN-578: the archiver's walk order, so the last of each media type (the next version's baseline) is the
+        # last by source_url, not the last by row id.
+        for doc in _version_document_order(
+            groups[(note, date)], lambda d: d.media_type, lambda d: d.source_url
+        ):
             new_diff = None
             baseline_doc = None
             prior_text, prior_media_type = _diff_baseline(
@@ -3020,20 +3066,13 @@ def recomputed_diffs_for_documents(
                 # both choose the baseline with the same _diff_baseline -- so the Michigan and
                 # Virginia cleaners' cross-media reflow branch stays unreachable from here,
                 # exactly as it is from the archive path.
-                diff_prior_text, diff_raw_text = apply_prediff_cleaning(
+                new_diff = _compare_texts(
                     prior_text,
                     doc.raw_text,
                     jurisdiction_name=jurisdiction_name,
                     is_bill=is_bill,
                     prior_media_type=prior_media_type,
                     cur_media_type=doc.media_type,
-                )
-                new_diff = "\n".join(
-                    difflib.unified_diff(
-                        diff_prior_text.splitlines(),
-                        diff_raw_text.splitlines(),
-                        lineterm="",
-                    )
                 )
                 baseline_doc = prior_doc_by_media[prior_media_type]
             baselines.append((doc, baseline_doc))
@@ -3135,6 +3174,95 @@ def _write_baseline_list(path: str, rows: list) -> None:
         writer.writerow(_BASELINE_LIST_HEADER)
         for row in rows:
             writer.writerow(row["csv"])
+
+
+_COMPARISON_LIST_HEADER = [
+    "doc_id",
+    "bill_id",
+    "identifier",
+    "session",
+    "version_note",
+    "version_date",
+    "media_type",
+    "comparison",
+    "old_diff_baseline_id",
+    "old_comparison_made_against",
+    "new_diff_baseline_id",
+    "baseline_note",
+    "baseline_date",
+    "baseline_media_type",
+]
+
+
+def _stored_comparison_source(doc: typing.Any, docs: list, jurisdiction_name: str, is_bill: bool) -> str:
+    """OPEN-578: the ids of the documents of the same bill whose text reproduces `doc`'s stored comparison (the
+    document it was made against; several when their texts clean to the same text), joined by ";", or "" when there is
+    no stored comparison or no document reproduces it. Only documents of `doc`'s own media type and Massachusetts'
+    cross-media baseline type are tried (`_diff_baseline`)."""
+    stored = doc.diff_from_previous_version
+    if stored is None:
+        return ""
+    found = []
+    types = {doc.media_type}
+    if jurisdiction_name == "Massachusetts" and doc.media_type in _MA_CROSS_MEDIA_BASELINE:
+        types.add(_MA_CROSS_MEDIA_BASELINE[doc.media_type])
+    for other in docs:
+        if other is doc or other.media_type not in types or not _feeds_baseline(other, jurisdiction_name):
+            continue
+        again = _compare_texts(
+            other.raw_text,
+            doc.raw_text,
+            jurisdiction_name=jurisdiction_name,
+            is_bill=is_bill,
+            prior_media_type=other.media_type,
+            cur_media_type=doc.media_type,
+        )
+        if again == stored:
+            found.append(str(other.id))
+    return ";".join(found)
+
+
+def _comparison_change_rows(bill: typing.Any, result: dict) -> list:
+    """OPEN-578: `recompute-diff-order --list` without `--baseline-only`: one CSV row per document of `bill` whose
+    stored comparison or `diff_baseline_id` the recompute would change. `comparison` is corrected, nulled, new or
+    unchanged; the old baseline is the stored `diff_baseline_id` and, since comparisons stored before OPEN-539 name
+    none, also every document whose text reproduces the stored comparison (`old_comparison_made_against`; for an
+    unchanged comparison whose baseline moves, both the old and the new baseline)."""
+    jurisdiction_name = bill.legislative_session.jurisdiction.name
+    is_bill = bill.classification == ["bill"]
+    new_diff = {id(doc): diff for doc, diff in result["changed"]}
+    docs = [doc for doc, _ in result["baselines"]]
+    rows = []
+    for doc, baseline_doc in result["baselines"]:
+        new_id = baseline_doc.id if baseline_doc is not None else None
+        if id(doc) not in new_diff and doc.diff_baseline_id == new_id:
+            continue
+        if id(doc) not in new_diff:
+            comparison = "unchanged"
+        elif doc.diff_from_previous_version is None:
+            comparison = "new"
+        else:
+            comparison = "nulled" if new_diff[id(doc)] is None else "corrected"
+        made_against = _stored_comparison_source(doc, docs, jurisdiction_name, is_bill)
+        rows.append(
+            [
+                doc.id,
+                bill.id,
+                bill.identifier,
+                bill.legislative_session.identifier,
+                doc.version_note,
+                doc.version_date,
+                doc.media_type,
+                comparison,
+                "" if doc.diff_baseline_id is None else doc.diff_baseline_id,
+                made_against,
+                "" if new_id is None else new_id,
+                baseline_doc.version_note if baseline_doc is not None else "",
+                baseline_doc.version_date if baseline_doc is not None else "",
+                baseline_doc.media_type if baseline_doc is not None else "",
+            ]
+        )
+    return rows
 
 
 def _baseline_counts_text(changes: typing.Iterable[tuple]) -> str:
@@ -3269,8 +3397,9 @@ def _stamp_baselines_only(
     "--list",
     "list_path",
     default=None,
-    help="with --baseline-only: write one CSV row per document whose diff_baseline_id would change; "
-    "required with --commit",
+    help="write one CSV row per document whose diff_baseline_id would change (with --baseline-only, "
+    "required with --commit); without --baseline-only (OPEN-578), one row per document whose stored "
+    "comparison or diff_baseline_id would change, with the old and new baseline",
 )
 def recompute_diff_order(
     state: str,
@@ -3283,13 +3412,15 @@ def recompute_diff_order(
 ) -> None:
     if baseline_only and flags_only:
         raise click.ClickException("--baseline-only and --flags-only each leave the other's column alone; pick one")
-    if (expect is not None or list_path) and not baseline_only:
-        raise click.ClickException("--expect and --list go with --baseline-only")
+    if expect is not None and not baseline_only:
+        raise click.ClickException("--expect goes with --baseline-only")
+    if list_path and flags_only:
+        raise click.ClickException("--list lists comparisons; --flags-only leaves them alone")
     if baseline_only and commit and not list_path:
         raise click.ClickException(
             "--commit needs --list FILE: that file is the record of what was stamped"
         )
-    if baseline_only and commit and (
+    if commit and list_path and (
         os.path.exists(list_path) or os.path.exists(f"{list_path}.partial")
     ):
         raise click.ClickException(
@@ -3328,6 +3459,15 @@ def recompute_diff_order(
     flag_not_a_version = 0  # documents the rules say are NOT a bill version, whatever was stored
     # OPEN-539: diff_baseline_id, written with each comparison: (old, new) per document that changes
     baseline_changes: list = []
+    # OPEN-578: --list, one row per document whose comparison or baseline changes. Opened before anything is written,
+    # and each bill's rows are written before that bill's saves; a commit writes to FILE.partial and names it FILE
+    # only when it finishes, so an interrupted commit leaves the record of what it wrote as FILE.partial.
+    change_list = None
+    if list_path:
+        change_list = open(f"{list_path}.partial" if commit else list_path, "w", newline="")
+        change_writer = csv.writer(change_list)
+        change_writer.writerow(_COMPARISON_LIST_HEADER)
+    change_count = 0
     bill_count = 0
 
     for bill in bills:
@@ -3343,6 +3483,11 @@ def recompute_diff_order(
         else:
             result = recompute_bill_diff_order(bill)
             total_unchanged += len(result["unchanged"])
+            if change_list is not None:  # before a commit below sets the new values on the same objects
+                rows = _comparison_change_rows(bill, result)
+                change_writer.writerows(rows)
+                change_list.flush()
+                change_count += len(rows)
         jurisdiction_name = bill.legislative_session.jurisdiction.name
         fields_by_doc: dict[int, tuple] = {}
         for doc, new_diff in result["changed"]:
@@ -3397,6 +3542,11 @@ def recompute_diff_order(
             f"{state}: [{mode}] diff_baseline_id: {_baseline_counts_text(baseline_changes)}",
             fg="green" if commit else "yellow",
         )
+    if change_list is not None:
+        change_list.close()
+        if commit:
+            os.replace(f"{list_path}.partial", list_path)
+        click.secho(f"  change list: {list_path} ({change_count} documents)", fg="green" if commit else "yellow")
 
 
 @main.command(
