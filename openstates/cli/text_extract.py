@@ -53,6 +53,7 @@ from ..utils.version_ordering import (
     note_stage as _note_stage,
     origin_chamber as _origin_chamber,
     version_sort_key as _version_sort_key,
+    _DATE_ORDERED_JURISDICTIONS,
 )
 from openstates.exceptions import ScrapeError
 
@@ -2128,6 +2129,7 @@ def archive_bill_versions(
             v.date,
             [ln.url for ln in v.links.all()],
             _origin_chamber(bill.identifier),
+            jurisdiction_name,
         ),
     )
     for version in ordered_versions:
@@ -2883,7 +2885,19 @@ def recompute_bill_diff_order(bill: typing.Any) -> dict[str, list]:
         jurisdiction_name=bill.legislative_session.jurisdiction.name,
         is_bill=bill.classification == ["bill"],
         bill_identifier=bill.identifier,
+        current_versions=_current_version_keys(bill),
     )
+
+
+def _current_version_keys(bill: typing.Any) -> typing.Optional[set]:
+    """OPEN-569: the (note, date) of each of the bill's versions now, the natural key its stored documents carry, for
+    a state whose versions the scraper dates (Alabama); None elsewhere. Alabama's re-scrape re-dates every version and
+    turns its never-adopted substitutes into documents, so its stored copies under the old (note, date) must leave the
+    lineage. Elsewhere nothing changes: on the Mac replica (2026-11-16) only Arizona (30) and Michigan (26) have stored
+    documents that match no current version, and a recompute of those states keeps treating them as before."""
+    if bill.legislative_session.jurisdiction.name not in _DATE_ORDERED_JURISDICTIONS:
+        return None
+    return set(bill.versions.values_list("note", "date"))
 
 
 def recomputed_diffs_for_documents(
@@ -2892,6 +2906,7 @@ def recomputed_diffs_for_documents(
     jurisdiction_name: str,
     is_bill: bool,
     bill_identifier: str,
+    current_versions: typing.Optional[set] = None,
 ) -> dict[str, list]:
     """The ordering-and-diffing half of `recompute_bill_diff_order`, split out (OPEN-211) so it
     can be exercised without a database -- it reads nothing but plain attributes off each
@@ -2911,7 +2926,13 @@ def recomputed_diffs_for_documents(
 
     They are parameters rather than values read off a model because this function's whole
     contract is that it touches only plain attributes: that is what lets it be tested with no
-    database, and what lets `refresh-extraction` simulate a dry run with stand-in objects."""
+    database, and what lets `refresh-extraction` simulate a dry run with stand-in objects.
+
+    OPEN-569: `current_versions`, the bill's current (note, date) pairs (`_current_version_keys`), when given, keeps
+    every stored document whose pair is no longer a version of the bill out of the lineage (no diff, not a baseline),
+    as `archive_bill_versions` does by walking only the current versions. Such a document is a copy saved under an
+    old note or date (a version re-dated or renamed by the scraper) or a paper that is no longer a version (Alabama's
+    substitutes that were offered and never adopted). None treats every document as current."""
     groups: dict[tuple, list] = {}
     for doc in docs:
         groups.setdefault((doc.version_note, doc.version_date), []).append(doc)
@@ -2920,7 +2941,7 @@ def recomputed_diffs_for_documents(
     ordered_keys = sorted(
         groups.keys(),
         key=lambda k: _version_sort_key(
-            k[0], k[1], [d.source_url for d in groups[k]], origin
+            k[0], k[1], [d.source_url for d in groups[k]], origin, jurisdiction_name
         ),
     )
 
@@ -2947,6 +2968,7 @@ def recomputed_diffs_for_documents(
         is_unknown_position = (
             _note_stage(note)[0] == _STAGE_UNKNOWN
             or _is_procedural_document(jurisdiction_name, note)
+            or (current_versions is not None and (note, date) not in current_versions)
         )
         group_texts: dict[str, str] = {}
         for doc in groups[(note, date)]:
@@ -3504,8 +3526,8 @@ def reverse_action_order(
 def _stale_document_plan(bills: typing.Any) -> tuple:
     """
     OPEN-564: which saved documents of `bills` are stale copies that can go. A document is stale when its version
-    note is no longer a version note of its bill (the archiver keys documents on the note, so a renamed version is
-    saved again under the new note and the old row stays behind). A stale document is removed only when a
+    note and date are no longer a version of its bill (the archiver keys documents on the note and date, so a renamed
+    or newly dated version is saved again and the old row stays behind; the date since OPEN-569). A stale document is removed only when a
     document that is NOT stale keeps the same file: same bill, same address, same `sha256_hash`. A stale document
     without such a copy is kept and counted, so the last saved copy of a file is never removed.
 
@@ -3513,8 +3535,9 @@ def _stale_document_plan(bills: typing.Any) -> tuple:
     """
     from openstates.data.models import BillVersion, BillVersionDocument
 
+    # OPEN-569: keyed on the date too, like the archive: when the scraper dates a version, its undated copy is stale
     current = set(
-        BillVersion.objects.filter(bill__in=bills).values_list("bill_id", "note")
+        BillVersion.objects.filter(bill__in=bills).values_list("bill_id", "note", "date")
     )
     rows = list(
         BillVersionDocument.objects.filter(bill__in=bills)
@@ -3533,14 +3556,14 @@ def _stale_document_plan(bills: typing.Any) -> tuple:
     )
     kept_copy: dict[tuple, dict] = {}
     for row in rows:
-        if (row["bill_id"], row["version_note"]) in current and row["sha256_hash"]:
+        if (row["bill_id"], row["version_note"], row["version_date"]) in current and row["sha256_hash"]:
             kept_copy.setdefault(
                 (row["bill_id"], row["source_url"], row["sha256_hash"]), row
             )
     removals = []
     kept = {"last copy": 0, "no file hash": 0}
     for row in rows:
-        if (row["bill_id"], row["version_note"]) in current:
+        if (row["bill_id"], row["version_note"], row["version_date"]) in current:
             continue
         copy = kept_copy.get((row["bill_id"], row["source_url"], row["sha256_hash"]))
         if not row["sha256_hash"]:
@@ -3553,7 +3576,7 @@ def _stale_document_plan(bills: typing.Any) -> tuple:
 
 
 @main.command(
-    help="OPEN-564: remove a state's saved documents whose version note no longer exists on the bill, only where "
+    help="OPEN-564: remove a state's saved documents whose version note and date no longer exist on the bill, only where "
     "a current document keeps the same file (dry run by default; --commit writes, with --list naming the file that "
     "records every removal)"
 )
@@ -4084,6 +4107,7 @@ def refresh_extraction(
                     jurisdiction_name=bill.legislative_session.jurisdiction.name,
                     is_bill=bill.classification == ["bill"],
                     bill_identifier=bill.identifier,
+                    current_versions=_current_version_keys(bill),
                 )["changed"]
             )
             continue
