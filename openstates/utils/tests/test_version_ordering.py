@@ -1270,3 +1270,12 @@ def test_georgia_document_order_is_georgia_only():
     house_sub = version_sort_key("LC 49 2362S/hss", "", [GA_DOC.format("20252026", 236457)])
     assert house_sub < stage_first
     assert version_sort_key("Introduced", "", [], None, "Virginia") == version_sort_key("Introduced", "")
+
+
+def test_georgia_version_without_a_site_number_ranks_first_then_by_stage():
+    # The stated fallback (as Alabama's undated versions): no Georgia document number is 0, so it leads,
+    # and two such versions fall back to the stage.
+    with_number = version_sort_key("LC 50 1032-EC/a", "", [GA_DOC.format("20252026", 230994)], None, "Georgia")
+    no_number_ap = version_sort_key("HB 223/AP*", "", ["https://example.com/hb223.pdf"], None, "Georgia")
+    no_number_intro = version_sort_key("LC 50 1032-EC/a", "", [], None, "Georgia")
+    assert no_number_intro < no_number_ap < with_number
