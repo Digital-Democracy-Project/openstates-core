@@ -32,8 +32,10 @@ def classify_action(
     """An action's labels: no `executive-veto` on a line-item veto message, `executive-signature` on a signature in
     part, every other label as given."""
     text = description or ""
-    if "executive-veto" in classification and _SECTION_VETOES.search(text):
-        return [c for c in classification if c != "executive-veto"]
-    if _SIGNED_IN_PART.match(text) and "executive-signature" not in classification:
-        return [*classification, "executive-signature"]
-    return list(classification)
+    labels = list(classification)
+    # Both checks run on every line, so a line matching both gets both corrections in one call (stable on its output).
+    if _SECTION_VETOES.search(text):
+        labels = [c for c in labels if c != "executive-veto"]
+    if _SIGNED_IN_PART.match(text) and "executive-signature" not in labels:
+        labels.append("executive-signature")
+    return labels

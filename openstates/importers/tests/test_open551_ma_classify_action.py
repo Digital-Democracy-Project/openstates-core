@@ -104,6 +104,16 @@ def test_the_rule_is_stable_on_its_own_output(date, chamber, labels, description
     assert _rule(description, once, chamber, date) == once
 
 
+def test_a_line_matching_both_checks_gets_both_corrections_in_one_call():
+    # pm-review (OPEN-551): the veto check used to return early, so a second call added the signature
+    description = "Signed (in part) by the Governor; returned with vetoes and amendments to certain sections"
+    once = classify_action(
+        description=description, classification=["executive-veto"], chamber="executive", date="2025-07-04"
+    )
+    assert once == ["executive-signature"]
+    assert classify_action(description=description, classification=once, chamber="executive", date="2025-07-04") == once
+
+
 def test_state_rule_finds_massachusetts_actions_only():
     assert state_rule("ma", "classify_action") is classify_action
     # bill labels stay with relabel-non-bills (OPEN-517)
