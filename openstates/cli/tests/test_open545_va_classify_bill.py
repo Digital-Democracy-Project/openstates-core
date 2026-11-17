@@ -104,8 +104,10 @@ def test_the_rule_returns_a_new_list_and_leaves_its_input_alone():
 
 def test_state_rule_finds_virginia():
     assert state_rule("va", "classify_bill") is classify_bill
-    # no action rule here: Virginia's action readings are other tickets (OPEN-547 to 552)
-    assert state_rule("va", "classify_action") is None
+    # Virginia's action rule is OPEN-549's (openstates/importers/tests/test_open549_va_classify_action.py)
+    from openstates.ddp_states.va import classify_action
+
+    assert state_rule("va", "classify_action") is classify_action
 
 
 def _relabel(*args):
