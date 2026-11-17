@@ -225,7 +225,7 @@ def test_the_commit_changes_only_labels_and_writes_the_list_it_applied(mi, tmp_p
     fresh = _fresh(mi)
     assert fresh.latest_passage_date == "2025-01-23"
     assert fresh.updated_at > stamp
-    assert "bills whose latest_passage_date changed: 1" in out
+    assert "bills whose computed fields changed: " in out and "latest_passage_date=1" in out
 
 
 def test_running_twice_changes_nothing_the_second_time(mi, va, tmp_path):
@@ -257,7 +257,8 @@ def test_a_second_state_relabels_actions_and_bill_labels(va, tmp_path):
         ["joint resolution"],
         ["constitutional amendment"],
     ]
-    # a bill-only label change does not move updated_at (nothing downstream stores it); an action change does
+    # a bill-only label change does not move updated_at (ddp-sync's copy waits for the bill's next real update; see the
+    # command's docstring); an action change does
     assert _fresh(va["hr1"]).updated_at == stamps["hr1"]
     assert _fresh(va["hb625"]).updated_at > stamps["hb625"]
     kinds = sorted((r["kind"], r["identifier"], r["old"], r["new"]) for r in _rows(tmp_path / "va.csv"))
@@ -403,3 +404,81 @@ def test_relabel_non_bills_still_runs_on_the_shared_code(db):
     result = _run("--dry-run", command=relabel_non_bills, jid=MI)
     assert result.exit_code == 0, result.output
     assert "[DRY RUN] relabelled=0" in result.output
+
+
+# OPEN-615 (review follow-up 2): every computed field a relabel changes is counted, not only latest_passage_date.
+
+FIELDS = (
+    "first_action_date",
+    "latest_action_date",
+    "latest_action_description",
+    "latest_passage_date",
+)
+
+
+def _fields(bill):
+    fresh = _fresh(bill)
+    return {f: getattr(fresh, f) for f in FIELDS}
+
+
+def _settled(bill, **stale):
+    """The bill's computed fields as a clean import leaves them, then any field overwritten with a stale value."""
+    from openstates.importers.computed_fields import update_bill_fields
+
+    update_bill_fields(bill)
+    Bill.objects.filter(pk=bill.pk).update(**stale)
+    return bill
+
+
+def _counts(out, word):
+    line = next(x for x in out.splitlines() if f"bills whose computed fields {word}:" in x)
+    return {k: int(v) for k, v in re.findall(r"(\w+)=(\d+)", line)}
+
+
+def _changed(before, after):
+    """Per field, 1 if the stored value moved: the independent answer the printed counts must match."""
+    return {f: int(before[f] != after[f]) for f in FIELDS}
+
+
+def test_the_dry_run_and_the_commit_count_each_computed_field_that_really_changes(mi, tmp_path):
+    _settled(mi)
+    before = _fields(mi)
+
+    dry = _counts(_ok("--dry-run"), "would change")
+    assert _fields(mi) == before  # the preview wrote nothing
+
+    committed = _counts(_ok("--commit", "--list", str(tmp_path / "c.csv")), "changed")
+    after = _fields(mi)
+
+    assert dry == committed == _changed(before, after)
+    # only the passage date moves: the receiving chamber's notice was the latest "passage"
+    assert committed == dict(dict.fromkeys(FIELDS, 0), latest_passage_date=1)
+    assert after["latest_passage_date"] == "2025-01-23"
+
+
+def test_a_field_an_older_import_left_stale_is_counted_too(mi, tmp_path):
+    _settled(mi, latest_action_description="stale", first_action_date="2024-12-31")
+    before = _fields(mi)
+
+    dry = _counts(_ok("--dry-run"), "would change")
+    committed = _counts(_ok("--commit", "--list", str(tmp_path / "c.csv")), "changed")
+    after = _fields(mi)
+
+    assert dry == committed == _changed(before, after)
+    assert committed == dict(
+        latest_passage_date=1,
+        latest_action_description=1,
+        first_action_date=1,
+        latest_action_date=0,
+    )
+    assert after["latest_action_description"] == "REFERRED TO COMMITTEE ON REGULATORY AFFAIRS"
+
+
+def test_a_bill_label_change_alone_changes_no_computed_field(va, tmp_path):
+    for bill in va.values():
+        _settled(bill)
+
+    out = _ok("--commit", "--list", str(tmp_path / "va.csv"), jid=VA, state="va")
+
+    # HB 625's subcommittee line was never its passage, so nothing computed moves; HR 1 / HJ 2 have no actions
+    assert _counts(out, "changed") == dict.fromkeys(FIELDS, 0)
