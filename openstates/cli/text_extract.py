@@ -3549,6 +3549,29 @@ def recompute_diff_order(
         click.secho(f"  change list: {list_path} ({change_count} documents)", fg="green" if commit else "yellow")
 
 
+def _label_change_counts(pairs: typing.Iterable[tuple]) -> typing.List[str]:
+    """One line per (old labels -> new labels) change, most frequent first: the summary `relabel-non-bills` and
+    `relabel` print."""
+    by_label: dict[tuple, int] = {}
+    for old, new in pairs:
+        key = (", ".join(old) or "(none)", ", ".join(new) or "(none)")
+        by_label[key] = by_label.get(key, 0) + 1
+    return [
+        f"  {old} -> {new}: {count}"
+        for (old, new), count in sorted(by_label.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
+
+
+def _write_if_unchanged(model: typing.Any, pk: typing.Any, where: dict, fields: dict, name: str) -> None:
+    """Write `fields` to one row only if it still matches `where` (what was read); otherwise abort the run, so an
+    import landing mid-run rolls the whole transaction back instead of being overwritten. Shared by `relabel-non-bills`
+    and `relabel`."""
+    if model.objects.filter(pk=pk, **where).update(**fields) != 1:
+        raise click.ClickException(
+            f"{name} changed since it was read; rolled back, nothing written"
+        )
+
+
 @main.command(
     help="OPEN-517: relabel bill rows that are not bills (Massachusetts reports, communications, "
     "orders, study orders) with what they are; keeps the old label in extras so --undo restores it"
@@ -3637,11 +3660,6 @@ def relabel_non_bills(
         extras.setdefault(ORIGINAL_CLASSIFICATION_KEY, list(bill.classification))
         changes.append((bill, list(bill.classification), [kind], extras))
 
-    by_label: dict[tuple, int] = {}
-    for _, old, new, _ in changes:
-        key = (", ".join(old) or "(none)", ", ".join(new) or "(none)")
-        by_label[key] = by_label.get(key, 0) + 1
-
     if list_path:
         with open(list_path, "w", newline="") as f:
             writer = csv.writer(f)
@@ -3669,17 +3687,16 @@ def relabel_non_bills(
                 # Write only if the row is still what was read: same label, same extras, and (for a
                 # relabel) still no recorded vote. An import or a vote landing mid-run aborts the
                 # whole run instead of being overwritten.
-                current = Bill.objects.filter(
-                    pk=bill.pk, classification=old, extras=bill.extras
-                )
+                where = {"classification": old, "extras": bill.extras}
                 if not undo:
-                    current = current.filter(votes__isnull=True)
-                updated = current.update(classification=new, extras=extras)
-                if updated != 1:
-                    raise click.ClickException(
-                        f"{bill.id} ({bill.identifier}) changed since it was read; "
-                        "rolled back, nothing written"
-                    )
+                    where["votes__isnull"] = True
+                _write_if_unchanged(
+                    Bill,
+                    bill.pk,
+                    where,
+                    {"classification": new, "extras": extras},
+                    f"{bill.id} ({bill.identifier})",
+                )
 
     mode = "COMMITTED" if commit else "DRY RUN"
     action = "restored" if undo else "relabelled"
@@ -3689,8 +3706,340 @@ def relabel_non_bills(
         + " ".join(f"skipped_{k.replace(' ', '_')}={v}" for k, v in sorted(skipped.items())),
         fg=color,
     )
-    for (old, new), count in sorted(by_label.items(), key=lambda kv: (-kv[1], kv[0])):
-        click.secho(f"  {old} -> {new}: {count}", fg=color)
+    for line in _label_change_counts((old, new) for _, old, new, _ in changes):
+        click.secho(line, fg=color)
+
+
+RELABEL_LIST_COLUMNS = [
+    "kind",
+    "id",
+    "bill_id",
+    "identifier",
+    "session",
+    "order",
+    "date",
+    "chamber",
+    "text",
+    "old",
+    "new",
+]
+
+
+def _new_labels(rule: typing.Callable, name: str, what: str, old: list, **context: typing.Any) -> typing.Optional[list]:
+    """
+    OPEN-546: the labels `rule` gives an item, or None when they are the ones stored (compared as a set: a rule that
+    only reorders the same labels changes nothing). The rule is asked again on its own answer; an answer that would move
+    again on a second run is refused, so `relabel` run twice changes nothing the second time.
+    """
+    new = list(dict.fromkeys(rule(classification=list(old), **context)))
+    if set(new) == set(old):
+        return None
+    again = list(rule(classification=list(new), **context))
+    if set(again) != set(new):
+        raise click.ClickException(
+            f"{name} gives {what} {old} -> {new}, then {again} when asked again: it must give the same answer on its "
+            "own output; nothing written"
+        )
+    return new
+
+
+def _relabel_plan(bills: typing.Any, classify_bill: typing.Any, classify_action: typing.Any) -> tuple:
+    """OPEN-546: every stored bill and action of `bills` whose labels the state's current rules change, as change-list
+    rows (`RELABEL_LIST_COLUMNS`, labels as lists), bills first, then actions in bill and stored order; and the
+    number of items the rules leave as stored, by kind."""
+    from openstates.data.models import BillAction
+
+    changes = []
+    unchanged = {"bill": 0, "action": 0}
+    if classify_bill:
+        for row in bills.order_by("id").values(
+            "id", "identifier", "title", "classification", "legislative_session__identifier"
+        ):
+            new = _new_labels(
+                classify_bill,
+                "classify_bill",
+                f"bill {row['identifier']}",
+                list(row["classification"]),
+                identifier=row["identifier"],
+                title=row["title"],
+            )
+            if new is None:
+                unchanged["bill"] += 1
+                continue
+            changes.append(
+                dict(
+                    kind="bill",
+                    id=row["id"],
+                    bill_id=row["id"],
+                    identifier=row["identifier"],
+                    session=row["legislative_session__identifier"],
+                    order="",
+                    date="",
+                    chamber="",
+                    text=" ".join((row["title"] or "").split()),
+                    old=list(row["classification"]),
+                    new=new,
+                    read={"identifier": row["identifier"], "title": row["title"]},
+                )
+            )
+    if classify_action:
+        actions = (
+            BillAction.objects.filter(bill__in=bills)
+            .order_by("bill_id", "order", "id")
+            .values(
+                "id",
+                "bill_id",
+                "bill__identifier",
+                "bill__legislative_session__identifier",
+                "order",
+                "date",
+                "description",
+                "classification",
+                "organization__classification",
+            )
+        )
+        for row in actions.iterator():
+            new = _new_labels(
+                classify_action,
+                "classify_action",
+                f"action {row['id']} of {row['bill__identifier']} ({row['description']!r})",
+                list(row["classification"]),
+                description=row["description"],
+                chamber=row["organization__classification"],
+                date=row["date"],
+            )
+            if new is None:
+                unchanged["action"] += 1
+                continue
+            changes.append(
+                dict(
+                    kind="action",
+                    id=row["id"],
+                    bill_id=row["bill_id"],
+                    identifier=row["bill__identifier"],
+                    session=row["bill__legislative_session__identifier"],
+                    order=row["order"],
+                    date=row["date"],
+                    chamber=row["organization__classification"],
+                    text=row["description"],
+                    old=list(row["classification"]),
+                    new=new,
+                    read={
+                        "bill_id": row["bill_id"],
+                        "description": row["description"],
+                        "date": row["date"],
+                        "organization__classification": row["organization__classification"],
+                    },
+                )
+            )
+    return changes, unchanged
+
+
+def _undo_plan(bills: typing.Any, undo_path: str) -> list:
+    """OPEN-546: the changes of a committed `relabel --list` file, turned round (each item back to its old labels).
+    Refuses a file that names an item outside `bills`, so a list cannot be applied to the wrong state."""
+    try:
+        with open(undo_path, newline="") as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+            columns = reader.fieldnames or []
+    except OSError as e:
+        raise click.ClickException(f"cannot read {undo_path}: {e}")
+    if set(RELABEL_LIST_COLUMNS) - set(columns):
+        raise click.ClickException(f"{undo_path} is not a `relabel` change list; nothing written")
+    bill_ids = set(bills.values_list("id", flat=True))
+    changes = []
+    for row in rows:
+        if row["kind"] not in ("bill", "action"):
+            raise click.ClickException(f"{undo_path} has a row of kind {row['kind']!r}; nothing written")
+        if row["bill_id"] not in bill_ids or (row["kind"] == "bill" and row["id"] != row["bill_id"]):
+            raise click.ClickException(
+                f"{undo_path} names {row['kind']} {row['id']} of bill {row['bill_id']}, not a bill of this state "
+                "and session; nothing written"
+            )
+        changes.append(
+            dict(
+                row,
+                old=[x for x in row["new"].split(";") if x],
+                new=[x for x in row["old"].split(";") if x],
+                # an action is written only if it is still on the bill the list names
+                read={"bill_id": row["bill_id"]} if row["kind"] == "action" else {},
+            )
+        )
+    return changes
+
+
+@main.command(
+    help="OPEN-546: re-apply a state's current label rules (classify_action and classify_bill in "
+    "openstates/ddp_states/<state>.py) to its stored actions and bills (dry run by default; --commit writes, with "
+    "--list naming the file that records every change)"
+)
+@click.argument("state")
+@click.option("--session", default=None)
+@click.option(
+    "--commit/--dry-run",
+    default=False,
+    help="write the new labels; default is a dry run that only reports",
+)
+@click.option(
+    "--expect",
+    type=int,
+    default=None,
+    help="abort before writing unless exactly this many items (bills and actions) would change (the agreed dry-run "
+    "count)",
+)
+@click.option(
+    "--list",
+    "list_path",
+    default=None,
+    help="write one CSV row per bill or action that would change, with its old and new labels; required with --commit",
+)
+@click.option(
+    "--undo",
+    "undo_path",
+    default=None,
+    help="put back the old labels recorded in a committed --list file (the rollback inside the silent window)",
+)
+def relabel(
+    state: str,
+    session: str = None,
+    commit: bool = False,
+    expect: int = None,
+    list_path: str = None,
+    undo_path: str = None,
+) -> None:
+    """
+    PLAN-state-specific-handling §6 Phase 3: when a state's action or bill rule moves into its `classify_action` or
+    `classify_bill` (`openstates/ddp_states/<state>.py`), the scraper applies it only to bills it re-scrapes; this pass
+    applies the same function to everything already stored, in the state's silent window. The generalization of
+    `relabel-non-bills` (OPEN-517), with which it shares its write and summary code; that command keeps Massachusetts'
+    own rule.
+
+    Only labels change: an action's `classification` or a bill's `classification`, never its text, date, order or
+    chamber. The change list is the audit record (no second label is stored): it only takes its name after the database
+    commit, and an existing list is never overwritten. `--undo LIST --commit` writes each listed item's old labels back,
+    if it still holds the new ones. A bill whose action labels change has its computed action fields recomputed
+    (`latest_passage_date` reads `passage`) and its `updated_at` moved, as a re-import of the same change would, so
+    api-v3's `updated_since` readers (the broker's bill-event check, ddp-sync) see it: hence the silent window. A bill
+    whose own label alone changes is written without moving `updated_at`, as `relabel-non-bills` does (nothing
+    downstream stores a bill's label).
+    """
+    from openstates.ddp_states import state_rule
+
+    if commit and not list_path:
+        raise click.ClickException(
+            "--commit needs --list FILE: that file is the record of what changed"
+        )
+    if commit and (os.path.exists(list_path) or os.path.exists(f"{list_path}.partial")):
+        raise click.ClickException(
+            f"{list_path} (or its .partial) already exists: an earlier record is never overwritten; nothing written"
+        )
+    classify_bill = classify_action = None
+    if not undo_path:
+        classify_bill = state_rule(state, "classify_bill")
+        classify_action = state_rule(state, "classify_action")
+        if classify_bill is None and classify_action is None:
+            raise click.ClickException(
+                f"{state}: openstates/ddp_states/{state.lower()}.py has no classify_action or classify_bill; "
+                "there is no rule to re-apply"
+            )
+
+    init_django()
+    # Imported here, after init_django(), as in reverse-action-order.
+    from ..importers.computed_fields import update_bill_fields
+    from openstates.data.models import Bill, BillAction
+
+    bills = Bill.objects.filter(legislative_session__jurisdiction_id=abbr_to_jid(state))
+    if session:
+        bills = bills.filter(legislative_session__identifier=session)
+
+    if undo_path:
+        changes = _undo_plan(bills, undo_path)
+        unchanged = None
+    else:
+        changes, unchanged = _relabel_plan(bills, classify_bill, classify_action)
+
+    # Written aside and named only after the commit, as in reverse-action-order: a refused or rolled-back run leaves
+    # no list that reads as done.
+    written_path = f"{list_path}.partial" if commit and list_path else list_path
+    passage_dates_changed = 0
+    try:
+        if list_path:
+            with open(written_path, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(RELABEL_LIST_COLUMNS)
+                for change in changes:
+                    writer.writerow(
+                        [
+                            ";".join(change[c]) if c in ("old", "new") else change[c]
+                            for c in RELABEL_LIST_COLUMNS
+                        ]
+                    )
+        if commit:
+            if expect is not None and expect != len(changes):
+                raise click.ClickException(
+                    f"{len(changes)} items would change, not the expected {expect}; nothing written"
+                )
+            with transaction.atomic():
+                # Lock what is written (an import of one of these bills waits), then write each item only if its
+                # labels are still the ones read: anything else aborts and rolls back the whole run.
+                touched_bills = sorted({c["bill_id"] for c in changes})
+                list(Bill.objects.select_for_update().filter(id__in=touched_bills).values_list("id", flat=True))
+                list(
+                    BillAction.objects.select_for_update()
+                    .filter(id__in=[c["id"] for c in changes if c["kind"] == "action"])
+                    .values_list("id", flat=True)
+                )
+                for change in changes:
+                    _write_if_unchanged(
+                        Bill if change["kind"] == "bill" else BillAction,
+                        change["id"],
+                        # the rule's inputs too: a row whose text changed since it was read was labelled from old text
+                        {"classification": change["old"], **change["read"]},
+                        {"classification": change["new"]},
+                        f"{change['kind']} {change['id']} of {change['identifier']}",
+                    )
+                for bill in Bill.objects.filter(
+                    id__in={c["bill_id"] for c in changes if c["kind"] == "action"}
+                ):
+                    before = bill.latest_passage_date
+                    update_bill_fields(bill)  # saves when a computed field changed
+                    if bill.latest_passage_date != before:
+                        passage_dates_changed += 1
+                    else:
+                        bill.save(update_fields=["updated_at"])
+    except BaseException:
+        if commit and list_path and os.path.exists(written_path):
+            os.remove(written_path)
+        raise
+    if commit:
+        try:
+            os.replace(written_path, list_path)
+        except OSError as e:
+            raise click.ClickException(
+                f"{state}: COMMITTED, but the change list could not take its name ({e}); "
+                f"it is complete at {written_path}. Do not run again: the commit is done"
+            )
+
+    mode = "COMMITTED" if commit else "DRY RUN"
+    color = "green" if commit else "yellow"
+    word = "restored" if undo_path else "changed"
+    counts = []
+    for kind in ("action", "bill"):
+        n = sum(1 for c in changes if c["kind"] == kind)
+        line = f"{kind}s {word}={n}"
+        if unchanged is not None:
+            line += f" unchanged={unchanged[kind]}"
+        counts.append(line)
+    click.secho(f"{state}: [{mode}] " + " | ".join(counts), fg=color)
+    for kind in ("action", "bill"):
+        for line in _label_change_counts((c["old"], c["new"]) for c in changes if c["kind"] == kind):
+            click.secho(f"  {kind}:{line[1:]}", fg=color)
+    if commit:
+        click.secho(
+            f"  bills whose latest_passage_date changed: {passage_dates_changed}; change list: {list_path}",
+            fg=color,
+        )
 
 
 def _manifest_newest_first(manifest_path: str, state: str) -> typing.Optional[bool]:

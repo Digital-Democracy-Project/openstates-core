@@ -313,6 +313,40 @@ def note_stage(note: str) -> tuple:
     # never puts them in the diff lineage; it only stops them counting as versions with no stage.
     if re.fullmatch(_AL_FLOOR_MOTION_PAPER, lowered):
         return (STAGE_AMENDMENT, 0.0)
+    # OPEN-602: Georgia's version names. Georgia names a version after its drafting number ("LC 50
+    # 1106S") plus a suffix, or after the step that produced it; 278 of 303 Georgia names had no
+    # stage. Last for the same reason as OPEN-482's block above, and exact shapes (checked over every
+    # distinct stored note in every jurisdiction on the Mac databases, 2026-11-16: only Georgia's
+    # notes change). The names are typed by hand (a double space, a trailing space, "Committe sub",
+    # "/RCS"), so spaces are collapsed first. The stage is the label; Georgia's order comes from the
+    # site's document number (_DOCUMENT_ORDERED_JURISDICTIONS below), so the ordinals are all 0.
+    # "As introduced LC ...", "As Passed Senate" and "Floor Amend ..." already had a stage and keep it.
+    #   "LC 47 4374/a", "LC 50 1032-EC/a": the bill as filed ("House Bill 83EX By: ...").
+    #   "Local Ad", "SB 4EX Local Ad": the newspaper notice of intent to introduce a local bill. Not
+    #   a version (is_procedural_document); ranked introduced only so it does not count as no stage.
+    #   "LC 50 1106S/hs", "/hcs", "/hss", "/hrcs", "/rcs": House substitutes ("The House Committee on
+    #   ... offers the following substitute to ..."). "Committee Sub LC 49 2233-ECS", "Sen Ctee Sub
+    #   LC 62 0177S": Senate committee substitutes.
+    #   "SCSFA to HB 61", "HB 1193 SCSFA", "SFA to HB 308": the bill as the Senate passed it, by
+    #   substitute or not, as floor amended (status "Senate Passed/Adopted By Substitute", CSFA).
+    #   "Adopted Senate", "Read and adopted LC 112 4263": a resolution as its chamber adopted it.
+    #   "HB 223/AP*", "SB 3EX/AP*": the bill as passed by both chambers ("AS PASSED").
+    ga = " ".join(lowered.split())
+    if re.fullmatch(r"lc \d+ \d+(?:-ec)?/a|(?:[hs][br] \d+(?:ex)? )?local ad", ga):
+        return (STAGE_INTRODUCED, 0.0)
+    if re.fullmatch(
+        r"lc \d+ \d+s/(?:h(?:s|cs|ss|rcs)|rcs)|(?:sen ctee|committee?) sub lc \d+ \d+(?:s|-ecs)",
+        ga,
+    ):
+        return (STAGE_AMENDMENT, 0.0)
+    if re.fullmatch(
+        r"(?:sc)?sfa to [hs][br] \d+(?:ex)?|[hs][br] \d+(?:ex)? scsfa"
+        r"|adopted (?:senate|house)|read and adopted lc \d+ \d+",
+        ga,
+    ):
+        return (STAGE_CHAMBER_PASSAGE, 0.0)
+    if re.fullmatch(r"[hs][br] \d+(?:ex)?/ap\*?", ga):
+        return (STAGE_FINAL_PASSAGE, 0.0)
 
     return (STAGE_UNKNOWN, 0.0)
 
@@ -328,6 +362,14 @@ _AZ_DOCUMENT_NUMBER_RE = re.compile(
     r"\Ahttps?://apps\.azleg\.gov/BillStatus/GetDocumentPdf/(\d+)", re.IGNORECASE
 )
 
+
+# OPEN-602: Georgia's site numbers every document it publishes, in the order it publishes them
+# (www.legis.ga.gov/api/legislation/document/<session>/<id>; the 2021 special session's older form
+# is www.legis.ga.gov/Legislation/<session>/<id>.pdf). See _DOCUMENT_ORDERED_JURISDICTIONS below.
+_GA_DOCUMENT_NUMBER_RE = re.compile(
+    r"\Ahttps?://www\.legis\.ga\.gov/(?:api/legislation/document|legislation)/[^/]+/(\d+)(?:\.pdf)?\Z",
+    re.IGNORECASE,
+)
 
 # OPEN-593: Virginia's committee and subcommittee substitutes ("Criminal Subcommittee Substitute",
 # "Courts of Justice Substitute", "Delegate Mehta Substitute") all rank as amendments with no
@@ -358,10 +400,15 @@ _VA_LIS_FILE_RE = re.compile(
 
 def document_number(urls: typing.Iterable[typing.Optional[str]]) -> int:
     """The site's own document number from a version's link URLs, read by the link's host: for
-    Arizona's GetDocumentPdf links the smallest (OPEN-368), for Virginia's LIS file links the
-    largest (OPEN-593), and 0 when no link is of either kind -- every other state's links."""
+    Arizona's GetDocumentPdf links (OPEN-368) and Georgia's document links (OPEN-602) the smallest,
+    for Virginia's LIS file links the largest (OPEN-593), and 0 when no link is of these kinds --
+    every other state's links."""
     urls = [u or "" for u in urls]
-    numbers = [int(m.group(1)) for m in map(_AZ_DOCUMENT_NUMBER_RE.match, urls) if m]
+    numbers = [
+        int(m.group(1))
+        for m in (_AZ_DOCUMENT_NUMBER_RE.match(u) or _GA_DOCUMENT_NUMBER_RE.match(u) for u in urls)
+        if m
+    ]
     if numbers:
         return min(numbers)
     numbers = [int(m.group(1)) for m in map(_VA_LIS_FILE_RE.match, urls) if m]
@@ -426,6 +473,19 @@ def _az_chamber_ordinal(note: str, origin: str, ordinal: float) -> float:
 # Alabama version without a date ranks first, as every Alabama version did before (all undated).
 _DATE_ORDERED_JURISDICTIONS = frozenset({"Alabama"})
 
+# OPEN-602: Georgia's versions carry no date and its names do not place them in time: a House
+# substitute to a Senate bill ("LC 49 2362S/hss") comes after "As Passed Senate", and a bill can
+# have two Senate committee substitutes with nothing in the names to order them (HB 61 of 2025-26).
+# The site's own document number does: it rises as documents are published. Measured on the 123
+# bills with two or more real versions in the 2026 special session (govbot copy) and a 313-bill
+# 2025-26 sample from Georgia's web service (2026-11-16): ordered by it, 0 bills break the chamber
+# sequence their status history shows (introduced, origin chamber's substitute, its passage, the
+# other chamber's substitute, its passage, "/AP" last). Georgia's own "Version" field is not an
+# order (SB 3EX: floor amendments 2 and 4, As introduced 6), so it is not used. For Georgia the
+# document number leads and the note's stage breaks a tie; a version without a Georgia link
+# number ranks first.
+_DOCUMENT_ORDERED_JURISDICTIONS = frozenset({"Georgia"})
+
 
 def version_sort_key(
     note: str,
@@ -451,14 +511,15 @@ def version_sort_key(
     heuristic alone would.
 
     `urls` (the version's link URLs) adds a last element that only matters between versions that
-    tie on everything above: Arizona's document number (OPEN-368) or Virginia's LIS file number
-    (OPEN-593), 0 for everything else.
+    tie on everything above: Arizona's (OPEN-368) or Georgia's (OPEN-602) document number, or
+    Virginia's LIS file number (OPEN-593), 0 for everything else.
     `origin` (origin_chamber() of the bill's identifier) places Arizona's Engrossed Versions
     among its action documents (OPEN-382); it changes nothing for any other note.
     `jurisdiction_name` (`Jurisdiction.name`): for a state in `_DATE_ORDERED_JURISDICTIONS`
-    (Alabama, OPEN-569) the date comes first, (date-or-empty, stage, ordinal, document-number).
-    For Virginia an amendment-stage version's ordinal is 0, so its LIS file number orders it
-    (OPEN-593).
+    (Alabama, OPEN-569) the date comes first, (date-or-empty, stage, ordinal, document-number);
+    for one in `_DOCUMENT_ORDERED_JURISDICTIONS` (Georgia, OPEN-602) the site's document number
+    comes first, (document-number, stage, date-or-empty, ordinal). For Virginia an amendment-stage
+    version's ordinal is 0, so its LIS file number orders it (OPEN-593).
 
     A note matching none of the known patterns returns stage STAGE_UNKNOWN -- the caller
     excludes those versions from the diff lineage entirely rather than guessing a position for
@@ -472,6 +533,8 @@ def version_sort_key(
     has_date = bool(date) and bool(_DATE_RE.match(date))
     if jurisdiction_name in _DATE_ORDERED_JURISDICTIONS:
         return (date if has_date else "", stage, ordinal, document_number(urls))
+    if jurisdiction_name in _DOCUMENT_ORDERED_JURISDICTIONS:
+        return (document_number(urls), stage, date if has_date else "", ordinal)
     return (stage, date if has_date else "", ordinal, document_number(urls))
 
 
@@ -757,6 +820,30 @@ _PROCEDURAL_DOCUMENT_NOTE_PATTERNS: dict[str, "re.Pattern"] = {
         r"|conference committee report, #[1-9]\d*,"
         r" house (?:adopted|proposed|rejected|withdrawn), senate (?:adopted|proposed|rejected|withdrawn)"
         r")\Z",
+        re.IGNORECASE,
+    ),
+    # OPEN-602: Georgia's papers that are not versions of the bill. Georgia's web service lists
+    # every document of a bill as a version, so these arrive beside the real texts:
+    #   "Local Ad" / "SB 4EX Local Ad": the newspaper notice of intent to introduce a local bill
+    #   with the author's affidavit ("NOTICE OF INTENTION TO INTRODUCE LOCAL LEGISLATION ...
+    #   AFFIDAVIT ... O.C.G.A. § 28-1-14"), 98 of the 303 names measured.
+    #   "Floor Amend 1 AM 47 0219", "Sen Floor Amend 1A", "Floor Amendment AM 64 0009": one floor
+    #   amendment, a line edit ("Amend SB 3EX (LC 47 4392) by inserting after ... on line 8"),
+    #   adopted, lost or ruled out of order, the same call as the other states' amendment papers.
+    #   "Fiscal Note", "Local Government Fiscal Note": the fiscal note; "Auditor's Certification LC
+    #   56 0399S": the state auditor's certification of a retirement bill's actuarial investigation.
+    #   Neither is bill text (judged by the name: their PDFs are only on www.legis.ga.gov, which
+    #   does not answer from the Mac). They keep no stage, as Louisiana's bureau note does.
+    # Read on the 2026 special session's own PDFs (public govbot copy) and the names of a 2025-26
+    # sample from Georgia's web service (2026-11-16); no other state has a note of these shapes.
+    # The real versions stay: "/a", "As introduced", the substitutes, "As Passed", "/AP".
+    "Georgia": re.compile(
+        r"\A\s*(?:"
+        r"(?:[hs][br]\s+\d+(?:ex)?\s+)?local\s+ad"
+        r"|(?:sen\s+)?floor\s+amend(?:ment)?(?:\s+[1-9]\d*[a-z]?)?(?:\s+am\s+\d+\s+\d+)?"
+        r"|(?:local\s+government\s+)?fiscal\s+note"
+        r"|auditor's\s+certification\s+lc\s+\d+\s+\d+s?|lc\s+\d+\s+\d+s?\s+auditor's\s+certification"
+        r")\s*\Z",
         re.IGNORECASE,
     ),
 }

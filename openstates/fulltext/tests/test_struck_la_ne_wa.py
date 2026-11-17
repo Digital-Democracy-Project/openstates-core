@@ -22,8 +22,30 @@ OPEN-584 adds North Carolina, read the same way:
   provided by the owner of the vehicle." is struck and "renewal." underlined, in a section of
   existing law "reads as rewritten".
 * North Carolina SB 809 (2025), Edition 3, page 1: words underlined, nothing struck.
+
+OPEN-601 adds Georgia, read the same way:
+
+* Georgia SR 1 (2026 special session), As introduced (LC 33 9932), pages 2 to 4: Senate rules
+  rewritten with whole sentences struck and the new words underlined ("five (5) days" struck
+  before the underlined "twenty-four (24)", "no" struck before "No", "ten (10)" before
+  "three (3)").
+* Georgia SB 3 (2026 special session), As introduced (LC 47 4392), page 3: "United States
+  Senate, Governor, Lieutenant Governor, Secretary of State, Attorney General," struck from the
+  ballot-order list.
+
+OPEN-591 adds Nevada, read the same way. Nevada prints removed law inside brackets and struck
+through, brackets included. Its pages are cut as above, then their fonts subset (PyMuPDF
+`subset_fonts`) to keep the files small; pdftotext reads each cut page exactly as it reads that
+page in the whole file, before and after the struck words are removed:
+
+* Nevada AB 4 (2025, 36th Special), First Reprint, page 6: "[(c)]" is struck before the new
+  "(e)" ("[(c)] (e) “Health care facility” means ...", the line the ticket reports).
+* Nevada AB 4, First Reprint, page 28: "[suspends]", "[,]" and a whole struck sub-section
+  ("[permitting the child to drive a motor vehicle: (a) To and from work ...]") over 8 lines.
+* Nevada AB 4, First Reprint, page 2: nothing struck.
 """
 
+import difflib
 import inspect
 import re
 from pathlib import Path
@@ -100,12 +122,67 @@ def test_north_carolina_hb613_reads_the_new_words_only():
     assert "vehicle any required notice of\nrenewal." in new
 
 
+def test_nevada_ab4_reads_the_new_letter_only():
+    data = _read("nv_ab4_r1_p6.pdf")
+    old = "\n".join(_lines(extract_sometimes_numbered_pdf(data, META)))
+    new = "\n".join(_lines(_pdf("nv")(data, META)))
+    assert "[(c)] (e) “Health care facility” means" in old
+    assert "\n(e) “Health care facility” means" in new
+    assert "[" not in new and "]" not in new
+
+
+def test_nevada_whole_struck_sub_section_is_taken_out():
+    # Nevada's struck text runs over whole lines; those lines drop out of the reading, and every
+    # other line comes back exactly as before.
+    data = _read("nv_ab4_r1_p28.pdf")
+    old = _lines(extract_sometimes_numbered_pdf(data, META))
+    new = _lines(_pdf("nv")(data, META))
+    assert sum(line.count("[") for line in old) == 3
+    assert not [line for line in new if "[" in line or "]" in line]
+    changes = [
+        (old[i1:i2], new[j1:j2])
+        for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(
+            None, old, new, autojunk=False
+        ).get_opcodes()
+        if tag != "equal"
+    ]
+    assert changes == [
+        (
+            [
+                "3. If the juvenile court [suspends] finds that the suspension of",
+                "the driver’s license of a child pursuant to this section [,] is not in the",
+            ],
+            [
+                "3. If the juvenile court finds that the suspension of",
+                "the driver’s license of a child pursuant to this section is not in the",
+            ],
+        ),
+        (
+            [
+                "license pursuant to NRS 483.490 . [permitting the child to drive a",
+                "motor vehicle:",
+                "(a) To and from work or in the course of his or her work, or",
+                "both;",
+                "(b) To and from school; or",
+                "(c) To acquire supplies of medicine or food or receive regularly",
+                "scheduled medical care for himself, herself or a member of his or",
+                "her immediate family.]",
+            ],
+            ["license pursuant to NRS 483.490 ."],
+        ),
+    ]
+    # Characters only taken out, never added, over the whole page (spacing aside).
+    rest = iter("".join(old).replace(" ", ""))
+    assert all(ch in rest for ch in "".join(new).replace(" ", ""))
+
+
 @pytest.mark.parametrize(
     "state,name,extract",
     [
         ("la", "la_sb495_engrossed_p6.pdf", extract_sometimes_numbered_pdf),
         ("nc", "nc_hb613_edition2_p1.pdf", extract_sometimes_numbered_pdf),
         ("ne", "ne_lb778_final_reading_p2.pdf", extract_sometimes_numbered_pdf),
+        ("nv", "nv_ab4_r1_p6.pdf", extract_sometimes_numbered_pdf),
         ("wa", "wa_sb5681_s_p1.pdf", extract_line_numbered_pdf),
     ],
 )
@@ -211,6 +288,17 @@ EXPECTED_CHANGES = {
             ),
         ],
     ),
+    "nv_ab4_r1_p6": (
+        "nv",
+        "nv_ab4_r1_p6.pdf",
+        extract_sometimes_numbered_pdf,
+        [
+            (
+                "[(c)] (e) “Health care facility” means a facility licensed",
+                "(e) “Health care facility” means a facility licensed",
+            ),
+        ],
+    ),
     "wa_sb5681": (
         "wa",
         "wa_sb5681_s_p1.pdf",
@@ -305,30 +393,189 @@ def test_a_north_carolina_page_with_underlines_only_is_read_exactly_as_before():
     assert _pdf("nc")(data, META) == extract_sometimes_numbered_pdf(data, META)
 
 
+# Georgia strikes whole printed lines, and a line left with only its line number is dropped, so
+# the old and new readings do not have the same number of lines: each change is pinned as the
+# run of old lines and the run of new lines that replaces it (spacing aside); every other line
+# must come back exactly as before.
+GA_EXPECTED_CHANGES = {
+    "ga_sr1_introduced_p2_p4.pdf": [
+        (
+            [
+                "on the legislative day prior to consideration of the same during the first thirty-six (36) days",
+                "of any regular session. During the thirty-seventh (37th) through the fortieth (40th) days of",
+                "any regular session, such reports shall be printed and distributed to the Senators at least two",
+            ],
+            ["at least two"],
+        ),
+        (
+            [
+                "After a Committee of Conference has been in existence for five (5) days twenty-four (24)"
+            ],
+            [
+                "After a Committee of Conference has been in existence for twenty-four (24)"
+            ],
+        ),
+        (
+            [
+                "contrary to the Rules of the Senate; provided that, after the thirty-fifth (35th) legislative"
+            ],
+            ["contrary to the Rules of the Senate"],
+        ),
+        (
+            [
+                "day, the above motions may be made and passed at any time, but not more often than every",
+                'twenty-four hours."',
+            ],
+            ['."'],
+        ),
+        (
+            [
+                "as otherwise provided in paragraph (2) of this subsection, no No bill or resolution"
+            ],
+            [
+                "as otherwise provided in paragraph (2) of this subsection, no bill or resolution"
+            ],
+        ),
+        (
+            [
+                "Any general bill or resolution shall be automatically passed to a second reading Every",
+                "general bill and resolution shall be read a second time on the same legislative day following",
+                "the day that the bill or resolution is reported by the committee to which it was referred.",
+                "Except that after the thirty-fifth (35th) day of any regular session, every bill and resolution",
+                "shall be read a second time on the same legislative day that the bill or resolution is reported",
+                "by the committee to which it was referred. No debate shall be admitted upon any bill at the",
+            ],
+            [
+                "Every",
+                "general bill and resolution shall be read a second time on the same legislative day",
+                "that the bill or resolution is reported by the committee to which it was referred.",
+                "No debate shall be admitted upon any bill at the",
+            ],
+        ),
+        (
+            [
+                'the proponents and opponents shall each be limited to ten (10) three (3) minutes."'
+            ],
+            [
+                'the proponents and opponents shall each be limited to three (3) minutes."'
+            ],
+        ),
+        (
+            [
+                "otherwise than in the order and manner fixed by such calendar, except by a three-fourths"
+            ],
+            [
+                "otherwise than in the order and manner fixed by such calendar, except by a"
+            ],
+        ),
+        (
+            [
+                "members elected to the Senate. This Rule may not be suspended by a two-thirds"
+            ],
+            ["members elected to the Senate. This Rule may not be suspended by a"],
+        ),
+    ],
+    "ga_sb3_introduced_p3.pdf": [
+        (
+            ["(A) The contest at the top of a ballot; and"],
+            ["(A) The contest at the top of a ballot;"],
+        ),
+        (
+            [
+                "selected pursuant to subsection (d) of this Code section: United States Senate,",
+                "Governor, Lieutenant Governor, Secretary of State, Attorney General, State School",
+            ],
+            [
+                "selected pursuant to subsection (d) of this Code section:",
+                "State School",
+            ],
+        ),
+    ],
+}
+
+
+@pytest.mark.parametrize("name", sorted(GA_EXPECTED_CHANGES))
+def test_georgia_exactly_the_struck_words_are_taken_out(name):
+    data = _read(name)
+    old = _lines(extract_sometimes_numbered_pdf(data, META))
+    new = _lines(_pdf("ga")(data, META))
+    matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
+    changes = [
+        (old[i1:i2], new[j1:j2])
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes()
+        if tag != "equal"
+    ]
+    assert changes == GA_EXPECTED_CHANGES[name]
+    # Over the whole page, characters are only taken out, never added (spacing aside).
+    rest = iter("".join(old).replace(" ", ""))
+    assert all(ch in rest for ch in "".join(new).replace(" ", ""))
+
+
+def test_georgia_sr1_keeps_the_new_underlined_words():
+    # The ticket's three examples: the struck words go, the underlined new words stay.
+    data = _read("ga_sr1_introduced_p2_p4.pdf")
+    old = "\n".join(_lines(extract_sometimes_numbered_pdf(data, META)))
+    new = "\n".join(_lines(_pdf("ga")(data, META)))
+    assert "in existence for five (5) days twenty-four (24)" in old
+    assert "in existence for twenty-four (24)" in new
+    assert "five (5) days" not in new
+    assert "this subsection, no No bill" in old
+    assert "this subsection, no bill" in new
+    assert "limited to three (3) minutes" in new
+    assert "ten (10)" not in new
+    assert "automatically passed to a second reading" not in new
+
+
+def test_georgia_sb3_drops_the_struck_offices_from_the_ballot_order():
+    data = _read("ga_sb3_introduced_p3.pdf")
+    new = "\n".join(_lines(_pdf("ga")(data, META)))
+    # The old order is struck; the new order, printed further down the page and underlined,
+    # names the same offices and is kept.
+    assert "Code section: United States Senate," not in new
+    assert "Secretary of State, Attorney General, State School" not in new
+    assert "Code section:\nState School" in new
+    assert (
+        "United States Representative, Governor, Lieutenant Governor, Secretary of"
+        in new
+    )
+
+
+def test_a_nevada_page_with_nothing_struck_is_read_exactly_as_before():
+    data = _read("nv_ab4_r1_p2.pdf")
+    assert without_struck_text(data) is data
+    assert _pdf("nv")(data, META) == extract_sometimes_numbered_pdf(data, META)
+
+
 def test_a_file_pymupdf_cannot_open_is_an_extraction_error():
     # As for Alabama: no quiet fallback that would bring the struck words back.
-    for state in ("la", "nc", "ne", "wa"):
+    for state in ("ga", "la", "nc", "ne", "nv", "wa"):
         with pytest.raises(Exception):
             _pdf(state)(b"%PDF-1.7\n" + b"\x00" * 64, META)
 
 
-def test_only_these_five_states_read_pdfs_without_struck_text():
-    # Each of the four keeps its own text extractor underneath, and no other state's
+def test_only_these_six_states_read_pdfs_without_struck_text():
+    # Each of the five keeps its own text extractor underneath, and no other state's
     # reader or media type changes.
     # (Washington's is wrapped twice: OPEN-580 takes the emptied "((" "))" marks out.)
+    # Oregon's is wrapped too, but by its bracket reader (OPEN-600, test_or_bracketed.py): it
+    # prints no strike line.
     wrapped = {
         state: inspect.unwrap(funcs["application/pdf"])
         for state, funcs in CONVERSION_FUNCTIONS.items()
-        if hasattr(funcs.get("application/pdf"), "__wrapped__")
+        if hasattr(funcs.get("application/pdf"), "__wrapped__") and state != "or"
     }
     assert wrapped == {
+        "ga": extract_sometimes_numbered_pdf,
         "la": extract_sometimes_numbered_pdf,
         "nc": extract_sometimes_numbered_pdf,
         "ne": extract_sometimes_numbered_pdf,
+        "nv": extract_sometimes_numbered_pdf,
         "wa": extract_line_numbered_pdf,
     }
     assert CONVERSION_FUNCTIONS["al"]["application/pdf"] is handle_alabama_pdf
+    assert set(CONVERSION_FUNCTIONS["ga"]) == {"application/pdf"}
     assert set(CONVERSION_FUNCTIONS["la"]) == {"application/pdf"}
     assert set(CONVERSION_FUNCTIONS["nc"]) == {"application/pdf"}
     assert set(CONVERSION_FUNCTIONS["ne"]) == {"application/pdf"}
+    assert set(CONVERSION_FUNCTIONS["nv"]) == {"application/pdf"}
     assert set(CONVERSION_FUNCTIONS["wa"]) == {"text/html", "application/pdf"}

@@ -17,10 +17,12 @@ from openstates.utils.version_ordering import (
     STAGE_FINAL_PASSAGE,
     STAGE_INTRODUCED,
     STAGE_UNKNOWN,
+    document_number,
     extract_ordinal,
     is_bill_version,
     is_procedural_document,
     note_stage,
+    origin_chamber,
     version_sort_key,
 )
 
@@ -1074,3 +1076,206 @@ def test_note_stage_louisiana_conference_report_keeps_its_stage():
     """The exclusion is separate from the stage: note_stage() still places the report."""
     report = "Conference Committee Report, #4594, House Adopted, Senate Adopted"
     assert note_stage(report)[0] == STAGE_CHAMBER_PASSAGE
+
+
+# --- OPEN-602: Georgia version names, not-a-version papers and document-number order ---
+
+GA_DOC = "https://www.legis.ga.gov/api/legislation/document/{}/{}"
+
+
+@pytest.mark.parametrize(
+    ("note", "expected_stage"),
+    [
+        # Real Georgia names, one per family: the 2026 special session (govbot copy) and 2025-26 bills
+        # from Georgia's web service (2026-11-16). Every one of these had no stage before OPEN-602.
+        ("LC 47 4374/a", STAGE_INTRODUCED),
+        ("LC 50 1032-EC/a", STAGE_INTRODUCED),
+        ("LC 47 4244/a ", STAGE_INTRODUCED),  # HB 1583, trailing space as Georgia stores it
+        ("Local Ad", STAGE_INTRODUCED),
+        ("SB 4EX Local Ad", STAGE_INTRODUCED),
+        ("LC 50 1106S/hs", STAGE_AMENDMENT),
+        ("LC 50 1106S/hcs", STAGE_AMENDMENT),
+        ("LC 49 2362S/hss", STAGE_AMENDMENT),
+        ("LC 55 0644S/hrcs", STAGE_AMENDMENT),
+        ("LC 49 2300S/rcs", STAGE_AMENDMENT),
+        ("LC 49 2300S/RCS", STAGE_AMENDMENT),
+        ("LC 47  4409S/hs", STAGE_AMENDMENT),  # double space, as stored
+        ("Sen Ctee Sub LC 50 1215-ECS", STAGE_AMENDMENT),
+        ("Sen Ctee Sub LC 62 0177S", STAGE_AMENDMENT),
+        ("Sen Ctee sub LC 49 2847S", STAGE_AMENDMENT),
+        ("Committee Sub LC 49 2233-ECS", STAGE_AMENDMENT),
+        ("Committe sub LC 33 9771S", STAGE_AMENDMENT),
+        ("SCSFA to HB 61", STAGE_CHAMBER_PASSAGE),
+        ("HB 1193 SCSFA", STAGE_CHAMBER_PASSAGE),
+        ("SFA to HB 308", STAGE_CHAMBER_PASSAGE),
+        ("Adopted Senate", STAGE_CHAMBER_PASSAGE),
+        ("Read and adopted LC 112 4263", STAGE_CHAMBER_PASSAGE),
+        ("HB 223/AP*", STAGE_FINAL_PASSAGE),
+        ("SB 3EX/AP*", STAGE_FINAL_PASSAGE),
+        ("SR 1EX/AP*", STAGE_FINAL_PASSAGE),
+        # Already had a stage before OPEN-602; unchanged.
+        ("As introduced LC 47 4392", STAGE_INTRODUCED),
+        ("As Introduced LC 62 0074-EC", STAGE_INTRODUCED),
+        ("As Passed Senate", STAGE_CHAMBER_PASSAGE),
+        ("Floor Amend 1 AM 49 0227", STAGE_AMENDMENT),
+        ("Sen Floor Amend 1 AM 47 0224", STAGE_AMENDMENT),
+    ],
+)
+def test_note_stage_georgia_vocabulary(note, expected_stage):
+    assert note_stage(note)[0] == expected_stage
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        # Close shapes: they stay unknown, so the rules do not widen beyond what Georgia publishes.
+        "LC 47 4374/b",
+        "LC 47 4374",
+        "LC 50 1106/hs",  # a House substitute's drafting number always ends in S
+        "LC 50 1106S/hx",
+        "Local Advertisement",
+        "Sub LC 49 2233-ECS",
+        "SCSFA",
+        "Adopted",
+        "HB 223/APX",
+        "HB 223 AP",
+        # Georgia papers that are not bill text and keep no stage (they are not versions either).
+        "Fiscal Note",
+        "Local Government Fiscal Note",
+        "Auditor's Certification LC 56 0399S",
+    ],
+)
+def test_note_stage_georgia_rules_do_not_widen(note):
+    assert note_stage(note)[0] == STAGE_UNKNOWN
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        "Local Ad",
+        "SB 4EX Local Ad",
+        "SB 234 Local Ad",
+        "Floor Amend 1 AM 47 0219",
+        "Floor Amend 2",
+        "Floor Amend 2A",
+        "Floor Amendment AM 64 0009",
+        "Sen Floor Amend 1 AM 47 0224",
+        "Sen Floor Amend 1A AM 47 0225",
+        "Sen Floor Amend 1C",
+        "Sen Floor amend 1 AM 49 0279",
+        "Fiscal Note",
+        "Local Government Fiscal Note",
+        "Auditor's Certification LC 56 0399S",
+        "LC 56 0244 Auditor's Certification",
+    ],
+)
+def test_is_bill_version_georgia_papers_are_not_versions(note):
+    assert is_procedural_document("Georgia", note) is True
+    assert is_bill_version("Georgia", note) is False
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        "LC 47 4374/a",
+        "As introduced LC 47 4392",
+        "LC 50 1106S/hs",
+        "LC 50 1106S/hcs",
+        "LC 47 4417S/hss",
+        "Sen Ctee Sub LC 62 0177S",
+        "Committee Sub LC 49 2233-ECS",
+        "As Passed Senate",
+        "SCSFA to HB 61",
+        "Read and adopted LC 112 4263",
+        "HB 223/AP*",
+        # near misses stay versions
+        "Local Ad Notice",
+        "Floor Amend 1 to the Senate substitute",
+    ],
+)
+def test_is_bill_version_georgia_real_versions_stay_in(note):
+    assert is_bill_version("Georgia", note) is True
+
+
+def test_is_bill_version_georgia_entry_is_georgia_only():
+    assert is_bill_version("Alabama", "Local Ad") is True
+    assert is_bill_version("Virginia", "Floor Amend 1 AM 47 0219") is True
+
+
+def test_document_number_reads_georgia_links():
+    assert document_number([GA_DOC.format("20252026", 236896)]) == 236896
+    assert document_number([GA_DOC.format("2026EX", 249298)]) == 249298
+    assert document_number(["http://www.legis.ga.gov/Legislation/2021EX/202712.pdf"]) == 202712
+    assert document_number(["https://www.legis.ga.gov/legislation/69281"]) == 0
+    assert document_number(["https://example.com/api/legislation/document/20252026/1"]) == 0
+
+
+def _ga_order(versions, identifier):
+    shuffled = list(reversed(versions))
+    return [
+        note
+        for note, _ in sorted(
+            shuffled,
+            key=lambda v: version_sort_key(v[0], "", [v[1]], origin_chamber(identifier), "Georgia"),
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("identifier", "in_true_order"),
+    [
+        # Real names and document numbers from Georgia's web service (2025-26), in the order of each
+        # bill's status history. SB 68: the House substitute comes after "As Passed Senate", so a
+        # stage-first order would put it before (amendment < chamber passage).
+        (
+            "SB 68",
+            [
+                ("As Introduced LC 62 0074-EC", GA_DOC.format("20252026", 230894)),
+                ("Committee Sub LC 49 2233-ECS", GA_DOC.format("20252026", 231978)),
+                ("As Passed Senate", GA_DOC.format("20252026", 233525)),
+                ("LC 49 2362S/hss", GA_DOC.format("20252026", 236457)),
+                ("SB 68/AP*", GA_DOC.format("20252026", 236944)),
+            ],
+        ),
+        # HB 223: the House's two substitute printings (as reported, as passed), then the Senate's.
+        (
+            "HB 223",
+            [
+                ("LC 50 1032-EC/a", GA_DOC.format("20252026", 230994)),
+                ("LC 50 1106S/hs", GA_DOC.format("20252026", 232393)),
+                ("LC 50 1106S/hcs", GA_DOC.format("20252026", 232657)),
+                ("Sen Ctee Sub LC 50 1215-ECS", GA_DOC.format("20252026", 235813)),
+                ("HB 223/AP*", GA_DOC.format("20252026", 236896)),
+            ],
+        ),
+        # HB 61: two Senate committee substitutes (2025, then 2026) that nothing in the names orders.
+        (
+            "HB 61",
+            [
+                ("LC 39 4465/a", GA_DOC.format("20252026", 229988)),
+                ("Sen Ctee Sub LC 57 0278S", GA_DOC.format("20252026", 237050)),
+                ("Sen Ctee Sub LC 63 0073S", GA_DOC.format("20252026", 241287)),
+                ("SCSFA to HB 61", GA_DOC.format("20252026", 246890)),
+            ],
+        ),
+    ],
+)
+def test_georgia_versions_order_by_document_number(identifier, in_true_order):
+    assert _ga_order(in_true_order, identifier) == [n for n, _ in in_true_order]
+
+
+def test_georgia_document_order_is_georgia_only():
+    # Another state keeps its stage-first key: the same notes and links sort by stage there.
+    stage_first = version_sort_key("As Passed Senate", "", [GA_DOC.format("20252026", 233525)])
+    house_sub = version_sort_key("LC 49 2362S/hss", "", [GA_DOC.format("20252026", 236457)])
+    assert house_sub < stage_first
+    assert version_sort_key("Introduced", "", [], None, "Virginia") == version_sort_key("Introduced", "")
+
+
+def test_georgia_version_without_a_site_number_ranks_first_then_by_stage():
+    # The stated fallback (as Alabama's undated versions): no Georgia document number is 0, so it leads,
+    # and two such versions fall back to the stage.
+    with_number = version_sort_key("LC 50 1032-EC/a", "", [GA_DOC.format("20252026", 230994)], None, "Georgia")
+    no_number_ap = version_sort_key("HB 223/AP*", "", ["https://example.com/hb223.pdf"], None, "Georgia")
+    no_number_intro = version_sort_key("LC 50 1032-EC/a", "", [], None, "Georgia")
+    assert no_number_intro < no_number_ap < with_number
