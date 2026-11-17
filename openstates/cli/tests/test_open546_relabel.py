@@ -1,9 +1,10 @@
 """OPEN-546: `os-text-extract relabel <state>` re-applies a state's current label rules to its stored history.
 
 PLAN-state-specific-handling §6 Phase 3: a state's action rule moves from the broker into its `classify_action`
-(`openstates/ddp_states/<state>.py`); the scraper applies it to what it re-scrapes, and this pass to what is stored.
+(`openstates/ddp_states/<state>.py`); the bill importer applies it to what it re-imports (OPEN-550), and this pass to what is stored.
 
-No state has a rule module yet (OPEN-545, 547-552 add them), so the rules here are the broker's own readings of two
+These tests stand in their own rules (OPEN-545, 547-552 add the real modules; Nebraska's and Massachusetts' are
+tested in openstates/importers/tests/test_open55*), so the rules here are the broker's own readings of two
 states, written as `classify_action` / `classify_bill` (ddp-broker-py `bill_stage._read_michigan`, `_read_virginia`,
 `bill_events.read_classification`). The actions are real, in stored order, from the Mac replica (2026-11-16):
 Michigan HB 4001 (2025-2026) and Virginia HB 625 (2026), each cut to the lines that matter plus their neighbours.
