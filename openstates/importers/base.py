@@ -619,7 +619,12 @@ class BaseImporter:
             memberships__organization__jurisdiction_id=self.jurisdiction_id,
         )
 
-        if org_classification:
+        # OPEN-608: a vote held by the whole legislature (a joint committee in a
+        # bicameral state, e.g. Oregon's "J" committees) has members of both
+        # chambers, whose memberships are in upper or lower, never in
+        # legislature, so it takes any chamber below. A unicameral legislature
+        # (Nebraska) has no upper or lower body, so its matches are unchanged.
+        if org_classification and org_classification != "legislature":
             common_spec &= Q(memberships__organization__classification=org_classification)
         else:
             common_spec &= Q(
