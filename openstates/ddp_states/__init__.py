@@ -2,9 +2,11 @@
 DDP's per-state normalizing rules, one module per state (`openstates/ddp_states/<state>.py`, lower-case postal code;
 PLAN-state-specific-handling §4.2). A DDP-owned directory upstream does not have, so upstream merges never touch it.
 
-A state module defines only the functions it needs; a missing one means "standard data, nothing to do". Each runs in
-exactly one place: the scraper calls it on what it parsed, before it emits a bill, and `os-text-extract relabel`
-re-applies it to the stored history of bills the scraper will not re-scrape (§4.4, §6 Phase 3). The labels two
+A state module defines only the functions it needs; a missing one means "standard data, nothing to do". Each is meant
+to run in exactly two places: the state's scraper on what it parsed, before it emits a bill, and `os-text-extract
+relabel` on the stored history of bills the scraper will not re-scrape (§4.4, §6 Phase 3). **No scraper calls this
+package yet** (2026-11-17): wiring the state's scraper is an acceptance line of each state's ticket (OPEN-545, 547 to
+552), and a state relabelled before its scraper is wired gets the old labels back on its next re-scrape. The labels two
 functions answer (OPEN-546):
 
 * ``classify_action(*, description, classification, chamber, date) -> list[str]``: an action's labels, given its

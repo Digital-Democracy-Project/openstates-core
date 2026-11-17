@@ -18,6 +18,7 @@ import requests
 import scrapelib
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import urlparse
 from django.contrib.postgres.search import SearchVector  # type: ignore
 from django.db import transaction, IntegrityError  # type: ignore
@@ -3869,6 +3870,72 @@ def _undo_plan(bills: typing.Any, undo_path: str) -> list:
     return changes
 
 
+# The bill fields `update_bill_fields` computes from a bill's actions (`importers/computed_fields.py`).
+COMPUTED_BILL_FIELDS = (
+    "first_action_date",
+    "latest_action_date",
+    "latest_action_description",
+    "latest_passage_date",
+)
+
+
+class _BillPreview:
+    """A stand-in bill for `update_bill_fields` in a dry run: its stored computed fields, and its actions in stored
+    order with the new labels. `save` does nothing, so the real rule runs and nothing is written."""
+
+    def __init__(self, actions: list, **fields: typing.Any) -> None:
+        self.__dict__.update(fields)
+        self.actions = self
+        self._actions = actions
+
+    def order_by(self, *_: str) -> list:
+        return self._actions
+
+    def save(self, *_: typing.Any, **__: typing.Any) -> None:
+        pass
+
+
+def _changed_fields(before: dict, after: typing.Any, counts: dict) -> bool:
+    """Add one to `counts` for each computed field whose value differs; True when any did."""
+    changed = [f for f in COMPUTED_BILL_FIELDS if getattr(after, f) != before[f]]
+    for f in changed:
+        counts[f] += 1
+    return bool(changed)
+
+
+def _computed_field_preview(changes: list) -> dict:
+    """OPEN-615: per computed field, how many bills `update_bill_fields` would change once the action labels in
+    `changes` are written, counted with the real rule on in-memory copies (a dry run writes nothing). A field that was
+    already stale (an older import) is counted too: the commit rewrites it."""
+    from ..importers.computed_fields import update_bill_fields
+    from openstates.data.models import Bill, BillAction
+
+    # Ordered as update_bill_fields reads them (by `order`); `id` only breaks ties, which the importer never leaves
+    # (it numbers a bill's actions 0..n; 0 duplicate (bill, order) pairs on the production replica, 2026-11-17).
+    new_labels = {c["id"]: c["new"] for c in changes if c["kind"] == "action"}
+    bill_ids = {c["bill_id"] for c in changes if c["kind"] == "action"}
+    actions: dict = {}
+    for row in (
+        BillAction.objects.filter(bill_id__in=bill_ids)
+        .order_by("bill_id", "order", "id")
+        .values("id", "bill_id", "date", "description", "classification")
+        .iterator()
+    ):
+        actions.setdefault(row["bill_id"], []).append(
+            SimpleNamespace(
+                date=row["date"],
+                description=row["description"],
+                classification=new_labels.get(row["id"], row["classification"]),
+            )
+        )
+    counts = dict.fromkeys(COMPUTED_BILL_FIELDS, 0)
+    for stored in Bill.objects.filter(id__in=bill_ids).values("id", *COMPUTED_BILL_FIELDS):
+        preview = _BillPreview(actions.get(stored["id"], []), **{f: stored[f] for f in COMPUTED_BILL_FIELDS})
+        update_bill_fields(preview)
+        _changed_fields(stored, preview, counts)
+    return counts
+
+
 @main.command(
     help="OPEN-546: re-apply a state's current label rules (classify_action and classify_bill in "
     "openstates/ddp_states/<state>.py) to its stored actions and bills (dry run by default; --commit writes, with "
@@ -3910,19 +3977,30 @@ def relabel(
 ) -> None:
     """
     PLAN-state-specific-handling §6 Phase 3: when a state's action or bill rule moves into its `classify_action` or
-    `classify_bill` (`openstates/ddp_states/<state>.py`), the scraper applies it only to bills it re-scrapes; this pass
-    applies the same function to everything already stored, in the state's silent window. The generalization of
-    `relabel-non-bills` (OPEN-517), with which it shares its write and summary code; that command keeps Massachusetts'
-    own rule.
+    `classify_bill` (`openstates/ddp_states/<state>.py`), this pass applies it to everything already stored, in the
+    state's silent window. The scraper will apply the same function to what it re-scrapes, but **no scraper calls
+    `ddp_states` yet**: wiring the state's scraper is part of each state's ticket (OPEN-545, 547 to 552), and until it
+    is done a re-scrape brings the old labels back. The generalization of `relabel-non-bills` (OPEN-517), with which it
+    shares its write and summary code; that command keeps Massachusetts' own rule.
 
     Only labels change: an action's `classification` or a bill's `classification`, never its text, date, order or
     chamber. The change list is the audit record (no second label is stored): it only takes its name after the database
     commit, and an existing list is never overwritten. `--undo LIST --commit` writes each listed item's old labels back,
-    if it still holds the new ones. A bill whose action labels change has its computed action fields recomputed
-    (`latest_passage_date` reads `passage`) and its `updated_at` moved, as a re-import of the same change would, so
-    api-v3's `updated_since` readers (the broker's bill-event check, ddp-sync) see it: hence the silent window. A bill
-    whose own label alone changes is written without moving `updated_at`, as `relabel-non-bills` does (nothing
-    downstream stores a bill's label).
+    if it still holds the new ones.
+
+    A bill whose action labels change has its computed fields recomputed by `update_bill_fields` (`latest_passage_date`
+    reads `passage`; the other three are rewritten too if an older import left them stale) and its `updated_at` moved,
+    as a re-import of the same change would, so api-v3's `updated_since` readers (the broker's bill-event check,
+    ddp-sync) see it: hence the silent window. Both the dry run and the commit report how many bills each computed
+    field changes on (OPEN-615).
+
+    A bill whose own label changes and none of whose actions' labels do is written **without** moving `updated_at`, as
+    `relabel-non-bills` does (when its actions change too, `updated_at` moves as above). That label is stored
+    downstream: ddp-sync copies a bill's `classification` into its knowledge-base text ("Type:",
+    `ingestion/sources/openstates.py`) and metadata (`ingestion/metadata.py`) when it ingests the bill, and finds
+    changed bills through `updated_since`. So ddp-sync keeps the old type for these
+    bills until their next real update; a state ticket that changes bill labels (Virginia's, OPEN-545) says how that
+    copy is refreshed.
     """
     from openstates.ddp_states import state_rule
 
@@ -3962,7 +4040,7 @@ def relabel(
     # Written aside and named only after the commit, as in reverse-action-order: a refused or rolled-back run leaves
     # no list that reads as done.
     written_path = f"{list_path}.partial" if commit and list_path else list_path
-    passage_dates_changed = 0
+    field_changes = _computed_field_preview(changes) if not commit else dict.fromkeys(COMPUTED_BILL_FIELDS, 0)
     try:
         if list_path:
             with open(written_path, "w", newline="") as f:
@@ -4002,11 +4080,9 @@ def relabel(
                 for bill in Bill.objects.filter(
                     id__in={c["bill_id"] for c in changes if c["kind"] == "action"}
                 ):
-                    before = bill.latest_passage_date
+                    before = {f: getattr(bill, f) for f in COMPUTED_BILL_FIELDS}
                     update_bill_fields(bill)  # saves when a computed field changed
-                    if bill.latest_passage_date != before:
-                        passage_dates_changed += 1
-                    else:
+                    if not _changed_fields(before, bill, field_changes):
                         bill.save(update_fields=["updated_at"])
     except BaseException:
         if commit and list_path and os.path.exists(written_path):
@@ -4035,11 +4111,13 @@ def relabel(
     for kind in ("action", "bill"):
         for line in _label_change_counts((c["old"], c["new"]) for c in changes if c["kind"] == kind):
             click.secho(f"  {kind}:{line[1:]}", fg=color)
+    click.secho(
+        f"  bills whose computed fields {'changed' if commit else 'would change'}: "
+        + " ".join(f"{f}={field_changes[f]}" for f in COMPUTED_BILL_FIELDS),
+        fg=color,
+    )
     if commit:
-        click.secho(
-            f"  bills whose latest_passage_date changed: {passage_dates_changed}; change list: {list_path}",
-            fg=color,
-        )
+        click.secho(f"  change list: {list_path}", fg=color)
 
 
 def _manifest_newest_first(manifest_path: str, state: str) -> typing.Optional[bool]:
