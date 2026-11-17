@@ -659,16 +659,20 @@ class BaseImporter:
             result_set = set([p["id"] for p in query_result])
             if len(result_set) == 1:
                 result_id = result_set.pop()
-            elif len(result_set) > 1:
-                ids = set(
-                    [p["id"] for p in query_result if p["current_role"] is not None]
-                )
-                if len(ids) == 1:
-                    result_id = ids.pop()
-            # no match (or still ambiguous) on identifier -- fall through to name
-            # matching below rather than erroring, since name is always present too
+            # OPEN-603: an identifier resolves only to exactly one person. No match,
+            # or several (an id stored on two people is a data error; 0 of 853
+            # bioguide/lis ids on the production replica, 2026-11-17), leaves the
+            # voter unresolved -- it does NOT fall back to the name. The name the
+            # roll call gives is often just a surname ("Grijalva"), and the
+            # name match breaks a tie by who holds office *now*, not on the
+            # vote's date: Raúl Grijalva's 2025 votes (G000551), imported while
+            # his stored record did not match his id, went to Adelita Grijalva,
+            # who took the seat in November 2025. An unresolved voter shows in
+            # the unmatched counts; a wrong one shows on someone's scorecard.
+            if result_id is None:
+                errmsg = f"no single person with identifier {identifier} for spec"
 
-        if result_id is None:
+        if result_id is None and not identifier:
             if list(spec.keys()) == ["name"]:
                 # if we're just resolving on name, include other names and family name
                 name = spec["name"]

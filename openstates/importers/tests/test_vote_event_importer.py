@@ -127,10 +127,11 @@ def test_vote_event_voter_resolved_by_identifier_when_name_ambiguous():
 
 
 @pytest.mark.django_db
-def test_vote_event_voter_identifier_miss_falls_back_to_name():
-    # If the identifier doesn't match anyone in our DB (e.g. not yet loaded),
-    # resolution should still fall back to the existing name-matching behavior
-    # rather than leaving voter unresolved.
+def test_vote_event_voter_identifier_miss_does_not_fall_back_to_name():
+    # OPEN-603 (reverses the July rule): an identifier that matches no one in our
+    # DB leaves the voter unresolved, even when someone has the same name. The
+    # name match cannot tell two people of one name apart on the vote's date, so
+    # an unmatched voter (counted, visible) is safer than a guessed one.
     create_jurisdiction()
     bill = ScrapeBill("HB 1", "1900", "Axe & Tack Tax Act", chamber="lower")
     vote_event = ScrapeVoteEvent(
@@ -157,7 +158,74 @@ def test_vote_event_voter_identifier_miss_falls_back_to_name():
 
     ve = VoteEvent.objects.get()
     v = ve.votes.get()
-    assert v.voter == person
+    assert v.voter is None
+    assert v.voter_name == "John Smith"
+
+
+def _grijalva_case(raul_has_bioguide, adelita_bioguide="G000606"):
+    """OPEN-603, the real shape (production replica, 2026-11-17): 119th Congress (2025-01-03 to 2027-01-03), House roll
+    call 6 of 2025-01-07, where the Clerk lists G000551 "Grijalva" as Not Voting. Raúl Grijalva (G000551) served until
+    2025-03-13 and holds no current role; Adelita Grijalva (G000606) took the seat on 2025-11-12 and does. Both have the
+    family name the roll call gives."""
+    Division.objects.create(id="ocd-division/country:us", name="USA")
+    us = Jurisdiction.objects.create(id="ocd-jurisdiction/country:us/government", division_id="ocd-division/country:us")
+    us.legislative_sessions.create(name="119th Congress", identifier="119", start_date="2025-01-03", end_date="2027-01-03")
+    house = Organization.objects.create(name="House", classification="lower", jurisdiction=us)
+    raul = Person.objects.create(name="Raúl Grijalva", family_name="Grijalva")
+    adelita = Person.objects.create(
+        name="Adelita Grijalva", family_name="Grijalva", current_role={"title": "Representative", "district": "AZ-7"}
+    )
+    raul.memberships.create(organization=house, start_date="2025-01-03", end_date="2025-03-13")
+    adelita.memberships.create(organization=house, start_date="2025-11-12", end_date="2030-01-01")
+    PersonIdentifier.objects.create(person=adelita, scheme="bioguide", identifier=adelita_bioguide)
+    if raul_has_bioguide:
+        PersonIdentifier.objects.create(person=raul, scheme="bioguide", identifier="G000551")
+
+    bill = ScrapeBill("HR 5", "119", "Laken Riley Act", chamber="lower")
+    vote_event = ScrapeVoteEvent(
+        legislative_session="119",
+        motion_text="On Passage",
+        start_date="2025-01-07",
+        classification="passage",
+        result="pass",
+        bill_chamber="lower",
+        bill="HR 5",
+        chamber="lower",
+    )
+    vote_event.vote("not voting", "Grijalva", note="G000551", id="G000551")
+    bi = BillImporter(us.id)
+    bi.import_data([bill.as_dict()])
+    VoteEventImporter(us.id, bi).import_data([vote_event.as_dict()])
+    return raul, adelita, VoteEvent.objects.get().votes.get()
+
+
+@pytest.mark.django_db
+def test_grijalva_vote_is_never_credited_to_the_member_who_holds_the_seat_now():
+    # The September 2026 state: Raúl's stored record did not match his id. The
+    # old fallback matched the surname, broke the tie by current role, and
+    # credited Adelita with a vote cast ten months before she took office.
+    raul, adelita, vote = _grijalva_case(raul_has_bioguide=False)
+    assert vote.voter != adelita
+    assert vote.voter is None
+    assert (vote.voter_name, vote.note, vote.option) == ("Grijalva", "G000551", "not voting")
+
+
+@pytest.mark.django_db
+def test_grijalva_vote_goes_to_raul_when_his_id_is_stored():
+    raul, adelita, vote = _grijalva_case(raul_has_bioguide=True)
+    assert vote.voter == raul
+
+
+@pytest.mark.django_db
+def test_an_id_stored_on_two_people_resolves_to_neither_not_to_the_one_in_office_now():
+    # A data error (the same bioguide on two records) must not be settled by who
+    # holds office today: that is the Grijalva mistake again.
+    raul, adelita, vote = _grijalva_case(raul_has_bioguide=True, adelita_bioguide="G000551")
+    assert set(PersonIdentifier.objects.filter(identifier="G000551").values_list("person_id", flat=True)) == {
+        raul.id,
+        adelita.id,
+    }
+    assert vote.voter is None
 
 
 # OPEN-608: Oregon 2026R1, HB 4103, joint committee, 2026-02-20, "Heard and Reported Out with
