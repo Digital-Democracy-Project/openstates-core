@@ -160,6 +160,96 @@ def test_vote_event_voter_identifier_miss_falls_back_to_name():
     assert v.voter == person
 
 
+# OPEN-608: Oregon 2026R1, HB 4103, joint committee, 2026-02-20, "Heard and Reported Out with
+# Amendments": the real roll call (the smallest of Oregon's 40 joint ones). Three voters sit in the
+# House and three in the Senate; none holds a membership in the joint `legislature` body.
+OR_JOINT_ROLL_CALL = [
+    ("yes", "Darcey Edwards", "lower"),
+    ("yes", "Nancy Nathanson", "lower"),
+    ("yes", "Daniel Nguyen", "lower"),
+    ("absent", "Christine Drazan", "upper"),
+    ("yes", "Mark Meek", "upper"),
+    ("yes", "Khanh Pham", "upper"),
+]
+
+
+def or_joint_vote_event(chamber):
+    vote_event = ScrapeVoteEvent(
+        legislative_session="1900",
+        motion_text="Heard and Reported Out with Amendments",
+        start_date="1900-02-20",
+        classification="committee-passage",
+        result="pass",
+        bill_chamber="lower",
+        bill="HB 4103",
+        chamber=chamber,
+    )
+    for option, name, _ in OR_JOINT_ROLL_CALL:
+        vote_event.vote(option, name)
+    return vote_event
+
+
+def import_or_roll_call(chamber):
+    j = create_jurisdiction()
+    Organization.objects.create(
+        name="Legislature", classification="legislature", jurisdiction=j
+    )
+    people = {}
+    for _, name, member_of in OR_JOINT_ROLL_CALL:
+        people[name] = Person.objects.create(name=name)
+        people[name].memberships.create(
+            organization=Organization.objects.get(classification=member_of)
+        )
+    bill = ScrapeBill("HB 4103", "1900", "Relating to housing", chamber="lower")
+    bi = BillImporter("jid")
+    bi.import_data([bill.as_dict()])
+    VoteEventImporter("jid", bi).import_data([or_joint_vote_event(chamber).as_dict()])
+    return people, {v.voter_name: v.voter for v in VoteEvent.objects.get().votes.all()}
+
+
+@pytest.mark.django_db
+def test_joint_committee_vote_resolves_members_of_both_chambers():
+    people, voters = import_or_roll_call("legislature")
+    assert voters == people
+
+
+@pytest.mark.django_db
+def test_chamber_vote_still_resolves_only_its_own_members():
+    # The same roll call stored as a House vote: the three senators must stay unresolved,
+    # exactly as before OPEN-608.
+    people, voters = import_or_roll_call("lower")
+    for _, name, member_of in OR_JOINT_ROLL_CALL:
+        assert voters[name] == (people[name] if member_of == "lower" else None)
+
+
+@pytest.mark.django_db
+def test_unicameral_legislature_vote_still_resolves():
+    # Nebraska: one `legislature` body, memberships in it, no upper or lower.
+    Division.objects.create(id="ocd-division/country:us", name="USA")
+    j = Jurisdiction.objects.create(id="jid", division_id="ocd-division/country:us")
+    j.legislative_sessions.create(name="1900", identifier="1900")
+    leg = Organization.objects.create(
+        name="Legislature", classification="legislature", jurisdiction=j
+    )
+    person = Person.objects.create(name="John Smith")
+    person.memberships.create(organization=leg)
+    bill = ScrapeBill("LB 1", "1900", "A bill", chamber="legislature")
+    vote_event = ScrapeVoteEvent(
+        legislative_session="1900",
+        motion_text="Final Reading",
+        start_date="1900-04-01",
+        classification="passage",
+        result="pass",
+        bill="LB 1",
+        chamber="legislature",
+    )
+    vote_event.yes("John Smith")
+    bi = BillImporter("jid")
+    bi.import_data([bill.as_dict()])
+    VoteEventImporter("jid", bi).import_data([vote_event.as_dict()])
+    assert VoteEvent.objects.get().votes.get().voter == person
+
+
 @pytest.mark.django_db
 def test_vote_event_identifier_dedupe():
     j = create_jurisdiction()
