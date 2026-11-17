@@ -81,6 +81,21 @@ def test_the_rule_is_stable_on_its_own_output(identifier, title, stored, expecte
     assert classify_bill(identifier=identifier, title=title, classification=once) == once
 
 
+@pytest.mark.parametrize(
+    "identifier,expected",
+    # the scraper's order on a `bill` whose title names a constitutional amendment (none is stored so today): the
+    # title first, whatever the number, so a relabel and a re-scrape agree (pm-review)
+    [
+        ("HJ 1", ["constitutional amendment"]),
+        ("HR 5", ["constitutional amendment"]),
+        ("HB 1384", ["constitutional amendment"]),
+    ],
+)
+def test_a_title_naming_a_constitutional_amendment_comes_first(identifier, expected):
+    title = "Constitutional amendment (second reference); fundamental right to reproductive freedom."
+    assert classify_bill(identifier=identifier, title=title, classification=["bill"]) == expected
+
+
 def test_the_rule_returns_a_new_list_and_leaves_its_input_alone():
     labels = ["bill"]
     out = classify_bill(identifier="HR 1", title=None, classification=labels)
