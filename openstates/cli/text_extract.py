@@ -3978,9 +3978,9 @@ def relabel(
     """
     PLAN-state-specific-handling §6 Phase 3: when a state's action or bill rule moves into its `classify_action` or
     `classify_bill` (`openstates/ddp_states/<state>.py`), this pass applies it to everything already stored, in the
-    state's silent window. The scraper will apply the same function to what it re-scrapes, but **no scraper calls
-    `ddp_states` yet**: wiring the state's scraper is part of each state's ticket (OPEN-545, 547 to 552), and until it
-    is done a re-scrape brings the old labels back. The generalization of `relabel-non-bills` (OPEN-517), with which it
+    state's silent window. Core's bill importer applies the same `classify_action` to every action it imports
+    (`BillImporter.prepare_for_db`, OPEN-550), reading it as this pass does, so a re-scrape keeps the new labels
+    (`classify_bill` is not applied on import yet). The generalization of `relabel-non-bills` (OPEN-517), with which it
     shares its write and summary code; that command keeps Massachusetts' own rule.
 
     Only labels change: an action's `classification` or a bill's `classification`, never its text, date, order or

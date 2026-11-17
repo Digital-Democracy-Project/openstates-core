@@ -2,6 +2,7 @@ from typing import Union
 from .base import BaseImporter
 from ._types import _JsonDict, Model
 from ..data.models import (
+    Organization,
     Bill,
     RelatedBill,
     BillAbstract,
@@ -19,6 +20,8 @@ from ..data.models import (
 from .computed_fields import update_bill_fields
 from .organizations import OrganizationImporter
 from ..utils.version_ordering import ACTIONS_REVERSED_KEY, ORIGINAL_CLASSIFICATION_KEY
+from ..ddp_states import state_rule
+from ..utils import jid_to_abbr
 
 
 def resolve_related_bills(jurisdiction_id: str, session: Union[str, None], logger) -> None:
@@ -106,6 +109,15 @@ class BillImporter(BaseImporter):
     def __init__(self, jurisdiction_id: str, do_postimport=True):
         super(BillImporter, self).__init__(jurisdiction_id, do_postimport)
         self.org_importer = OrganizationImporter(jurisdiction_id)
+        # OPEN-550: the state's own action-label rule (openstates/ddp_states/<state>.py), applied to every imported
+        # action so a re-scrape gives the labels `os-text-extract relabel` wrote. None (nothing to do) for a state
+        # without one, or a jurisdiction that is not a state in the metadata.
+        try:
+            state = jid_to_abbr(jurisdiction_id)
+        except KeyError:
+            state = None
+        self.classify_action = state_rule(state, "classify_action") if state else None
+        self.org_classification_cache: dict = {}
 
     def get_object(self, bill: _JsonDict) -> Model:
         spec = {
@@ -136,6 +148,8 @@ class BillImporter(BaseImporter):
             action["organization_id"] = self.org_importer.resolve_json_id(
                 action["organization_id"]
             )
+            if self.classify_action:
+                action["classification"] = self.apply_state_action_rule(action)
             for entity in action["related_entities"]:
                 if "organization_id" in entity:
                     entity["organization_id"] = self.org_importer.resolve_json_id(
@@ -159,6 +173,31 @@ class BillImporter(BaseImporter):
                 )
 
         return data
+
+    def apply_state_action_rule(self, action: _JsonDict) -> list:
+        """
+        OPEN-550: the action's labels as the state's `classify_action` gives them, read exactly as `os-text-extract
+        relabel` reads a stored action (`_relabel_plan`): its text, its labels, its organization's classification as
+        the chamber and its date string, duplicates dropped. So an import and a relabel of the same line agree, and a
+        state relabelled once keeps its new labels when it is re-scraped.
+        """
+        org_id = action["organization_id"]
+        if org_id not in self.org_classification_cache:
+            self.org_classification_cache[org_id] = (
+                Organization.objects.filter(id=org_id)
+                .values_list("classification", flat=True)
+                .first()
+            )
+        return list(
+            dict.fromkeys(
+                self.classify_action(
+                    description=action["description"],
+                    classification=list(action["classification"]),
+                    chamber=self.org_classification_cache[org_id],
+                    date=action["date"],
+                )
+            )
+        )
 
     def postimport(self) -> None:
         resolve_related_bills(self.jurisdiction_id, None, self.logger)
