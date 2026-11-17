@@ -79,16 +79,16 @@ def test_state_rule_finds_nebraska():
     assert state_rule("ne", "classify_bill") is None
 
 
-def _jurisdiction(jid, name):
+def _jurisdiction(jid, name, session="109", chambers=("legislature", "executive")):
     Division.objects.get_or_create(id="ocd-division/country:us", defaults={"name": "USA"})
     j = Jurisdiction.objects.create(id=jid, name=name, division_id="ocd-division/country:us")
-    j.legislative_sessions.create(identifier="109", name="109", start_date="2025", end_date="2026")
-    for classification in ("legislature", "executive"):
+    j.legislative_sessions.create(identifier=session, name=session, start_date="2025", end_date="2026")
+    for classification in chambers:
         Organization.objects.create(jurisdiction=j, name=classification, classification=classification)
 
 
-def _scraped(actions, identifier="LB 376"):
-    bill = ScrapeBill(identifier, "109", "A test bill", chamber="legislature")
+def _scraped(actions, identifier="LB 376", session="109", chamber="legislature"):
+    bill = ScrapeBill(identifier, session, "A test bill", chamber=chamber)
     for date, chamber, labels, description in actions:
         bill.add_action(description, date, chamber=chamber, classification=list(labels))
     return bill.as_dict()
