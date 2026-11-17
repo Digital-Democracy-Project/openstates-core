@@ -3910,6 +3910,8 @@ def _computed_field_preview(changes: list) -> dict:
     from ..importers.computed_fields import update_bill_fields
     from openstates.data.models import Bill, BillAction
 
+    # Ordered as update_bill_fields reads them (by `order`); `id` only breaks ties, which the importer never leaves
+    # (it numbers a bill's actions 0..n; 0 duplicate (bill, order) pairs on the production replica, 2026-11-17).
     new_labels = {c["id"]: c["new"] for c in changes if c["kind"] == "action"}
     bill_ids = {c["bill_id"] for c in changes if c["kind"] == "action"}
     actions: dict = {}
@@ -3992,8 +3994,9 @@ def relabel(
     ddp-sync) see it: hence the silent window. Both the dry run and the commit report how many bills each computed
     field changes on (OPEN-615).
 
-    A bill whose own label alone changes is written **without** moving `updated_at`, as `relabel-non-bills` does. That
-    label is stored downstream: ddp-sync copies a bill's `classification` into its knowledge-base text ("Type:",
+    A bill whose own label changes and none of whose actions' labels do is written **without** moving `updated_at`, as
+    `relabel-non-bills` does (when its actions change too, `updated_at` moves as above). That label is stored
+    downstream: ddp-sync copies a bill's `classification` into its knowledge-base text ("Type:",
     `ingestion/sources/openstates.py`) and metadata (`ingestion/metadata.py`) when it ingests the bill, and finds
     changed bills through `updated_since`. So ddp-sync keeps the old type for these
     bills until their next real update; a state ticket that changes bill labels (Virginia's, OPEN-545) says how that

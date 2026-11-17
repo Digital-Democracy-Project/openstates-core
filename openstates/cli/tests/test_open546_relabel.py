@@ -457,7 +457,12 @@ def test_the_dry_run_and_the_commit_count_each_computed_field_that_really_change
 
 
 def test_a_field_an_older_import_left_stale_is_counted_too(mi, tmp_path):
-    _settled(mi, latest_action_description="stale", first_action_date="2024-12-31")
+    _settled(
+        mi,
+        latest_action_description="stale",
+        first_action_date="2024-12-31",
+        latest_action_date="2024-12-31",
+    )
     before = _fields(mi)
 
     dry = _counts(_ok("--dry-run"), "would change")
@@ -465,13 +470,12 @@ def test_a_field_an_older_import_left_stale_is_counted_too(mi, tmp_path):
     after = _fields(mi)
 
     assert dry == committed == _changed(before, after)
-    assert committed == dict(
-        latest_passage_date=1,
-        latest_action_description=1,
-        first_action_date=1,
-        latest_action_date=0,
+    assert committed == dict.fromkeys(FIELDS, 1)
+    assert (after["first_action_date"], after["latest_action_date"], after["latest_action_description"]) == (
+        "2025-01-23",
+        "2025-02-04",
+        "REFERRED TO COMMITTEE ON REGULATORY AFFAIRS",
     )
-    assert after["latest_action_description"] == "REFERRED TO COMMITTEE ON REGULATORY AFFAIRS"
 
 
 def test_a_bill_label_change_alone_changes_no_computed_field(va, tmp_path):
