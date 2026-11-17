@@ -776,11 +776,13 @@ _PROCEDURAL_DOCUMENT_NOTE_PATTERNS: dict[str, "re.Pattern"] = {
     # "A10: AMT-24-V-5", "A1: s391-asu-15-v-3"). OPEN-366 left the amendment text in because no stage rule
     # placed it; since OPEN-540 a version that cannot be placed counts as full text (Ramon, 2026-11-16), so
     # api-v3 served these 206 papers as bill texts and the website showed each as an empty "What changed"
-    # step. Read on the production replica (2026-11-17, North Carolina 2025): 53 stamp pages + 206
-    # amendment texts have this shape; none of the 5,947 real versions does (Edition N 3,233, Filed 2,343,
+    # step. Only a numbered paper takes any suffix; the un-numbered one stays the stamp page "A: Amendment"
+    # alone. Read on the production replica (2026-11-17, every North Carolina session: 2025 and 2025E1):
+    # 53 stamp-page notes (54 stored documents) + 206 amendment texts have this shape; none of the 5,947
+    # real versions does (Edition N 3,233, Filed 2,343,
     # Ratified 165, SL N-N 159, Adopted 29, Resolution N-N 18). Their diffs do not change: with no stage
     # they were already outside the comparison chain. Stored rows: `recompute-diff-order nc --flags-only`.
-    "North Carolina": re.compile(r"\AA([1-9]\d*)?: .+\Z", re.IGNORECASE),
+    "North Carolina": re.compile(r"\A(?:A[1-9]\d*: .+|A: Amendment)\Z", re.IGNORECASE),
     "Alabama": re.compile(
         r"\A(?:.+\bamendment( offered)?|" + _AL_FLOOR_MOTION_PAPER + r")\Z", re.IGNORECASE
     ),

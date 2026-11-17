@@ -505,6 +505,9 @@ def test_is_procedural_document_north_carolina_amendment_papers(note):
         "Resolution 2025-12",
         # Amendments are numbered from 1; a zero is not an NC shape.
         "A0: Amendment",
+        # Only a NUMBERED paper takes any suffix; the un-numbered form is the stamp page alone.
+        "A: Filed",
+        "A: Edition 2",
     ],
 )
 def test_is_procedural_document_north_carolina_does_not_exclude_real_text(note):
