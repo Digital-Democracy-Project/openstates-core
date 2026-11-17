@@ -475,32 +475,49 @@ def test_note_stage_north_carolina_rules_do_not_widen(note):
         "A49: Amendment",
         # Two real un-numbered ones exist (whole text "A" and "A A"), both with a stored diff.
         "A: Amendment",
+        # OPEN-594: the amendment text itself, coded by the clerk's amendment number. Real notes
+        # from the production replica (2026-11-17), every code shape seen there.
+        "A1: ABR-9-V-1",
+        "A1: ABB-54-V-2",
+        "A1: ABKE-21-V-5",
+        "A10: AMT-24-V-5",
+        "A8: ACE-16-V-4",
+        "A1: ABAXFR-56-V-3",
+        "A1: s391-asu-15-v-3",
     ],
 )
-def test_is_procedural_document_north_carolina_amendment_stamp_pages(note):
+def test_is_procedural_document_north_carolina_amendment_papers(note):
     assert is_procedural_document("North Carolina", note) is True
+    # the value the archiver stores, and api-v3 serves as is_bill_version / is_full_text
+    assert is_bill_version("North Carolina", note) is False
 
 
 @pytest.mark.parametrize(
     "note",
     [
-        # The adjacent family that must stay as it is: real amendment text, coded by the
-        # clerk's amendment number, already outside the lineage because no stage rule claims it.
-        "A1: ABR-9-V-1",
-        "A1: ABB-54-V-2",
-        "A1: ABKE-21-V-5",
-        # Real full-text versions.
+        # Real full-text versions: every shape of North Carolina's 5,947 other notes (2026-11-17).
         "Filed",
         "Edition 1",
         "Edition 2",
         ("Ratified"),
         "SL 2025-14",
+        "Adopted",
+        "Resolution 2025-12",
         # Amendments are numbered from 1; a zero is not an NC shape.
         "A0: Amendment",
+        # Only a NUMBERED paper takes any suffix; the un-numbered form is the stamp page alone.
+        "A: Filed",
+        "A: Edition 2",
     ],
 )
 def test_is_procedural_document_north_carolina_does_not_exclude_real_text(note):
     assert is_procedural_document("North Carolina", note) is False
+    assert is_bill_version("North Carolina", note) is True
+
+
+def test_north_carolina_amendment_papers_are_only_north_carolinas():
+    # the pattern is keyed on the state: another state's "A1: ..." note is untouched
+    assert is_procedural_document("Georgia", "A1: ABR-9-V-1") is False
 
 
 def test_is_procedural_document_north_carolina_entry_is_north_carolina_only():
