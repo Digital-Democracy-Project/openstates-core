@@ -18,6 +18,11 @@ Finance Substitute HTMLs clean to the same text, so only the baseline id moves.
 Finance Substitute and "Finance and Appropriations Substitute" tie on `_version_sort_key`, so which comes first is the
 order the versions arrive in (row order for the recompute, `bill.versions.all()` for the archiver). That is not this
 rule; the tests keep the replica's version order (first row id) on both paths.
+
+OPEN-593 since orders Virginia's substitutes by LIS file number (Subcommittee #2, Finance, then Finance and
+Appropriations), which moves every comparison stored here. The stored comparisons were made in the order before it, and
+these tests are about which document of a version is the baseline, not about the version order, so they keep that order
+(`_pre_open593_version_order`); test_open593_va_substitute_order.py covers the new one.
 """
 
 import csv
@@ -38,6 +43,7 @@ from openstates.cli.text_extract import (
 from openstates.cli.tests.test_open224_procedural_documents import _archive
 from openstates.cli.tests.test_text_extract import _make_bill
 from openstates.data.models import BillVersionDocument
+from openstates.utils.version_ordering import version_sort_key
 
 REAL = json.loads((Path(__file__).parent / "fixtures" / "open578_va_hb854.json").read_text())
 FILES = "https://lis.blob.core.windows.net/files/"
@@ -49,6 +55,17 @@ MOVES = {
     FILES + "1100765.HTML": (FILES + "1098529.HTML", FILES + "1100769.HTML"),
 }
 CHANGED = {FILES + "1100764.PDF"}  # the one stored comparison whose text changes
+
+
+@pytest.fixture(autouse=True)
+def _pre_open593_version_order():
+    """The version order the stored comparisons were made in: Virginia's key before OPEN-593 (no file number, the
+    substitutes' notes' own ordinals), so the tied versions keep the order they arrive in (see the docstring)."""
+    with mock.patch(
+        "openstates.cli.text_extract._version_sort_key",
+        lambda note, date, urls=(), origin=None, jurisdiction_name=None: version_sort_key(note, date, (), origin),
+    ):
+        yield
 
 
 def _plain_docs():
