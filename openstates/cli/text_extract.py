@@ -4120,22 +4120,6 @@ def relabel(
         click.secho(f"  change list: {list_path}", fg=color)
 
 
-def _manifest_newest_first(manifest_path: str, state: str) -> typing.Optional[bool]:
-    """The state's `actions.newest_first` in ddp-open-states' jurisdictions.yaml, or None when the file, the
-    state or the value is missing (the caller refuses then, the same as for false)."""
-    import yaml
-
-    try:
-        with open(manifest_path) as f:
-            manifest = yaml.safe_load(f) or {}
-    except OSError:
-        return None
-    value = ((manifest.get(state.lower()) or {}).get("actions") or {}).get(
-        "newest_first"
-    )
-    return value if isinstance(value, bool) else None
-
-
 def _date_direction(dates: typing.List[str]) -> str:
     """How a bill's stored action dates run, in stored order (day only: one source stamps a time, one doesn't)."""
     days = [d[:10] for d in dates]
@@ -4179,20 +4163,6 @@ def _date_direction(dates: typing.List[str]) -> str:
     default=None,
     help="write one CSV row per bill that would change (old and new action order); required with --commit",
 )
-@click.option(
-    "--manifest",
-    "manifest_path",
-    default=lambda: os.environ.get("DDP_JURISDICTIONS_MANIFEST", "jurisdictions.yaml"),
-    show_default="$DDP_JURISDICTIONS_MANIFEST or ./jurisdictions.yaml",
-    help="ddp-open-states' jurisdictions.yaml, read for the state's actions.newest_first",
-)
-@click.option(
-    "--even-if-manifest-says-oldest-first",
-    "override_manifest",
-    is_flag=True,
-    default=False,
-    help="run although the manifest's actions.newest_first is false or missing for this state",
-)
 def reverse_action_order(
     state: str,
     session: str = None,
@@ -4200,12 +4170,14 @@ def reverse_action_order(
     undo: bool = False,
     expect: int = None,
     list_path: str = None,
-    manifest_path: str = "jurisdictions.yaml",
-    override_manifest: bool = False,
 ) -> None:
     """
     Plan PLAN-state-specific-handling §6 Phase 2: once a state's scraper stores actions oldest first, its stored
-    history is reversed in the same silent window as the manifest flag flip, so one state never holds both orders.
+    history is reversed in the same silent window, so one state never holds both orders.
+
+    It reads no per-state label (OPEN-544 removed the manifest's `actions.newest_first` and this command's check of
+    it): the bill's own dates and its mark decide. The dry run's date-direction counts are the evidence a state is
+    stored newest first, and `--expect` holds the commit to that count.
 
     A bill is reversed unless it already carries `ACTIONS_REVERSED_KEY` (an earlier commit reversed it), has fewer
     than two actions, or its dates already run oldest first. Same-day and mixed-date bills follow the state's
@@ -4220,16 +4192,6 @@ def reverse_action_order(
         raise click.ClickException(
             "--commit needs --list FILE: that file is the record of what changed"
         )
-    if not undo and not override_manifest:
-        newest_first = _manifest_newest_first(manifest_path, state)
-        if newest_first is not True:
-            said = "missing" if newest_first is None else "false"
-            raise click.ClickException(
-                f"{state}: actions.newest_first is {said} in {manifest_path}; its actions are not stored newest "
-                "first by the manifest's account, so nothing is reversed (--even-if-manifest-says-oldest-first "
-                "to run anyway)"
-            )
-
     init_django()
     # Imported here, after init_django(): the importers load the Django models at import time, and a module-level
     # import made every os-text-extract command (archive included) fail before Django was set up.
