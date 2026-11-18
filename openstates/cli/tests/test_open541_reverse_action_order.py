@@ -1,7 +1,8 @@
 """OPEN-541: `os-text-extract reverse-action-order <state>` reverses a state's stored action order.
 
 PLAN-state-specific-handling §6 Phase 2: a scraper fix stores a state's actions oldest first from then on, and
-this pass reverses the history already stored, in the same silent window as the manifest flag flip.
+this pass reverses the history already stored, in a silent window. Since OPEN-544 it reads no per-state label: the
+bills' own dates and the per-bill mark decide.
 
 The bills are real ones from the Mac replica (2026-11-14), in their stored order: Louisiana HB 100 (2026),
 Nebraska LB 100 (109th), North Carolina HB 100 (2025), all newest first, and US HR 10022 (118th), three actions
@@ -100,17 +101,6 @@ def _fresh(bill):
     return Bill.objects.get(pk=bill.pk)
 
 
-def _manifest(tmp_path, **flags):
-    path = tmp_path / "jurisdictions.yaml"
-    path.write_text(
-        "".join(
-            f"{state}:\n  name: x\n  actions:\n    newest_first: {str(value).lower()}\n"
-            for state, value in flags.items()
-        )
-    )
-    return str(path)
-
-
 def _run(*args, jid=LA, state="la"):
     with mock.patch("openstates.cli.text_extract.init_django"), mock.patch(
         "openstates.cli.text_extract.abbr_to_jid", return_value=jid
@@ -122,11 +112,6 @@ def _ok(*args, **kwargs):
     result = _run(*args, **kwargs)
     assert result.exit_code == 0, result.output
     return result.output
-
-
-@pytest.fixture
-def manifest(tmp_path):
-    return _manifest(tmp_path, la=True, ne=True, nc=True, us=True, al=False)
 
 
 @pytest.fixture
@@ -158,14 +143,12 @@ def _snapshot(bill):
     ],
 )
 def test_commit_stores_each_real_bill_reversed_with_the_same_count(
-    db, tmp_path, manifest, jid, name, state, identifier, actions, shape
+    db, tmp_path, jid, name, state, identifier, actions, shape
 ):
     bill = _bill(jid, name, identifier, actions)
     listing = tmp_path / "changes.csv"
 
-    out = _ok(
-        "--commit", "--manifest", manifest, "--list", str(listing), jid=jid, state=state
-    )
+    out = _ok("--commit", "--list", str(listing), jid=jid, state=state)
     assert not (tmp_path / "changes.csv.partial").exists()
 
     assert f"[COMMITTED] reversed=1 actions={len(actions)}" in out
@@ -180,11 +163,11 @@ def test_commit_stores_each_real_bill_reversed_with_the_same_count(
     assert row["old_dates"].split(";") == [d for d, _ in actions]
 
 
-def test_the_dry_run_counts_lists_and_writes_nothing(la_bill, manifest, tmp_path):
+def test_the_dry_run_counts_lists_and_writes_nothing(la_bill, tmp_path):
     before = _snapshot(la_bill)
     listing = tmp_path / "dry.csv"
 
-    out = _ok("--dry-run", "--manifest", manifest, "--list", str(listing))
+    out = _ok("--dry-run", "--list", str(listing))
 
     assert "la: [DRY RUN] reversed=1 actions=6" in out
     assert _snapshot(la_bill) == before
@@ -201,13 +184,11 @@ def test_the_dry_run_counts_lists_and_writes_nothing(la_bill, manifest, tmp_path
     ],
 )
 def test_a_second_run_changes_nothing(
-    db, manifest, tmp_path, jid, name, state, identifier, actions
+    db, tmp_path, jid, name, state, identifier, actions
 ):
     bill = _bill(jid, name, identifier, actions)
     _ok(
         "--commit",
-        "--manifest",
-        manifest,
         "--list",
         str(tmp_path / "1.csv"),
         jid=jid,
@@ -217,8 +198,6 @@ def test_a_second_run_changes_nothing(
 
     out = _ok(
         "--commit",
-        "--manifest",
-        manifest,
         "--list",
         str(tmp_path / "2.csv"),
         jid=jid,
@@ -231,12 +210,12 @@ def test_a_second_run_changes_nothing(
 
 
 def test_a_bill_already_stored_oldest_first_or_with_one_action_is_left_alone(
-    db, manifest, tmp_path
+    db, tmp_path
 ):
     rescraped = _bill(LA, "Louisiana", "HB 100", list(reversed(LA_HB100)))
     single = _bill(LA, "Louisiana", "HB 101", LA_HB100[-1:])
 
-    out = _ok("--commit", "--manifest", manifest, "--list", str(tmp_path / "c.csv"))
+    out = _ok("--commit", "--list", str(tmp_path / "c.csv"))
 
     assert (
         "reversed=0 actions=0 skipped_already_oldest_first=1 skipped_single_action=1"
@@ -248,48 +227,77 @@ def test_a_bill_already_stored_oldest_first_or_with_one_action_is_left_alone(
 
 
 @pytest.mark.parametrize(
-    "flags, said",
-    [({"la": False}, "false"), ({"ne": True}, "missing"), ({}, "missing")],
+    "manifest_text",
+    [
+        None,  # no manifest at all
+        "la:\n  name: Louisiana\n",  # today's manifest: no actions block
+        "la:\n  name: Louisiana\n  actions:\n    newest_first: false\n",  # the removed label, saying false
+    ],
 )
-def test_it_refuses_unless_the_manifest_says_newest_first(
-    la_bill, tmp_path, flags, said
+def test_it_reads_no_label_the_bills_own_dates_decide(
+    la_bill, tmp_path, monkeypatch, manifest_text
 ):
-    manifest = _manifest(tmp_path, **flags) if flags else str(tmp_path / "absent.yaml")
+    # OPEN-544: the manifest's actions.newest_first is gone, and the command no longer refuses a state for lack of it.
+    # Whatever a jurisdictions.yaml in reach says, a newest-first bill is reversed and its mark set.
+    monkeypatch.chdir(tmp_path)
+    if manifest_text is not None:
+        (tmp_path / "jurisdictions.yaml").write_text(manifest_text)
+        monkeypatch.setenv(
+            "DDP_JURISDICTIONS_MANIFEST", str(tmp_path / "jurisdictions.yaml")
+        )
+    else:
+        monkeypatch.delenv("DDP_JURISDICTIONS_MANIFEST", raising=False)
 
-    result = _run("--commit", "--manifest", manifest, "--list", str(tmp_path / "c.csv"))
+    out = _ok("--commit", "--list", str(tmp_path / "c.csv"))
 
-    assert result.exit_code != 0
-    assert f"actions.newest_first is {said}" in result.output
-    assert _stored(la_bill) == LA_HB100
-    # explicitly overridden, it runs
-    out = _ok(
-        "--commit",
-        "--manifest",
-        manifest,
-        "--list",
-        str(tmp_path / "c.csv"),
-        "--even-if-manifest-says-oldest-first",
-    )
-    assert "reversed=1" in out
+    assert "[COMMITTED] reversed=1 actions=6" in out
     assert _stored(la_bill) == list(reversed(LA_HB100))
+    assert _fresh(la_bill).extras[ACTIONS_REVERSED_KEY] is True
 
 
-def test_the_manifest_is_found_through_the_environment(la_bill, tmp_path, monkeypatch):
-    monkeypatch.setenv("DDP_JURISDICTIONS_MANIFEST", _manifest(tmp_path, la=False))
+@pytest.mark.parametrize(
+    "option",
+    [["--manifest", "jurisdictions.yaml"], ["--even-if-manifest-says-oldest-first"]],
+)
+def test_the_removed_label_options_are_gone(la_bill, tmp_path, option):
+    result = _run("--dry-run", *option)
 
-    result = _run("--dry-run")
+    assert result.exit_code == 2 and "No such option" in result.output
+    assert _stored(la_bill) == LA_HB100
 
-    assert result.exit_code != 0 and "actions.newest_first is false" in result.output
+
+def test_no_core_code_reads_the_removed_label():
+    # OPEN-544 acceptance: no code reads the manifest's actions.newest_first. "newest_first" stays only as the name of
+    # a date shape (`_date_direction`); any read of it as a key or a manifest path fails here.
+    import pathlib
+    import re
+
+    import openstates
+    from openstates.cli import text_extract
+
+    assert not hasattr(text_extract, "_manifest_newest_first")
+    read = re.compile(
+        r"""(get\(\s*|\[\s*|manifest_value\([^)]*)["'](actions\.)?newest_first["']"""
+    )
+    root = pathlib.Path(openstates.__file__).parent
+    readers = [
+        f"{path.relative_to(root)}:{n}"
+        for path in root.rglob("*.py")
+        if "tests" not in path.relative_to(root).parts
+        for n, line in enumerate(path.read_text().splitlines(), 1)
+        if read.search(line)
+    ]
+    assert readers == []
 
 
-def test_commit_needs_a_change_list_file(la_bill, manifest):
-    result = _run("--commit", "--manifest", manifest)
+def test_commit_needs_a_change_list_file(la_bill):
+    result = _run("--commit")
 
     assert result.exit_code != 0 and "--commit needs --list FILE" in result.output
     assert _stored(la_bill) == LA_HB100
 
 
-def test_the_latest_action_is_recomputed_from_the_new_order(db, manifest, tmp_path):
+def test_the_latest_action_is_recomputed_from_the_new_order(db, tmp_path):
     # NC HB 100's two newest actions share a day; the stored latest is whichever comes last in order
     bill = _bill(NC, "North Carolina", "HB 100", NC_HB100)
     from openstates.importers.computed_fields import update_bill_fields
@@ -299,8 +307,6 @@ def test_the_latest_action_is_recomputed_from_the_new_order(db, manifest, tmp_pa
 
     out = _ok(
         "--commit",
-        "--manifest",
-        manifest,
         "--list",
         str(tmp_path / "c.csv"),
         jid=NC,
@@ -312,32 +318,25 @@ def test_the_latest_action_is_recomputed_from_the_new_order(db, manifest, tmp_pa
     assert _fresh(bill).first_action_date == "2025-02-11"
 
 
-def test_undo_puts_the_old_order_back(la_bill, manifest, tmp_path):
+def test_undo_puts_the_old_order_back(la_bill, tmp_path):
     la_bill.extras = {"keep": "me"}
     la_bill.save()
-    _ok("--commit", "--manifest", manifest, "--list", str(tmp_path / "c.csv"))
+    _ok("--commit", "--list", str(tmp_path / "c.csv"))
 
-    # the undo is the rollback inside the silent window, after the flag flip: it reads no manifest
-    flipped = _manifest(tmp_path, la=False)
-    assert "[DRY RUN] restored=1 actions=6" in _ok("--undo", "--manifest", flipped)
+    # the undo is the rollback inside the silent window
+    assert "[DRY RUN] restored=1 actions=6" in _ok("--undo")
     assert _stored(la_bill) == list(reversed(LA_HB100))
 
-    out = _ok(
-        "--undo", "--commit", "--manifest", flipped, "--list", str(tmp_path / "u.csv")
-    )
+    out = _ok("--undo", "--commit", "--list", str(tmp_path / "u.csv"))
 
     assert "[COMMITTED] restored=1 actions=6" in out
     assert _stored(la_bill) == LA_HB100
     assert _fresh(la_bill).extras == {"keep": "me"}
 
 
-def test_expect_aborts_before_any_write_when_the_count_moved(
-    la_bill, manifest, tmp_path
-):
+def test_expect_aborts_before_any_write_when_the_count_moved(la_bill, tmp_path):
     result = _run(
         "--commit",
-        "--manifest",
-        manifest,
         "--list",
         str(tmp_path / "c.csv"),
         "--expect",
@@ -351,19 +350,17 @@ def test_expect_aborts_before_any_write_when_the_count_moved(
     assert list(tmp_path.glob("c.csv*")) == []
 
 
-def test_another_state_is_never_touched(la_bill, manifest, tmp_path):
+def test_another_state_is_never_touched(la_bill, tmp_path):
     ne = _bill(NE, "Nebraska", "LB 100", NE_LB100)
 
-    _ok("--commit", "--manifest", manifest, "--list", str(tmp_path / "c.csv"))
+    _ok("--commit", "--list", str(tmp_path / "c.csv"))
 
     assert _stored(ne) == NE_LB100
     assert ACTIONS_REVERSED_KEY not in _fresh(ne).extras
 
 
 @pytest.mark.parametrize("drift", ["actions", "extras"])
-def test_a_bill_that_changes_mid_run_aborts_the_whole_run(
-    db, manifest, tmp_path, drift
-):
+def test_a_bill_that_changes_mid_run_aborts_the_whole_run(db, tmp_path, drift):
     first, last = sorted(
         [
             _bill(LA, "Louisiana", "HB 100", LA_HB100),
@@ -394,9 +391,7 @@ def test_a_bill_that_changes_mid_run_aborts_the_whole_run(
     with mock.patch.object(
         BillAction.objects, "bulk_update", side_effect=bulk_update_then_drift
     ):
-        result = _run(
-            "--commit", "--manifest", manifest, "--list", str(tmp_path / "c.csv")
-        )
+        result = _run("--commit", "--list", str(tmp_path / "c.csv"))
 
     assert result.exit_code != 0
     assert "changed since it was read; rolled back, nothing written" in result.output
@@ -408,14 +403,12 @@ def test_a_bill_that_changes_mid_run_aborts_the_whole_run(
 
 
 def test_a_change_list_that_cannot_take_its_name_says_the_commit_is_done(
-    la_bill, manifest, tmp_path
+    la_bill, tmp_path
 ):
     with mock.patch(
         "openstates.cli.text_extract.os.replace", side_effect=OSError("disk full")
     ):
-        result = _run(
-            "--commit", "--manifest", manifest, "--list", str(tmp_path / "c.csv")
-        )
+        result = _run("--commit", "--list", str(tmp_path / "c.csv"))
 
     assert result.exit_code != 0
     assert "COMMITTED, but the change list could not take its name" in result.output

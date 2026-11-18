@@ -10,8 +10,8 @@ returns the manifest's value, or the fallback when the file, the state or the fi
 it is not of the fallback's type (a manifest that says `"ten"` never reaches a scraper). Never raises.
 
 The file is `$DDP_JURISDICTIONS_MANIFEST` (the scrapers image sets it to /app/jurisdictions.yaml), else
-`./jurisdictions.yaml`, the same rule as `os-text-extract reverse-action-order --manifest`. The manifest's own validator
-(ddp-open-states validate_jurisdictions.py) checks each field's shape; this only reads.
+`./jurisdictions.yaml`. The manifest's own validator (ddp-open-states validate_jurisdictions.py) checks each field's
+shape; this only reads.
 """
 import logging
 import os
