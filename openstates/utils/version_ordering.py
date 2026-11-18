@@ -347,6 +347,16 @@ def note_stage(note: str) -> tuple:
         return (STAGE_CHAMBER_PASSAGE, 0.0)
     if re.fullmatch(r"[hs][br] \d+(?:ex)?/ap\*?", ga):
         return (STAGE_FINAL_PASSAGE, 0.0)
+    # OPEN-635: New Mexico's "Final Version" (nmlegis.gov's Sessions/<session>/final/<bill>.PDF) is
+    # the bill's last text, as finally passed: 127 of the 129 bills that have one also have a
+    # governor's action. The other 2 (SB 32, SB 179) were postponed indefinitely after committee and
+    # their Final Version is the introduced text (SB 179's adds a co-sponsor), so it is still their last text and
+    # still ranks last. It had no stage, so 129 of New Mexico's 1,112 versions were outside the lineage
+    # (Mac replica, 2026-11-18). Final passage, as North Carolina's "Ratified". Last for the same reason as the
+    # blocks above, and an exact name: only New Mexico has it (every distinct stored note in every
+    # jurisdiction on the Mac replica, 2026-11-18; Nebraska's "Final Reading" is a different name).
+    if lowered == "final version":
+        return (STAGE_FINAL_PASSAGE, 0.0)
 
     return (STAGE_UNKNOWN, 0.0)
 
