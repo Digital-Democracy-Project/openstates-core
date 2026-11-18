@@ -1296,3 +1296,54 @@ def test_georgia_version_without_a_site_number_ranks_first_then_by_stage():
     no_number_ap = version_sort_key("HB 223/AP*", "", ["https://example.com/hb223.pdf"], None, "Georgia")
     no_number_intro = version_sort_key("LC 50 1032-EC/a", "", [], None, "Georgia")
     assert no_number_intro < no_number_ap < with_number
+
+
+# --- OPEN-635: New Mexico's "Final Version" -----------------------------------------------------
+
+# Every distinct New Mexico version name on the Mac replica (2026-11-18, 1,112 versions), with the
+# stage each one has. "Final Version" (129) had none before OPEN-635; the others already classified
+# and keep their stage: "introduced version" (812), "Amendments in Context" (84) and the committee
+# substitutes "<committee code> substitute".
+NM_NOTES = [
+    ("introduced version", (STAGE_INTRODUCED, 0.0)),
+    ("Final Version", (STAGE_FINAL_PASSAGE, 0.0)),
+    ("Amendments in Context", (STAGE_AMENDMENT, 0.0)),
+] + [
+    (f"{code} substitute", (STAGE_AMENDMENT, 0.0))
+    for code in (
+        "JC", "HC", "PP", "FC", "JU", "AF", "CT", "PA", "EN", "CE", "RU", "TR", "CP", "EC", "RD",
+        "FS", "CO",
+    )
+]
+
+
+@pytest.mark.parametrize(("note", "expected"), NM_NOTES)
+def test_note_stage_new_mexico_vocabulary(note, expected):
+    assert note_stage(note) == expected
+    # No New Mexico note is a procedural paper: every one stays in the lineage.
+    assert is_bill_version("New Mexico", note) is True
+
+
+def test_new_mexico_final_version_ranks_after_introduced_and_amendments():
+    # HB 108 (2026 regular session) has these three versions; the passed text comes last.
+    in_true_order = ["introduced version", "Amendments in Context", "Final Version"]
+    keys = [version_sort_key(n, "", [], None, "New Mexico") for n in in_true_order]
+    assert keys == sorted(keys)
+    assert keys[-1] > keys[-2]
+    # In the lineage at final passage, not last only because an unknown stage sorts last.
+    assert keys[-1][0] == STAGE_FINAL_PASSAGE
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        # Close shapes stay unknown: the rule is New Mexico's exact name, nothing wider.
+        "Final",
+        "Final Versions",
+        "Final Version Draft",
+        "Draft Final Version",
+        "Version",
+    ],
+)
+def test_note_stage_new_mexico_final_version_rule_does_not_widen(note):
+    assert note_stage(note)[0] == STAGE_UNKNOWN
