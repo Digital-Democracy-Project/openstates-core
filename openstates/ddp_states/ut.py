@@ -8,10 +8,12 @@ rule is live, but not its chamber correction (below).
 Utah's action text starts with the chamber that acted ("House/ ", "Senate/ "), and the scraper's categorizer tags
 `passage` on lines that pass nothing. On the Mac replica (2026-11-17, sessions 2026 and 2025S2):
 
-* `passage` is the chamber's floor vote only on "<chamber>/ passed 3rd reading" (1,030 lines, all tagged) and
+* `passage` is the chamber's floor vote only on "<chamber>/ passed 3rd reading" (1,030 lines, all tagged),
   "<chamber>/ passed 2nd & 3rd readings/ suspension" (230 lines, none tagged: the categorizer's rule for it is
-  anchored at the start of the line and never matches). The presiding officers' "signed by Speaker" and "signed by
-  President" lines (1,088) and the conference committee "Final Passage" lines (26) carry `passage` and lose it.
+  anchored at the start of the line and never matches) and "<chamber> Conference Committee - Final Passage" (26
+  lines, all tagged: each chamber's floor vote on the conference report, e.g. HB 136 (2026), House 57-13-5 and Senate
+  20-6-3, OPEN-622 comment 21427). The presiding officers' "signed by Speaker" and "signed by President" lines
+  (1,088) carry `passage` and lose it.
 * `failure` is the bill's failure only on "<chamber>/ failed" (51 lines). Failed floor amendments, substitutes and
   committee "Motion to Recommend Failed" lines (58) lose it; their other labels (`amendment-failure`) stay.
 * "to Lieutenant Governor" (36 lines, resolutions sent for filing) is not the governor's receipt of a bill, so it loses
@@ -27,7 +29,9 @@ the first (`validate_bill_stages`, 2026-11-17); with the broker keeping only the
 import re
 import typing
 
-_PASSAGE = re.compile(r"^(Senate|House)/ passed (2nd & )?3rd readings?\b", re.I)
+_PASSAGE = re.compile(
+    r"^(Senate|House)/ passed (2nd & )?3rd readings?\b|^(Senate|House) Conference Committee - Final Passage\b", re.I
+)
 _FAILURE = re.compile(r"^(Senate|House)/ failed$", re.I)
 _NOT_TO_GOVERNOR = re.compile(r"to Lieutenant Governor", re.I)
 

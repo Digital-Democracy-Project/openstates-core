@@ -38,7 +38,8 @@ UT_HB136 = [
     ("2026-03-12", "executive", ["executive-receipt"], "House/ to Governor"),
     ("2026-03-26", "executive", ["executive-signature"], "Governor Signed"),
 ]
-# the same, as Utah's rule reads them: passage on the two floor votes only, no failure on a lost substitute
+# the same, as Utah's rule reads them: passage on the four floor votes only (3rd reading, suspension, and each
+# chamber's conference final passage, OPEN-622), no failure on a lost substitute
 UT_HB136_RELABELLED = [
     ["referral-committee"],
     [],
@@ -46,8 +47,8 @@ UT_HB136_RELABELLED = [
     [],
     [],
     ["passage"],
-    [],
-    [],
+    ["passage"],
+    ["passage"],
     [],
     [],
     ["executive-receipt"],
@@ -67,12 +68,19 @@ def _rule(description, labels, chamber="lower", date="2026-03-06"):
         ("Senate/ passed 3rd reading", ["passage"], ["passage"]),
         ("Senate/ passed 2nd & 3rd readings/ suspension", [], ["passage"]),
         ("House/ passed 2nd & 3rd readings/ suspension", ["reading-3"], ["reading-3", "passage"]),
-        # presiding officers' signatures and conference committee lines pass nothing
+        # each chamber's vote on the conference report is a floor vote (OPEN-622: HB 136, House 57-13-5, Senate
+        # 20-6-3), whatever office the line names
+        ("Senate Conference Committee - Final Passage [Conference Committee]", ["passage"], ["passage"]),
+        ("Senate Conference Committee - Final Passage [House Speaker]", ["passage"], ["passage"]),
+        ("House Conference Committee - Final Passage [Senate President]", ["passage"], ["passage"]),
+        ("House Conference Committee - Final Passage [Conference Committee]", [], ["passage"]),
+        # presiding officers' signatures and the other conference committee lines pass nothing
         ("House/ signed by Speaker/ sent for enrolling", ["passage"], []),
         ("Senate/ signed by President/ returned to House", ["passage"], []),
         ("House/ signed by Speaker/ returned to Senate", ["passage"], []),
-        ("Senate Conference Committee - Final Passage [Conference Committee]", ["passage"], []),
-        ("Senate Conference Committee - Final Passage [House Speaker]", ["passage"], []),
+        ("House Motion to Adopt Joint Conference Comm Rpt [Conference Committee]", ["passage"], []),
+        ("Senate Conference Committee Appointed [Conference Committee]", ["referral-committee"], ["referral-committee"]),
+        ("Conference Committee Report [Conference Committee]", ["passage"], []),
         # a third reading that is not a vote, and a bill sent on, get no passage
         ("Senate/ 2nd & 3rd readings/ suspension", [], []),
         ("House/ 3rd reading", [], []),
@@ -133,8 +141,8 @@ def test_the_importer_applies_utahs_rule_and_a_rescrape_changes_nothing():
 
     BillImporter(UT).import_item(_scraped(UT_HB136, "HB 136", session="2026", chamber="lower"))
     assert _stored("HB 136") == UT_HB136_RELABELLED
-    # the bill's passage date is its last floor vote, not the Speaker's signature
-    assert Bill.objects.get().latest_passage_date == "2026-03-05"
+    # the bill's passage date is its last floor vote (the conference final passage), not the Speaker's signature
+    assert Bill.objects.get().latest_passage_date == "2026-03-06"
 
     _, what = BillImporter(UT).import_item(_scraped(UT_HB136, "HB 136", session="2026", chamber="lower"))
     assert what == "noop"
@@ -149,8 +157,8 @@ def test_relabel_ut_now_runs_and_finds_the_stored_lines_the_rule_changes():
     result = _relabel_dry_run("ut")
 
     assert result.exit_code == 0, result.output
-    assert "[DRY RUN] actions changed=6 unchanged=6" in result.output
-    assert "action: passage -> (none): 4" in result.output
+    assert "[DRY RUN] actions changed=4 unchanged=8" in result.output
+    assert "action: passage -> (none): 2" in result.output
     assert "action: failure -> (none): 1" in result.output
     assert "action: (none) -> passage: 1" in result.output
     assert _labels(bill) == before
