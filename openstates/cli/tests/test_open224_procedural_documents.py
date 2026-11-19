@@ -364,3 +364,47 @@ def test_a_washington_resolution_with_a_substitute_gets_a_diff():
     assert docs["Resolution"].diff_from_previous_version is None
     assert docs["Substitute Resolution"].diff_from_previous_version
     assert "volunteers and staff" in docs["Substitute Resolution"].diff_from_previous_version
+
+
+@pytest.mark.django_db
+def test_new_mexico_amendments_in_context_leaves_the_lineage():
+    """OPEN-637: New Mexico's real names. "Amendments in Context" (here SB 301's stored text, the
+    page header only) takes no comparison, is stored with is_bill_version False, and is not the
+    baseline: "Final Version" is compared with "introduced version". The recompute path agrees."""
+    jid = "ocd-jurisdiction/country:us/state:nm/government"
+    bill = _make_bill(jid=jid, jurisdiction_name="New Mexico")
+    bill.classification = ["bill"]
+    bill.save()
+    for note, url in (
+        ("introduced version", INTRODUCED_URL),
+        ("Amendments in Context", PROCEDURAL_URL),
+        ("Final Version", ENROLLED_URL),
+    ):
+        bill.versions.create(note=note, date="").links.create(url=url, media_type="application/pdf")
+    header_only = "57TH LEGISLATURE - STATE OF NEW MEXICO - SECOND SESSION, 2026\n"
+    _archive(
+        bill,
+        {INTRODUCED_URL: INTRODUCED_TEXT, PROCEDURAL_URL: header_only, ENROLLED_URL: ENROLLED_TEXT},
+    )
+    docs = {d.version_note: d for d in BillVersionDocument.objects.filter(bill=bill)}
+
+    aic = docs["Amendments in Context"]
+    assert aic.is_bill_version is False
+    assert aic.diff_from_previous_version is None
+    # Kept as a document: the text is stored as extracted.
+    assert aic.raw_text == header_only and aic.is_error is False
+
+    final = docs["Final Version"]
+    assert final.is_bill_version is True
+    assert final.diff_baseline_id == docs["introduced version"].id
+    assert "-Section 1. A court may consider" in final.diff_from_previous_version
+    assert "+Section 1. A court shall consider" in final.diff_from_previous_version
+    assert "LEGISLATURE" not in final.diff_from_previous_version
+
+    result = recomputed_diffs_for_documents(
+        list(BillVersionDocument.objects.filter(bill=bill).order_by("id")),
+        jurisdiction_name="New Mexico",
+        is_bill=True,
+        bill_identifier="HB 1",
+    )
+    assert result["changed"] == []

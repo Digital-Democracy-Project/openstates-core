@@ -215,3 +215,49 @@ def test_recompute_saves_a_changed_diff_and_a_filled_flag_for_the_same_document(
     assert intro.diff_from_previous_version is None and intro.is_bill_version is True
     assert "shall consider" in final.diff_from_previous_version
     assert final.is_bill_version is True
+
+
+@pytest.mark.django_db
+def test_recompute_takes_new_mexico_amendments_in_context_out_of_stored_lineage():
+    """OPEN-637: rows saved before the rule (every document a version, "Amendments in Context" compared
+    and the baseline of "Final Version") are corrected by `recompute-diff-order nm --commit`."""
+    bill = _make_bill(jid="ocd-jurisdiction/country:us/state:nm/government", jurisdiction_name="New Mexico")
+    bill.classification = ["bill"]
+    bill.save()
+    header_only = "57TH LEGISLATURE - STATE OF NEW MEXICO - SECOND SESSION, 2026\n"
+
+    def mk(note, url, text, diff=None, baseline=None):
+        return BillVersionDocument.objects.create(
+            bill=bill,
+            version_note=note,
+            version_date="",
+            source_url=url,
+            media_type="application/pdf",
+            raw_text=text,
+            archive_location="s3://bucket/key",
+            diff_from_previous_version=diff,
+            diff_baseline_id=baseline,
+            is_bill_version=True,
+        )
+
+    intro = mk("introduced version", "https://x.test/i.pdf", INTRODUCED)
+    aic = mk("Amendments in Context", "https://x.test/a.pdf", header_only, "-whole bill removed", intro.id)
+    final = mk("Final Version", "https://x.test/f.pdf", FINAL_READING, "+whole bill added", aic.id)
+
+    with mock.patch("openstates.cli.text_extract.init_django"), mock.patch(
+        "openstates.cli.text_extract.abbr_to_jid",
+        return_value=bill.legislative_session.jurisdiction_id,
+    ):
+        result = CliRunner().invoke(recompute_diff_order, ["nm", "--commit"])
+    assert result.exit_code == 0, result.output
+    assert "is_bill_version: set=0 changed=1 not_a_version=1" in result.output
+
+    for doc in (intro, aic, final):
+        doc.refresh_from_db()
+    assert aic.is_bill_version is False
+    assert aic.diff_from_previous_version is None and aic.diff_baseline_id is None
+    assert aic.raw_text == header_only  # kept as a document
+    assert final.is_bill_version is True and final.diff_baseline_id == intro.id
+    assert "-Section 1. A court may consider the award." in final.diff_from_previous_version
+    assert "+Section 1. A court shall consider the award." in final.diff_from_previous_version
+    assert intro.is_bill_version is True and intro.diff_from_previous_version is None

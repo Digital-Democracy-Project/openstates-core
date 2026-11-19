@@ -1320,8 +1320,35 @@ NM_NOTES = [
 @pytest.mark.parametrize(("note", "expected"), NM_NOTES)
 def test_note_stage_new_mexico_vocabulary(note, expected):
     assert note_stage(note) == expected
-    # No New Mexico note is a procedural paper: every one stays in the lineage.
-    assert is_bill_version("New Mexico", note) is True
+    # OPEN-637: "Amendments in Context" is the one New Mexico note that is not a bill version;
+    # every other one stays in the lineage.
+    assert is_bill_version("New Mexico", note) is (note != "Amendments in Context")
+
+
+# --- OPEN-637: New Mexico's "Amendments in Context" is not a bill version ------------------------
+
+
+def test_new_mexico_amendments_in_context_is_not_a_bill_version():
+    assert is_procedural_document("New Mexico", "Amendments in Context") is True
+    # SB 301's stored text (Mac replica): the page header only, the rest is drawn as shapes.
+    header_only = "57TH LEGISLATURE - STATE OF NEW MEXICO - SECOND SESSION, 2026\n"
+    assert is_bill_version("New Mexico", "Amendments in Context", "A test bill", header_only) is False
+
+
+@pytest.mark.parametrize(
+    ("jurisdiction_name", "note"),
+    [
+        # Exact name, exact case, New Mexico only, like Virginia's entries.
+        ("New Mexico", "amendments in context"),
+        ("New Mexico", "Amendment in Context"),
+        ("New Mexico", "Amendments in Context (Draft)"),
+        ("Virginia", "Amendments in Context"),
+        ("Michigan", "Amendments in Context"),
+    ],
+)
+def test_new_mexico_amendments_in_context_rule_does_not_widen(jurisdiction_name, note):
+    assert is_procedural_document(jurisdiction_name, note) is False
+    assert is_bill_version(jurisdiction_name, note) is True
 
 
 def test_new_mexico_final_version_ranks_after_introduced_and_amendments():
