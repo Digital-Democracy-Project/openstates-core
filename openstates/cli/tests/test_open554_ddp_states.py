@@ -13,6 +13,7 @@ def test_a_state_is_found_by_its_name_and_a_non_state_finds_nothing():
     assert ddp_states.state_rule_for_name(None, "clean_text") is None
     assert ddp_states.state_rule_for_name("", "clean_text") is None
     assert ddp_states.state_rule_for_name("Alaska", "clean_text") is None  # a state with no file
+    assert ddp_states.state_rule_for_name("north carolina", "clean_text") is None  # the exact name, as before
 
 
 def test_shared_helpers_are_not_states():

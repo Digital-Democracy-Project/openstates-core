@@ -49,10 +49,12 @@ def state_rule_for_name(jurisdiction_name: typing.Optional[str], name: str) -> t
     if not jurisdiction_name:
         return None
     try:
-        abbr = lookup(name=jurisdiction_name).abbr
+        state = lookup(name=jurisdiction_name)
     except KeyError:
         return None
-    return state_rule(abbr, name)
+    if state.name != jurisdiction_name:  # lookup ignores case; the generic code always matched the exact name
+        return None
+    return state_rule(state.abbr, name)
 
 
 def state_values(attr: str) -> typing.Dict[str, typing.Any]:
