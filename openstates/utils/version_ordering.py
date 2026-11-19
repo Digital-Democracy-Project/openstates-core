@@ -63,6 +63,9 @@ import datetime
 import re
 import typing
 
+from openstates.ddp_states import NON_BILL_AMENDMENT, state_values_by_name  # noqa: F401 (NON_BILL_AMENDMENT: re-exported)
+from openstates.ddp_states.al import _AL_FLOOR_MOTION_PAPER
+
 STAGE_INTRODUCED = 0
 STAGE_AMENDMENT = 1
 STAGE_CHAMBER_PASSAGE = 2
@@ -95,15 +98,7 @@ _STAMPED_AMENDED_RE = re.compile(
 )
 _STAMPED_AMENDED_EPOCH = datetime.date(2000, 1, 1)
 
-# OPEN-525: Alabama's floor-motion papers. The scraper adds the paper behind each floor motion on an
-# amendment or substitute (the action's amdSubFileUrl) as a version named after the action, e.g.
-# "Orr motion to Table - Adopted Voice Vote", "Motion to Adopt - Adopted Roll Call 407". All 453 such
-# notes on the Mac replica (2026-11-10, session 2026rs) have this shape and no other state has a note
-# of it. Used twice below: note_stage() ranks them as amendment papers and Alabama's entry in
-# _PROCEDURAL_DOCUMENT_NOTE_PATTERNS says they are not bill versions (see the evidence there).
-_AL_FLOOR_MOTION_PAPER = (
-    r"(?:.+ )?motion to (?:adopt|table) ?- ?(?:adopted|lost) (?:roll call [1-9]\d*|voice vote)"
-)
+# OPEN-554: _AL_FLOOR_MOTION_PAPER (Alabama's floor-motion paper names) lives in openstates/ddp_states/al.py.
 
 
 def extract_ordinal(note: str) -> float:
@@ -473,28 +468,19 @@ def _az_chamber_ordinal(note: str, origin: str, ordinal: float) -> float:
     return base
 
 
-# OPEN-569: Alabama names an amendment or substitute version after the action that first carries its
-# file ("Tillman 1st Substitute Offered", "Jefferson County Legislation 1st Substitute", "Reported Out
-# of Committee Second House"), so the note cannot place it in time: HB 315's Senate committee
-# substitute (2026-04-02) and the House floor substitute (2026-03-17) share a stage and an ordinal,
-# and both rank before the House's Engrossed bill. From OPEN-569 the Alabama scraper dates every
-# version from the action that carries it, so for Alabama the date leads and the note's stage only
-# breaks a same-day tie (a floor substitute adopted, then the bill engrossed, the same day). An
-# Alabama version without a date ranks first, as every Alabama version did before (all undated).
-_DATE_ORDERED_JURISDICTIONS = frozenset({"Alabama"})
+# OPEN-554: a state orders its versions by date (Alabama, OPEN-569) or by document number (Georgia, OPEN-602) when its
+# file says so (`VERSION_ORDER` in openstates/ddp_states/<st>.py; the evidence is there).
+_DATE_ORDERED_JURISDICTIONS = frozenset(
+    name for name, order in state_values_by_name("VERSION_ORDER").items() if order == "date"
+)
 
-# OPEN-602: Georgia's versions carry no date and its names do not place them in time: a House
-# substitute to a Senate bill ("LC 49 2362S/hss") comes after "As Passed Senate", and a bill can
-# have two Senate committee substitutes with nothing in the names to order them (HB 61 of 2025-26).
-# The site's own document number does: it rises as documents are published. Measured on the 123
-# bills with two or more real versions in the 2026 special session (govbot copy) and a 313-bill
-# 2025-26 sample from Georgia's web service (2026-11-16): ordered by it, 0 bills break the chamber
-# sequence their status history shows (introduced, origin chamber's substitute, its passage, the
-# other chamber's substitute, its passage, "/AP" last). Georgia's own "Version" field is not an
-# order (SB 3EX: floor amendments 2 and 4, As introduced 6), so it is not used. For Georgia the
-# document number leads and the note's stage breaks a tie; a version without a Georgia link
-# number ranks first.
-_DOCUMENT_ORDERED_JURISDICTIONS = frozenset({"Georgia"})
+# OPEN-593 (moved by OPEN-554): a state whose amendment-stage versions are ordered by document number alone.
+_AMENDMENTS_BY_DOCUMENT_NUMBER = frozenset(
+    name for name, flag in state_values_by_name("AMENDMENTS_BY_DOCUMENT_NUMBER").items() if flag
+)
+_DOCUMENT_ORDERED_JURISDICTIONS = frozenset(
+    name for name, order in state_values_by_name("VERSION_ORDER").items() if order == "document"
+)
 
 
 def version_sort_key(
@@ -538,7 +524,7 @@ def version_sort_key(
     stage, ordinal = note_stage(note)
     if origin:
         ordinal = _az_chamber_ordinal(note, origin, ordinal)
-    if jurisdiction_name == "Virginia" and stage == STAGE_AMENDMENT:
+    if jurisdiction_name in _AMENDMENTS_BY_DOCUMENT_NUMBER and stage == STAGE_AMENDMENT:
         ordinal = 0.0  # OPEN-593: Virginia's substitutes are ordered by LIS file number alone
     has_date = bool(date) and bool(_DATE_RE.match(date))
     if jurisdiction_name in _DATE_ORDERED_JURISDICTIONS:
@@ -619,27 +605,9 @@ def version_sort_key(
 # --commit` for Virginia, a separate, already-existing, explicitly-authorized operator action
 # (out of this PR's scope by design). Until that recompute runs, the AC5 count query above will
 # keep returning 380/563, not 0 -- that is expected, not a sign this fix didn't work.
-_PROCEDURAL_DOCUMENT_NOTES: dict[str, frozenset] = {
-    "Virginia": frozenset(
-        {
-            "Conference Report",
-            "Governor's Recommendation",
-            "Governor's Recommendations",
-            "Governor's Veto Explanation",
-        }
-    ),
-    # OPEN-637: New Mexico's "Amendments in Context" is the legislature's marked-up working copy
-    # (the bill with adopted amendments marked in place), not a version of the bill; Ramon,
-    # 2026-11-19: keep it as a document, out of the version list (option A, no OCR). Most of these
-    # PDFs are "Microsoft: Print To PDF" files whose text is drawn as shapes, so they extract to the
-    # page header only ("57TH LEGISLATURE - STATE OF NEW MEXICO - SECOND SESSION, 2026"). Mac
-    # replica, 2026 regular session (2026-11-18): n=85 min=64 median=72 max=183,360, 79 under 200
-    # characters, all 85 with a stored comparison. In the dev LegBot sample (OPEN-618) every
-    # changelog into one said the bill was emptied, and 9 summaries failed because one was the
-    # newest text. The official texts stay versions: "introduced version", the committee
-    # substitutes ("JC substitute", ...) and "Final Version" (OPEN-635).
-    "New Mexico": frozenset({"Amendments in Context"}),
-}
+# OPEN-554: each state's entry lives in its own file, openstates/ddp_states/<st>.py (`PROCEDURAL_DOCUMENT_NOTES`), keyed here by
+# the state's name as before.
+_PROCEDURAL_DOCUMENT_NOTES: dict[str, frozenset] = state_values_by_name("PROCEDURAL_DOCUMENT_NOTES")
 
 # Utah (pattern match -- an open-ended numbered series, not a fixed list): "House Amendment
 # <N>" / "Senate Amendment <N>" are each a short excerpt of just that specific amendment, not
@@ -783,102 +751,9 @@ _PROCEDURAL_DOCUMENT_NOTES: dict[str, frozenset] = {
 # shape through; nothing else changes. On the 2026-10-22 live sample 213 of 1,480 version notes
 # (430 bills) carried the suffix and it moved neither note_stage() nor version_sort_key() for any of
 # them; this pattern was the only end-anchored matcher it broke.
-_PROCEDURAL_DOCUMENT_NOTE_PATTERNS: dict[str, "re.Pattern"] = {
-    "Utah": re.compile(
-        r"\A("
-        r"(house|senate) amendment [1-9]\d*"
-        r"|comparison to (original bill|sub #[1-9]\d*)"
-        r"|amended excerpts \d{1,2}/\d{1,2}/\d{4} \d{1,2}:\d{2}:\d+"
-        r")\Z",
-        re.IGNORECASE,
-    ),
-    "Virginia": re.compile(r"\A.+\bamendments?\Z", re.IGNORECASE),
-    # OPEN-594: every "A<n>: ..." paper, the stamp page above and the amendment text ("A1: ABR-9-V-1",
-    # "A10: AMT-24-V-5", "A1: s391-asu-15-v-3"). OPEN-366 left the amendment text in because no stage rule
-    # placed it; since OPEN-540 a version that cannot be placed counts as full text (Ramon, 2026-11-16), so
-    # api-v3 served these 206 papers as bill texts and the website showed each as an empty "What changed"
-    # step. Only a numbered paper takes any suffix; the un-numbered one stays the stamp page "A: Amendment"
-    # alone. Read on the production replica (2026-11-17, every North Carolina session: 2025 and 2025E1):
-    # 53 stamp-page notes (54 stored documents) + 206 amendment texts have this shape; none of the 5,947
-    # real versions does (Edition N 3,233, Filed 2,343,
-    # Ratified 165, SL N-N 159, Adopted 29, Resolution N-N 18). Their diffs do not change: with no stage
-    # they were already outside the comparison chain. Stored rows: `recompute-diff-order nc --flags-only`.
-    "North Carolina": re.compile(r"\A(?:A[1-9]\d*: .+|A: Amendment)\Z", re.IGNORECASE),
-    "Alabama": re.compile(
-        r"\A(?:.+\bamendment( offered)?|" + _AL_FLOOR_MOTION_PAPER + r")\Z", re.IGNORECASE
-    ),
-    "Arizona": re.compile(r"\A(house|senate) - .+\bfailed( \(\d+\))?\Z", re.IGNORECASE),
-    # OPEN-486: Nebraska's amendment papers -- "<introducer or committee> AM<N>" (committee and
-    # introducer amendments), "<introducer> FA<N>" (floor amendments) and "Enrollment and Review
-    # ER<N>" (the enrollment-and-review amendment) -- are not versions of the bill (Ramon,
-    # 2026-11-04: "Leave them out"). The real versions stay: Introduced, Final Reading, Slip Law.
-    # Read on the production replica (2026-11-04): all 790 of Nebraska's non-version documents
-    # (AM 513, FA 103, ER 174 by these shapes) match, none of the 2,592 real versions does, and no
-    # other state has a note of any of these shapes. 76% (AM), 69% (FA) and 93% (ER) of their
-    # stored comparisons replaced the whole document (OPEN-479 Stage 4 trial). Prospective only: a
-    # Nebraska recompute-diff-order applies it to stored diffs, a separate, authorised step.
-    "Nebraska": re.compile(
-        r"\A(?:.+ (?:am|fa)[1-9]\d*|enrollment and review er[1-9]\d*)\Z", re.IGNORECASE
-    ),
-    # OPEN-491: Louisiana's amendment papers -- "<House|Senate> Committee Amendment, #<N>, <name>,
-    # <Draft|Adopted|Proposed>", "<House|Senate> Floor Amendment, #<N>, <name>, <Adopted|Proposed|
-    # Rejected|Withdrawn>", "<House|Senate> [Floor ]Legislative Bureau Amendment, #<N>, <name>,
-    # <Adopted|Proposed>" and "Senate Floor Bureau Note, #<N>, <name>, Adopted" -- are not versions
-    # of the bill (Ramon, 2026-11-04: "Leave them out"), the same call as Nebraska's. The real
-    # versions stay: Original, Engrossed, Reengrossed, Enrolled, Act. The name can itself hold a
-    # comma ("Owen, Robert"), so it is matched loosely between the number and the closing word.
-    # Read on the production replica (2026-11-04): all 3,328 of Louisiana's non-version documents
-    # match (committee 2,273, floor 811, bureau amendments 147, bureau notes 97), none of the
-    # 7,140 other documents (55 of them Conference Committee Reports, OPEN-511 below) does, and
-    # no other state has a note of any of these shapes. 79% of their stored comparisons replaced the whole
-    # document (OPEN-480 Stage 4 trial). Their stage is untouched (committee, floor and bureau
-    # amendments already rank as amendments; the bureau note stays unknown, it is not bill text).
-    # Prospective only: a Louisiana recompute-diff-order applies it to stored diffs, a separate,
-    # authorised step.
-    # OPEN-511: Louisiana's Conference Committee Reports -- "Conference Committee Report, #<N>,
-    # House <status>, Senate <status>" -- are left out too. The report is the conferees' letter
-    # listing the amendments they recommend ("recommend the following concerning the Reengrossed
-    # bill: ... AMENDMENT NO. 1 On page 1, line 2, ..."), not a re-typeset bill, so comparing a
-    # version against it double-counts changes (OPEN-480 dev LegBot sample, 2026-11-08). Read on the
-    # Mac replica (2026-11-08): 55 documents, every one of this shape (statuses Adopted, Proposed,
-    # Rejected, Withdrawn), and no other state has a note of this shape. The next real version
-    # (Enrolled, Act) now diffs against the last real version instead. Its stage is untouched.
-    "Louisiana": re.compile(
-        r"\A(?:"
-        r"(?:house|senate) committee amendment, #[1-9]\d*, .+, (?:draft|adopted|proposed)"
-        r"|(?:house|senate) floor amendment, #[1-9]\d*, .+, (?:adopted|proposed|rejected|withdrawn)"
-        r"|(?:house|senate) (?:floor )?legislative bureau amendment, #[1-9]\d*, .+, (?:adopted|proposed)"
-        r"|senate floor bureau note, #[1-9]\d*, .+, adopted"
-        r"|conference committee report, #[1-9]\d*,"
-        r" house (?:adopted|proposed|rejected|withdrawn), senate (?:adopted|proposed|rejected|withdrawn)"
-        r")\Z",
-        re.IGNORECASE,
-    ),
-    # OPEN-602: Georgia's papers that are not versions of the bill. Georgia's web service lists
-    # every document of a bill as a version, so these arrive beside the real texts:
-    #   "Local Ad" / "SB 4EX Local Ad": the newspaper notice of intent to introduce a local bill
-    #   with the author's affidavit ("NOTICE OF INTENTION TO INTRODUCE LOCAL LEGISLATION ...
-    #   AFFIDAVIT ... O.C.G.A. § 28-1-14"), 98 of the 303 names measured.
-    #   "Floor Amend 1 AM 47 0219", "Sen Floor Amend 1A", "Floor Amendment AM 64 0009": one floor
-    #   amendment, a line edit ("Amend SB 3EX (LC 47 4392) by inserting after ... on line 8"),
-    #   adopted, lost or ruled out of order, the same call as the other states' amendment papers.
-    #   "Fiscal Note", "Local Government Fiscal Note": the fiscal note; "Auditor's Certification LC
-    #   56 0399S": the state auditor's certification of a retirement bill's actuarial investigation.
-    #   Neither is bill text (judged by the name: their PDFs are only on www.legis.ga.gov, which
-    #   does not answer from the Mac). They keep no stage, as Louisiana's bureau note does.
-    # Read on the 2026 special session's own PDFs (public govbot copy) and the names of a 2025-26
-    # sample from Georgia's web service (2026-11-16); no other state has a note of these shapes.
-    # The real versions stay: "/a", "As introduced", the substitutes, "As Passed", "/AP".
-    "Georgia": re.compile(
-        r"\A\s*(?:"
-        r"(?:[hs][br]\s+\d+(?:ex)?\s+)?local\s+ad"
-        r"|(?:sen\s+)?floor\s+amend(?:ment)?(?:\s+[1-9]\d*[a-z]?)?(?:\s+am\s+\d+\s+\d+)?"
-        r"|(?:local\s+government\s+)?fiscal\s+note"
-        r"|auditor's\s+certification\s+lc\s+\d+\s+\d+s?|lc\s+\d+\s+\d+s?\s+auditor's\s+certification"
-        r")\s*\Z",
-        re.IGNORECASE,
-    ),
-}
+# OPEN-554: each state's entry lives in its own file, openstates/ddp_states/<st>.py (`PROCEDURAL_DOCUMENT_NOTE_PATTERN`), keyed here by
+# the state's name as before.
+_PROCEDURAL_DOCUMENT_NOTE_PATTERNS: dict[str, "re.Pattern"] = state_values_by_name("PROCEDURAL_DOCUMENT_NOTE_PATTERN")
 
 
 def is_procedural_document(jurisdiction_name: str, note: str) -> bool:
@@ -917,12 +792,9 @@ def is_procedural_document(jurisdiction_name: str, note: str) -> bool:
 # bill version only if its bill's title opens like a measure (An Act, a Resolve, Resolutions, a Joint
 # Resolution, a Proposal for a constitutional amendment). Matched exactly against `Jurisdiction.name`,
 # like the note tables. Measured on the Mac replica of the 194th session (2026-11-06): 3,267 of 11,872.
-_REAL_MEASURE_TITLE_PATTERNS = {
-    "Massachusetts": re.compile(
-        r"\A\s*(an act|a resolve|resolves?|resolutions?|joint resolution|proposal)\b",
-        re.IGNORECASE,
-    ),
-}
+# OPEN-554: each state's entry lives in its own file, openstates/ddp_states/<st>.py (`REAL_MEASURE_TITLE_PATTERN`), keyed here by
+# the state's name as before.
+_REAL_MEASURE_TITLE_PATTERNS = state_values_by_name("REAL_MEASURE_TITLE_PATTERN")
 
 
 # OPEN-564: a paper whose TEXT is a line edit to the bill, not the bill. Alabama names the paper behind a committee
@@ -935,9 +807,9 @@ _REAL_MEASURE_TITLE_PATTERNS = {
 # short amendment among the 200 papers the 11-15 archive re-saved as versions. The other 199 are full substitutes,
 # which stay versions (Ramon, 2026-11-15). The only versions without an enacting clause, HB 511's Engrossed and
 # Enrolled constitutional amendment, do not open with an instruction and stay versions.
-_AMENDMENT_TEXT_OPENING = {
-    "Alabama": re.compile(r"\A\s*(?:replace|delete|insert|strike|add|amend)\b", re.IGNORECASE),
-}
+# OPEN-554: each state's entry lives in its own file, openstates/ddp_states/<st>.py (`AMENDMENT_TEXT_OPENING`), keyed here by
+# the state's name as before.
+_AMENDMENT_TEXT_OPENING = state_values_by_name("AMENDMENT_TEXT_OPENING")
 _ENACTING_CLAUSE_RE = re.compile(r"\bbe\s+it\s+(?:enacted|resolved)\b", re.IGNORECASE)
 
 
@@ -1014,38 +886,17 @@ ACTIONS_REVERSED_KEY = "ddp_open541_actions_reversed"
 # ("Golf Carts", "rail and transit") are recognised by their action "Order reported favorably by
 # committee". Measured on the Mac replica of the 194th session (2026-11-09): 3,297 items fail the title
 # rule; see the OPEN-517 dry run for the counts per kind.
-NON_BILL_AMENDMENT = "amendment"  # amendment papers: not relabelled (OPEN-509 moves them; see the command)
-_NON_BILL_KIND_RULES = {
-    "Massachusetts": (
-        (NON_BILL_AMENDMENT, re.compile(r"\A\s*amendment\b", re.IGNORECASE)),
-        (
-            "communication",
-            re.compile(
-                r"\A\s*(?:(?:a|the)\s+)?communications?\s+from\b"
-                r"|\A\s*governor'?s\s+message\b"
-                r"|\A\s*so\s+much\s+of\s+the\s+message\b"
-                r"|\bmessage\s+from\b"
-                r"|\bstate\s+of\s+the\s+commonwealth\s+address\b",
-                re.IGNORECASE,
-            ),
-        ),
-        (
-            "study request",
-            re.compile(r"\A\s*study\s+order\b|\binvestigation\s+and\s+study\b", re.IGNORECASE),
-        ),
-        ("order", re.compile(r"\A\s*(?:an\s+)?order\b", re.IGNORECASE)),
-    ),
-}
-_NON_BILL_STUDY_ORDER_ACTION = {
-    "Massachusetts": re.compile(r"\A\s*order\s+reported\s+favorably\s+by\s+committee\b", re.IGNORECASE),
-}
-_NON_BILL_OTHER_ORDER = {
-    # an order not titled as one up front: "... - Extension Order", "Extension Order H.4819",
-    # "Proposed House Rules Amendment Order", a precept, a canvass of an election's votes
-    "Massachusetts": re.compile(
-        r"\border\b|\A\s*precept\b|\A\s*canvassing\s+the\s+votes\b", re.IGNORECASE
-    ),
-}
+# NON_BILL_AMENDMENT ("amendment": amendment papers, not relabelled; OPEN-509 moves them) lives in
+# openstates.ddp_states (OPEN-554) so a state's rules can name it; imported above.
+# OPEN-554: each state's entry lives in its own file, openstates/ddp_states/<st>.py (`NON_BILL_KIND_RULES`), keyed here by
+# the state's name as before.
+_NON_BILL_KIND_RULES = state_values_by_name("NON_BILL_KIND_RULES")
+# OPEN-554: each state's entry lives in its own file, openstates/ddp_states/<st>.py (`NON_BILL_STUDY_ORDER_ACTION`), keyed here by
+# the state's name as before.
+_NON_BILL_STUDY_ORDER_ACTION = state_values_by_name("NON_BILL_STUDY_ORDER_ACTION")
+# OPEN-554: each state's entry lives in its own file, openstates/ddp_states/<st>.py (`NON_BILL_OTHER_ORDER`), keyed here by
+# the state's name as before.
+_NON_BILL_OTHER_ORDER = state_values_by_name("NON_BILL_OTHER_ORDER")
 
 
 def non_bill_kind(

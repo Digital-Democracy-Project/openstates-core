@@ -57,3 +57,34 @@ def classify_action(
     if _NOT_TO_GOVERNOR.search(text):
         labels = [c for c in labels if c != "executive-receipt"]
     return labels
+
+
+# ── Version rules (moved unchanged from openstates/utils/version_ordering.py, OPEN-554) ─────────────────────────────
+
+
+PROCEDURAL_DOCUMENT_NOTE_PATTERN = re.compile(
+    r"\A("
+    r"(house|senate) amendment [1-9]\d*"
+    r"|comparison to (original bill|sub #[1-9]\d*)"
+    r"|amended excerpts \d{1,2}/\d{1,2}/\d{4} \d{1,2}:\d{2}:\d+"
+    r")\Z",
+    re.IGNORECASE,
+)
+
+
+# ── Reader choice (moved unchanged from openstates/fulltext/__init__.py's CONVERSION_FUNCTIONS, OPEN-554) ────────────
+
+
+def readers():
+    """Utah's text reader per media type; replaces upstream's entry in `fulltext.CONVERSION_FUNCTIONS`."""
+    # imported at call time: openstates.fulltext builds its reader table from this function
+    from openstates.fulltext.common import extract_line_numbered_pdf
+    from openstates.fulltext.ut import handle_utah_xml
+    return {
+        "application/pdf": extract_line_numbered_pdf,
+        # Found 2026-08-09 (OPEN-49): no text/xml entry ever existed here, upstream or in
+        # this fork -- every UT bill served as XML (3,000+) silently extracted as
+        # empty/is_error=True. See fulltext/ut.py for the actual defect (a mismatched
+        # encoding declaration in Utah's own export, not a missing-content problem).
+        "text/xml": handle_utah_xml,
+    }

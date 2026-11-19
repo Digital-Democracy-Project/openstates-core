@@ -19,7 +19,12 @@ pass refuses to write otherwise), so a second run, or a re-scrape of a re-labell
 """
 
 import importlib
+import pkgutil
 import typing
+
+# What `os-text-extract relabel-non-bills` calls an amendment paper (OPEN-517); kept here (OPEN-554) so a state's
+# rules can name it without importing the generic code that reads them.
+NON_BILL_AMENDMENT = "amendment"
 
 
 def state_rule(state: str, name: str) -> typing.Optional[typing.Callable]:
@@ -33,3 +38,42 @@ def state_rule(state: str, name: str) -> typing.Optional[typing.Callable]:
             raise
         return None
     return getattr(module, name, None)
+
+
+def state_rule_for_name(jurisdiction_name: typing.Optional[str], name: str) -> typing.Optional[typing.Callable]:
+    """`state_rule` for a state given by its name (`Jurisdiction.name`, e.g. "North Carolina"), as the text step and
+    the version rules receive it (OPEN-554). None for a name that is not a state (a test jurisdiction, the federal
+    one) or a state without that function."""
+    from openstates.metadata import lookup
+
+    if not jurisdiction_name:
+        return None
+    try:
+        state = lookup(name=jurisdiction_name)
+    except KeyError:
+        return None
+    if state.name != jurisdiction_name:  # lookup ignores case; the generic code always matched the exact name
+        return None
+    return state_rule(state.abbr, name)
+
+
+def state_values(attr: str) -> typing.Dict[str, typing.Any]:
+    """{state code: value} for every state module that defines `attr` (OPEN-554). The tables the generic code keeps
+    (not-a-version notes, version order, readers) are built from these, so a state's rule lives only in its file and
+    there is no list of states to keep. Modules whose name starts with "_" are shared helpers, not states."""
+    values = {}
+    for info in sorted(pkgutil.iter_modules(__path__), key=lambda i: i.name):
+        if info.name.startswith("_"):
+            continue
+        module = importlib.import_module(f"{__name__}.{info.name}")
+        if hasattr(module, attr):
+            values[info.name] = getattr(module, attr)
+    return values
+
+
+def state_values_by_name(attr: str) -> typing.Dict[str, typing.Any]:
+    """`state_values` keyed by the state's name (`Jurisdiction.name`, e.g. "North Carolina"), the key the version
+    rules use."""
+    from openstates.metadata import lookup
+
+    return {lookup(abbr=code).name: value for code, value in state_values(attr).items()}
