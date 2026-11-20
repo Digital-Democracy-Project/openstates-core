@@ -2,7 +2,7 @@
 import re
 
 from ..data import STATES_AND_TERRITORIES
-from ..data.states import NC, VT
+from ..data.states import NC, ND, VT
 
 
 def test_basics() -> None:
@@ -87,3 +87,12 @@ def test_everything_has_organization_id() -> None:
 def test_legacy_ids() -> None:
     assert not NC.legacy_districts
     assert len(VT.legacy_districts) == 88
+
+
+def test_nd_2022_subdistricts_are_legacy_only() -> None:
+    legacy = {d.name for d in ND.legacy_districts if d.chamber_type == "lower"}
+    assert {"9A", "9B"} <= legacy
+    current = {d.name: d.num_seats for d in ND.lower.districts}
+    assert "9A" not in current and "9B" not in current
+    assert current["9"] == 2
+    assert current["4A"] == 1 and current["4B"] == 1
