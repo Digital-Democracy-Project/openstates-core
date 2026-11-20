@@ -530,3 +530,32 @@ def test_bill_duplicate_actions_ordering():
     assert result["bill"]["insert"] == 0
     assert result["bill"]["update"] == 0
     assert result["bill"]["noop"] == 1
+
+
+@pytest.mark.django_db
+def test_related_bill_label_is_stored_replaced_and_cleared():
+    """OPEN-640: the legislature's own word for a link is stored on import; a re-scrape with another word replaces
+    it, and a re-scrape without one clears it (the scraped link always carries the key, so the importer sees the
+    change); a link with no word stores NULL."""
+    create_jurisdiction()
+    create_org()
+
+    def scrape(label_99, label_98=None):
+        bill = ScrapeBill("HB 1", "1900", "First Bill", chamber="lower")
+        bill.add_related_bill("HB 99", legislative_session="1900", relation_type="companion", label=label_99)
+        bill.add_related_bill("HB 98", legislative_session="1900", relation_type="related", label=label_98)
+        return BillImporter("jid").import_data([bill.as_dict()])
+
+    def labels():
+        return dict(Bill.objects.get().related_bills.values_list("identifier", "ddp_relation_label"))
+
+    assert scrape("Identical bill")["bill"]["insert"] == 1
+    assert labels() == {"HB 99": "Identical bill", "HB 98": None}
+
+    assert scrape("Identical bill")["bill"]["noop"] == 1
+
+    assert scrape("Similar", "Compare")["bill"]["update"] == 1
+    assert labels() == {"HB 99": "Similar", "HB 98": "Compare"}
+
+    assert scrape(None)["bill"]["update"] == 1
+    assert labels() == {"HB 99": None, "HB 98": None}

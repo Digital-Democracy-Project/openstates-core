@@ -156,6 +156,17 @@ class RelatedBill(RelatedBase):
     relation_type = models.CharField(
         max_length=100, choices=common.BILL_RELATION_TYPE_CHOICES
     )
+    ddp_relation_label = models.CharField(
+        max_length=100,
+        null=True,
+        blank=True,
+        help_text=(
+            "OPEN-640: the legislature's own word for this link, as its site shows it (\"Identical bill\", \"Similar\", "
+            "\"Compare\", \"companion bill(s) passed\"), kept beside relation_type, which stays DDP's two-value rule "
+            "(only what the legislature calls a companion is a companion). Written by a scraper that passes "
+            "add_related_bill(..., label=); null when the scraper has none, and on rows saved before this column existed."
+        ),
+    )
 
     def __str__(self):
         return "relationship of {} to {} ({})".format(
