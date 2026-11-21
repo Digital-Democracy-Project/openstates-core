@@ -352,6 +352,23 @@ def note_stage(note: str) -> tuple:
     # jurisdiction on the Mac replica, 2026-11-18; Nebraska's "Final Reading" is a different name).
     if lowered == "final version":
         return (STAGE_FINAL_PASSAGE, 0.0)
+    # OPEN-720: names of the text as a chamber agreed to, passed or adopted it, and of two kinds of enacted act. They
+    # had no stage, so the version was never a bill's latest text (US SRES 866's latest was its introduced text, not
+    # "Agreed to Senate"; Michigan HR 10's the same). Last for the same reason as the blocks above, and exact names:
+    # on the Mac replica (2026-11-21) only these jurisdictions have them, and no other note changes stage.
+    #   US (congress.gov's own version names): "Agreed to Senate" (1,021), "Received in Senate" (150: the House-passed
+    #   text as received), "Considered and Passed Senate" (38) / "... House" (1); "Private Law" (2), like "Public Law".
+    #   Michigan: "House Adopted Resolution" (284), "Senate Adopted Resolution" (136), "As Adopted by the House" (19) /
+    #   "... Senate" (17); "Local Act" (1), like "Public Act".
+    #   The US's procedural reprints ("Reference Change Senate", "Laid on Table in House", "Held at Desk Senate",
+    #   "Committee Discharged House", "Returned to the House by Unanimous Consent") name no stage and stay unknown.
+    if lowered in {
+        "agreed to senate", "received in senate", "considered and passed senate", "considered and passed house",
+        "house adopted resolution", "senate adopted resolution", "as adopted by the house", "as adopted by the senate",
+    }:
+        return (STAGE_CHAMBER_PASSAGE, 0.0)
+    if lowered in {"private law", "local act"}:
+        return (STAGE_ENACTED, 0.0)
 
     return (STAGE_UNKNOWN, 0.0)
 

@@ -584,8 +584,9 @@ def test_michigans_resolution_notes_are_untouched():
     notes, so each keeps the stage it had."""
     assert note_stage("House Introduced Resolution")[0] == STAGE_INTRODUCED
     assert note_stage("Senate Introduced Resolution")[0] == STAGE_INTRODUCED
-    assert note_stage("House Adopted Resolution")[0] == STAGE_UNKNOWN
-    assert note_stage("Senate Adopted Resolution")[0] == STAGE_UNKNOWN
+    # OPEN-720 gives the adopted texts their own stage (chamber passage), not Washington's introduced one.
+    assert note_stage("House Adopted Resolution")[0] == STAGE_CHAMBER_PASSAGE
+    assert note_stage("Senate Adopted Resolution")[0] == STAGE_CHAMBER_PASSAGE
 
 
 # --- OPEN-361: Utah's stamped "Amended <M/D/YYYY H:MM:N>" is ranked by date and hour ----------
@@ -1373,4 +1374,81 @@ def test_new_mexico_final_version_ranks_after_introduced_and_amendments():
     ],
 )
 def test_note_stage_new_mexico_final_version_rule_does_not_widen(note):
+    assert note_stage(note)[0] == STAGE_UNKNOWN
+
+
+# --- OPEN-720: the text as a chamber agreed to, passed or adopted it (US, Michigan) ----------------
+
+# The ten names that had no stage (Mac replica, 2026-11-21), each from a real bill. No other stored note in any
+# jurisdiction changes stage.
+OPEN720_NOTES = [
+    ("Agreed to Senate", (STAGE_CHAMBER_PASSAGE, 0.0)),  # US SRES 866 (119th)
+    ("Received in Senate", (STAGE_CHAMBER_PASSAGE, 0.0)),  # US HR 7730 (119th)
+    ("Considered and Passed Senate", (STAGE_CHAMBER_PASSAGE, 0.0)),
+    ("Considered and Passed House", (STAGE_CHAMBER_PASSAGE, 0.0)),
+    ("Private Law", (STAGE_ENACTED, 0.0)),
+    ("House Adopted Resolution", (STAGE_CHAMBER_PASSAGE, 0.0)),  # Michigan HR 10 (2025-2026)
+    ("Senate Adopted Resolution", (STAGE_CHAMBER_PASSAGE, 0.0)),  # Michigan SR 61 (2025-2026)
+    ("As Adopted by the House", (STAGE_CHAMBER_PASSAGE, 0.0)),
+    ("As Adopted by the Senate", (STAGE_CHAMBER_PASSAGE, 0.0)),
+    ("Local Act", (STAGE_ENACTED, 0.0)),
+]
+
+
+@pytest.mark.parametrize(("note", "expected"), OPEN720_NOTES)
+def test_note_stage_agreed_passed_adopted_and_acts(note, expected):
+    assert note_stage(note) == expected
+
+
+def _latest(jurisdiction_name, versions):
+    placed = [(n, d) for n, d in versions if note_stage(n)[0] != STAGE_UNKNOWN]
+    return max(placed, key=lambda v: version_sort_key(v[0], v[1], [], None, jurisdiction_name))[0]
+
+
+def test_us_sres_866_latest_text_is_the_one_the_senate_agreed_to():
+    versions = [("Introduced in Senate", "2026-09-17"), ("Agreed to Senate", "2026-09-30")]
+    assert _latest("United States", versions) == "Agreed to Senate"
+
+
+def test_us_hr_7730_received_in_senate_sits_between_engrossed_and_public_law():
+    in_true_order = [
+        ("Introduced in House", "2026-02-26"),
+        ("Reported in House", "2026-08-27"),
+        ("Engrossed in House", "2026-09-16"),
+        ("Received in Senate", "2026-09-17"),
+        ("Enrolled Bill", ""),
+        ("Public Law", "2026-11-11"),
+    ]
+    keys = [version_sort_key(n, d, [], None, "United States") for n, d in in_true_order]
+    assert keys == sorted(keys)
+    assert _latest("United States", in_true_order) == "Public Law"
+
+
+def test_michigan_resolutions_rank_introduced_then_adopted_then_enrolled():
+    # Michigan HR 10 and SR 61 (2025-2026); Michigan versions carry no date, so the stage alone orders them.
+    assert _latest("Michigan", [("House Introduced Resolution", ""), ("House Adopted Resolution", "")]) == (
+        "House Adopted Resolution"
+    )
+    in_true_order = ["Senate Introduced Resolution", "Senate Adopted Resolution", "Senate Enrolled Resolution"]
+    keys = [version_sort_key(n, "", [], None, "Michigan") for n in in_true_order]
+    assert keys == sorted(keys)
+    assert keys[0] < keys[1] < keys[2]
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        # The US's procedural reprints name no stage and stay unknown; close shapes of the new names too.
+        "Reference Change Senate",
+        "Laid on Table in House",
+        "Held at Desk Senate",
+        "Committee Discharged House",
+        "Returned to the House by Unanimous Consent",
+        "Agreed to Senate Draft",
+        "Adopted",
+        "Private",
+        "Local Acts",
+    ],
+)
+def test_note_stage_open720_rules_do_not_widen(note):
     assert note_stage(note)[0] == STAGE_UNKNOWN
