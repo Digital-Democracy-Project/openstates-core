@@ -15,6 +15,10 @@ legacy_districts = {
     "nd": [
         District("4", "lower", "ocd-division/country:us/state:nd/sldl:4", 2),
         District("9", "lower", "ocd-division/country:us/state:nd/sldl:9", 2),
+        # House subdistricts 9A and 9B, drawn in 2022 and replaced by a two-seat district 9 for
+        # the 2024 election; the 2022-2024 House roles of their members still name them
+        District("9A", "lower", "ocd-division/country:us/state:nd/sldl:9a", 1),
+        District("9B", "lower", "ocd-division/country:us/state:nd/sldl:9b", 1),
     ],
     "ma": [
         # These Districts were Retired in 2022

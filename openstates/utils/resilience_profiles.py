@@ -24,6 +24,7 @@ import typing
 from dataclasses import dataclass
 
 from .cookie_provider import CookieProvider
+from .ddp_manifest import manifest_value
 from .mi_cookies import MI_COOKIE_PROVIDER
 from .fl_cookies import FL_COOKIE_PROVIDER
 
@@ -50,8 +51,19 @@ class WafResilienceProfile:
 def _mi_requests_per_minute() -> int:
     # OPEN-21: MI's rate limit has been env-configurable since it was first tuned -- preserved
     # here rather than hardcoding the default, so an operator overriding MI_SCRAPELIB_RPM today
-    # doesn't lose that override under the generalized profile.
-    return int(os.environ.get("MI_SCRAPELIB_RPM", 10))
+    # doesn't lose that override under the generalized profile. OPEN-555: the env var still wins;
+    # otherwise the manifest's waf.requests_per_minute, else 10 (the constant until step 4).
+    return int(
+        os.environ.get(
+            "MI_SCRAPELIB_RPM", manifest_value("mi", "waf.requests_per_minute", 10)
+        )
+    )
+
+
+# OPEN-555 (PLAN-state-specific-handling Phase 4): the numbers below are read from ddp-open-states'
+# jurisdictions.yaml (waf.requests_per_minute, waf.max_consecutive_blocks); each literal is the
+# fallback while a host or image still runs a manifest without the field, deleted only after both
+# hosts and the image carry it.
 
 
 RESILIENCE_PROFILES: typing.Dict[str, WafResilienceProfile] = {
@@ -60,7 +72,9 @@ RESILIENCE_PROFILES: typing.Dict[str, WafResilienceProfile] = {
         netloc="legislature.mi.gov",
         cookie_provider=MI_COOKIE_PROVIDER,
         requests_per_minute=_mi_requests_per_minute(),
-        circuit_breaker_max_consecutive_blocks=3,
+        circuit_breaker_max_consecutive_blocks=manifest_value(
+            "mi", "waf.max_consecutive_blocks", 3
+        ),
         retry_excluded_exceptions=(),  # set on the scraper via _resilience_retry_excluded_exceptions;
         # kept here at () rather than duplicating scrapelib.HTTPError/ConnectionError imports in
         # this module -- MIResilientScraperMixin still sets these directly (see its own docstring)
@@ -77,8 +91,10 @@ RESILIENCE_PROFILES: typing.Dict[str, WafResilienceProfile] = {
         # fl_cookies.py's warm-up already fixes. Starts at the platform default's own conservative
         # sibling (MI's tuned value) as a precaution until real traffic says otherwise, not a
         # measured threshold.
-        requests_per_minute=10,
-        circuit_breaker_max_consecutive_blocks=3,
+        requests_per_minute=manifest_value("fl", "waf.requests_per_minute", 10),
+        circuit_breaker_max_consecutive_blocks=manifest_value(
+            "fl", "waf.max_consecutive_blocks", 3
+        ),
         retry_excluded_exceptions=(),
         user_agent_rotation_enabled=False,
     ),
