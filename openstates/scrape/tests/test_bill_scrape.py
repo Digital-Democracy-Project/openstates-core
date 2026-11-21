@@ -113,8 +113,29 @@ def test_add_related_bill():
         "identifier": "HB 2020",
         "legislative_session": "2011A",
         "relation_type": "companion",
+        "ddp_relation_label": None,
     }
     b.validate()
+
+
+def test_add_related_bill_with_the_legislatures_label():
+    """OPEN-640: the legislature's own word for the link is kept beside DDP's relation_type."""
+    b = toy_bill()
+    b.add_related_bill(
+        identifier="HB 2020", legislative_session="2011A", relation_type="companion", label="Identical bill"
+    )
+    assert b.related_bills[0]["ddp_relation_label"] == "Identical bill"
+    assert b.related_bills[0]["relation_type"] == "companion"
+    b.validate()
+
+
+def test_a_related_bill_label_longer_than_its_column_is_refused():
+    b = toy_bill()
+    b.add_related_bill(
+        identifier="HB 2020", legislative_session="2011A", relation_type="related", label="x" * 101
+    )
+    with pytest.raises(ScrapeValueError):
+        b.validate()
 
 
 def test_add_sponsor():

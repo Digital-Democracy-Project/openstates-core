@@ -144,6 +144,8 @@ schema = {
                         "enum": common.BILL_RELATION_TYPES,
                         "type": "string",
                     },
+                    # OPEN-640: the legislature's own word for the link; null when the scraper has none.
+                    "ddp_relation_label": {"type": ["string", "null"], "maxLength": 100},
                 },
                 "type": "object",
             },

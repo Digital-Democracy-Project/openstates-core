@@ -132,7 +132,7 @@ class Bill(SourceMixin, AssociatedLinkMixin, BaseModel):
             }
         )
 
-    def add_related_bill(self, identifier, legislative_session, relation_type):
+    def add_related_bill(self, identifier, legislative_session, relation_type, label=None):
         # Normalize identifier before saving
         identifier = transformers.fix_bill_id(identifier)
 
@@ -142,6 +142,10 @@ class Bill(SourceMixin, AssociatedLinkMixin, BaseModel):
                 "identifier": identifier,
                 "legislative_session": legislative_session,
                 "relation_type": relation_type,
+                # OPEN-640: the legislature's own word for the link ("Identical bill", "Similar"). Always written,
+                # None when the scraper has none: the importer compares only the keys a scraped link carries, so a
+                # missing key would never clear a label stored by an earlier scrape.
+                "ddp_relation_label": label,
             }
         )
 
