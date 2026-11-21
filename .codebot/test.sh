@@ -22,6 +22,28 @@
 
 set -euo pipefail
 
+# --- AGENTS-250: the Mac's test Docker VM, never production's ------------------
+# On the Mac, Docker is two VMs: production's (CAMS, api-v3, the dev broker and its copy of production) and a test
+# VM on /Volumes/DDP-HOT for every throwaway test stack and image build. ddp-agents'
+# deployment/scripts/colima-test.sh is the one place that knows where the test VM is; when it exists, this script
+# takes DOCKER_HOST from it and stops (exit 2) if the test VM is not available, instead of building on production.
+# Elsewhere (no such file) DOCKER_HOST is left as it is. DDP_COLIMA_TEST_SH overrides the path; empty turns it off.
+COLIMA_TEST_SH="${DDP_COLIMA_TEST_SH-/Users/agentsmith/Developer/repos/ddp-agents/deployment/scripts/colima-test.sh}"
+if [[ -n "${COLIMA_TEST_SH}" && -r "${COLIMA_TEST_SH}" ]]; then
+  if ! WHY="$(bash "${COLIMA_TEST_SH}" check 2>&1)"; then
+    echo "ERROR: the test Docker VM is not available, so nothing was built: ${WHY}" >&2
+    exit 2
+  fi
+  DOCKER_HOST="$(bash "${COLIMA_TEST_SH}" docker-host)"
+  export DOCKER_HOST
+  if ! docker info >/dev/null 2>&1; then
+    echo "ERROR: the test Docker VM is set up but not running (${DOCKER_HOST}), so nothing was built." >&2
+    echo "       Start it with: ${COLIMA_TEST_SH} colima start" >&2
+    exit 2
+  fi
+  echo ">>> Docker: the test VM (${DOCKER_HOST})"
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.test.yml"
 
