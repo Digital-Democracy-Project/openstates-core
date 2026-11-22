@@ -1452,3 +1452,56 @@ def test_michigan_resolutions_rank_introduced_then_adopted_then_enrolled():
 )
 def test_note_stage_open720_rules_do_not_widen(note):
     assert note_stage(note)[0] == STAGE_UNKNOWN
+
+
+# --- OPEN-773: Kentucky's "Current/Final" ------------------------------------------------------------
+
+# Every Kentucky version name on the Mac replica (2026RS, 2026-11-22, 2,561 versions): "Introduced" (1,707),
+# "Current/Final" (652, no stage before OPEN-773) and "Acts Chapter <N>" (202, one per enacted bill).
+KY_NOTES = [
+    ("Introduced", (STAGE_INTRODUCED, 0.0)),
+    ("Current/Final", (STAGE_CHAMBER_PASSAGE, 0.0)),
+    ("Acts Chapter 4", (STAGE_ENACTED, 4.0)),
+    ("Acts Chapter 153", (STAGE_ENACTED, 153.0)),
+]
+
+
+@pytest.mark.parametrize(("note", "expected"), KY_NOTES)
+def test_note_stage_kentucky_vocabulary(note, expected):
+    assert note_stage(note) == expected
+    assert is_bill_version("Kentucky", note) is True
+
+
+@pytest.mark.parametrize(
+    ("bill", "stored_order", "true_order"),
+    [
+        # Real Kentucky 2026RS bills as stored on the Mac replica (no version carries a date).
+        ("HB 1", ["Acts Chapter 4", "Introduced", "Current/Final"], ["Introduced", "Current/Final", "Acts Chapter 4"]),
+        (
+            "SB 1",
+            ["Current/Final", "Acts Chapter 153", "Introduced"],
+            ["Introduced", "Current/Final", "Acts Chapter 153"],
+        ),
+        ("HB 168", ["Introduced", "Current/Final"], ["Introduced", "Current/Final"]),
+        ("HR 1", ["Current/Final", "Introduced"], ["Introduced", "Current/Final"]),
+    ],
+)
+def test_kentucky_versions_rank_introduced_then_current_final_then_acts_chapter(bill, stored_order, true_order):
+    ranked = sorted(stored_order, key=lambda n: version_sort_key(n, "", [], None, "Kentucky"))
+    assert ranked == true_order
+    # The latest text: the act for an enacted bill, Current/Final (in the lineage, not unknown) otherwise.
+    assert _latest("Kentucky", [(n, "") for n in stored_order]) == true_order[-1]
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        # Close shapes stay unknown: the rule is Kentucky's exact name, nothing wider.
+        "Current",
+        "Current Final",
+        "Current/Final Draft",
+        "Current Version",
+    ],
+)
+def test_note_stage_kentucky_current_final_rule_does_not_widen(note):
+    assert note_stage(note)[0] == STAGE_UNKNOWN
