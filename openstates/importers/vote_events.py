@@ -118,9 +118,11 @@ class VoteEventImporter(BaseImporter):
                 )
 
         for vote in data["votes"]:
+            # OPEN-767: the vote's own date settles a name two members share in the session
             vote["voter_id"] = self.resolve_person(
                 vote["voter_id"], session.start_date, session.end_date,
-                json.loads(organization_classification[1:]).get("classification", None)
+                json.loads(organization_classification[1:]).get("classification", None),
+                date=data["start_date"],
             )
         return data
 
