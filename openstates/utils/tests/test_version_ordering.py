@@ -1873,3 +1873,65 @@ def test_missouri_versions_rank_by_the_bills_own_chamber(bill, true_order):
     for stored_order in (true_order, list(reversed(true_order))):
         ranked = sorted(stored_order, key=lambda n: version_sort_key(n, "", [], origin, "Missouri"))
         assert ranked == true_order
+
+
+# --- OPEN-804: Hawaii's drafts ------------------------------------------------------------------------------------
+
+# The scraper names Hawaii's texts by the draft each file is (scrapers/hi/bills.py): the bill number alone
+# "Introduced", HD<N> "House Draft N", SD<N> "Senate Draft N", CD<N> "Conference Draft N". "House Draft" and
+# "Senate Draft" needed a rule; "Conference Draft" already had one ("conference").
+@pytest.mark.parametrize(
+    ("note", "expected"),
+    [
+        ("Introduced", (STAGE_INTRODUCED, 0.0)),
+        ("House Draft 1", (STAGE_AMENDMENT, 1.0)),
+        ("House Draft 3", (STAGE_AMENDMENT, 3.0)),
+        ("Senate Draft 2", (STAGE_AMENDMENT, 2.0)),
+        ("Conference Draft 1", (STAGE_CHAMBER_PASSAGE, 1.25)),
+        ("Conference Draft 2", (STAGE_CHAMBER_PASSAGE, 2.25)),
+    ],
+)
+def test_note_stage_hawaii_drafts(note, expected):
+    assert note_stage(note) == expected
+    assert is_bill_version("Hawaii", note) is True
+
+
+@pytest.mark.parametrize(
+    ("bill", "true_order"),
+    [
+        # Real 2026 Hawaii bills. The order is each text's own header, the legislature's cumulative designation
+        # (HB 1334's "H.D. 3 S.D. 2 C.D. 2", SB 2544's "S.D. 2 H.D. 1 C.D. 1"; data.capitol.hawaii.gov, 2026-11-23):
+        # the bill's own chamber's drafts first, then the other chamber's, then conference.
+        ("HB 1163", ["Introduced", "House Draft 1", "Senate Draft 1", "Senate Draft 2", "Conference Draft 1"]),
+        (
+            "HB 1334",
+            ["Introduced", "House Draft 1", "House Draft 2", "House Draft 3", "Senate Draft 1", "Senate Draft 2",
+             "Conference Draft 1", "Conference Draft 2"],
+        ),
+        ("SB 2544", ["Introduced", "Senate Draft 1", "Senate Draft 2", "House Draft 1", "Conference Draft 1"]),
+        ("SB 2338", ["Introduced", "Senate Draft 1", "House Draft 1", "House Draft 2", "Conference Draft 1"]),
+        ("SCR 159", ["Introduced", "Senate Draft 1", "House Draft 1", "House Draft 2"]),
+        ("HCR 79", ["Introduced", "House Draft 1"]),
+    ],
+)
+def test_hawaii_drafts_rank_by_the_bills_own_chamber(bill, true_order):
+    origin = origin_chamber(bill)
+    for stored_order in (true_order, true_order[::-1]):
+        ranked = sorted(stored_order, key=lambda n: version_sort_key(n, "", [], origin, "Hawaii"))
+        assert ranked == true_order
+
+
+@pytest.mark.parametrize("note", ["House Draft 1", "Senate Draft 2"])
+def test_hawaii_draft_rank_does_not_reach_other_states(note):
+    stage, ordinal = note_stage(note)
+    for origin in ("house", "senate"):
+        assert version_sort_key(note, "", [], origin, "Oklahoma") == (stage, "", ordinal, 0)
+
+
+@pytest.mark.parametrize(
+    "note",
+    ["House Draft", "Senate Draft 0", "Draft 1", "House Drafts 1", "Proposed House Draft 1", "HB1163_HD1", "HD1",
+     "House Draft 1 Proposed"],
+)
+def test_note_stage_hawaii_draft_rule_does_not_widen(note):
+    assert note_stage(note)[0] == STAGE_UNKNOWN

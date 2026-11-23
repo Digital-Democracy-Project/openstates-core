@@ -432,6 +432,14 @@ def note_stage(note: str) -> tuple:
         }.get(mo_printing.group(1), (STAGE_FINAL_PASSAGE, 0.0))
     if re.fullmatch(_MO_SENATE_AMENDMENT_CARD, lowered):
         return (STAGE_AMENDMENT, 0.0)
+    # OPEN-804: Hawaii's "House Draft <N>" / "Senate Draft <N>" (the scraper's names for the site's HD<N> / SD<N>
+    # files): a committee's amended text of the bill, numbered within its chamber (see openstates/ddp_states/hi.py,
+    # whose version_rank puts the other chamber's drafts after the bill's own). Hawaii's "Conference Draft <N>" needs no
+    # rule here: "conference" above gives it chamber passage, N + 0.25. Last for the same reason as the blocks above,
+    # and exact shapes: no other jurisdiction has them (every distinct stored note on the Mac replica, 2026-11-23).
+    hi_draft = re.fullmatch(r"(?:house|senate) draft ([1-9]\d*)", lowered)
+    if hi_draft:
+        return (STAGE_AMENDMENT, float(hi_draft.group(1)))
 
     return (STAGE_UNKNOWN, 0.0)
 
@@ -563,8 +571,8 @@ _DOCUMENT_ORDERED_JURISDICTIONS = frozenset(
 )
 
 # OPEN-788: a state whose version's place depends on the bill's origin chamber, not only on its note (Oklahoma's
-# `version_rank` in openstates/ddp_states/ok.py, Missouri's in mo.py (OPEN-806): (stage, ordinal), or None to keep
-# note_stage's).
+# `version_rank` in openstates/ddp_states/ok.py, Missouri's in mo.py (OPEN-806), Hawaii's in hi.py (OPEN-804): (stage,
+# ordinal), or None to keep note_stage's).
 _VERSION_RANKS = state_values_by_name("version_rank")
 
 
