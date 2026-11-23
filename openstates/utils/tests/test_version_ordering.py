@@ -1645,6 +1645,7 @@ def test_oklahoma_rules_do_not_reach_other_states(note):
         "Proposed Policy Committee Substitute",
         "Committee Substitute Amendment",
         "HB1001 (4-29-25) RT FA1",
+        "HBB1001 (4-29-25) (THOMPSON) RT FA1.PDF",
         "Floor (House) Amendment",
     ],
 )
@@ -1653,7 +1654,9 @@ def test_oklahoma_paper_rule_does_not_widen(note):
 
 
 @pytest.mark.parametrize(
-    "note", ["Floor", "Floor (Joint)", "House Floor", "Policy Committee Recommendations", "Sub Committee", "HB1 FA1.PDF"]
+    "note",
+    ["Floor", "Floor (Joint)", "House Floor", "Policy Committee Recommendations", "Sub Committee", "HB1 FA1.PDF",
+     "SRR1 (4-29-25) (THOMPSON) FA1.PDF"],
 )
 def test_note_stage_oklahoma_rules_do_not_widen(note):
     assert note_stage(note)[0] == STAGE_UNKNOWN

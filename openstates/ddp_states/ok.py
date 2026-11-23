@@ -17,7 +17,7 @@ import typing
 #   "<N> Floor Amendment by <MEMBER>" (FLOOR AMENDMENTS/House/... FA<N>), "<N>  Amendment to Amendment by <MEMBER>"
 #   (... FA<N>-A<M>): a member's floor amendment or floor substitute in the House, adopted or not.
 #   "HB1001 (4-29-25) (THOMPSON) RT FA1.PDF" (FLOOR AMENDMENTS/Senate/...): the same in the Senate, named after its
-#   file ("FS" floor substitute, "RT" title amendment, "WD" withdrawn).
+#   file ("FS" floor substitute, "RT" title amendment, "WD" withdrawn); the prefix is one of Oklahoma's measure types.
 #   "Committee Amendment[ <N>]": in the Senate the committee's proposed substitute (Senate/... PCS<N>.PDF; 357 of the
 #   422 bills with one also have the adopted "Committee Substitute" / "Senate Committee Substitute for House Bill",
 #   which stays a version), in the House a member's amendment in committee (House/... FULLAMD<N>).
@@ -28,7 +28,7 @@ import typing
 # The bill's texts stay versions: "Introduced", the recommendations and committee substitutes, "Floor (House|Senate)",
 # "Engrossed", "Amended And Engrossed", the conference committee substitutes and "Enrolled (final version)".
 _OK_SENATE_FLOOR_AMENDMENT_FILE = (
-    r"[hs][bcjr]+\d+ \(\d{1,2}-\d{2}-\d{2}\) \([a-z][a-z' .-]*\) +(?:(?:fs|rt) )?(?:wd)?fa[1-9]\d*(?: \(\d+\))?\.pdf"
+    r"(?:hb|sb|hjr|sjr|hcr|scr|hr|sr)\d+ \(\d{1,2}-\d{2}-\d{2}\) \([a-z][a-z' .-]*\) +(?:(?:fs|rt) )?(?:wd)?fa[1-9]\d*(?: \(\d+\))?\.pdf"
 )
 
 PROCEDURAL_DOCUMENT_NOTE_PATTERN = re.compile(
