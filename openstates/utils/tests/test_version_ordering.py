@@ -1564,3 +1564,135 @@ def test_rhode_island_texts_rank_in_the_order_they_were_printed(bill, true_order
 )
 def test_note_stage_rhode_island_rule_does_not_widen(note, expected):
     assert note_stage(note) == expected
+
+
+# --- OPEN-788: Oklahoma's versions and the papers stored beside them ----------------------------------------------
+
+# Every Oklahoma name that is a text of the bill (Mac replica, 2025 and 2026 sessions, 2026-11-23, 17,556 versions):
+# the stage note_stage() gives it, origin-free. The first four had no stage before OPEN-788.
+OK_VERSION_NOTES = [
+    ("Floor (House)", (STAGE_AMENDMENT, 0.0)),
+    ("Floor (Senate)", (STAGE_AMENDMENT, 0.0)),
+    ("Policy Committee Recommendation", (STAGE_AMENDMENT, 0.0)),
+    ("Sub Committee Recommendation", (STAGE_AMENDMENT, 0.0)),
+    ("Introduced", (STAGE_INTRODUCED, 0.0)),
+    ("House Committee Substitute", (STAGE_AMENDMENT, 0.0)),
+    ("Committee Substitute", (STAGE_AMENDMENT, 0.0)),
+    ("Senate Committee Substitute for House Bill", (STAGE_AMENDMENT, 0.0)),
+    ("House Committee Substitute for Senate Bill", (STAGE_AMENDMENT, 0.0)),
+    ("Engrossed", (STAGE_CHAMBER_PASSAGE, 0.0)),
+    ("Amended And Engrossed", (STAGE_CHAMBER_PASSAGE, 0.0)),
+    ("House Conference Committee Substitute 2", (STAGE_CHAMBER_PASSAGE, 2.25)),
+    ("Enrolled (final version)", (STAGE_FINAL_PASSAGE, 0.0)),
+]
+
+
+@pytest.mark.parametrize(("note", "expected"), OK_VERSION_NOTES)
+def test_note_stage_oklahoma_versions(note, expected):
+    assert note_stage(note) == expected
+    assert is_bill_version("Oklahoma", note) is True
+
+
+# Real Oklahoma names of papers offered along the way (floor and committee amendments, proposed substitutes): not
+# versions, and ranked as amendment papers so they do not count as versions with no stage.
+OK_PAPER_NOTES = [
+    "1 Floor Amendment by KANE",
+    "1 Floor Amendment by ROSECRANTS (UNTIMELY FILED)",
+    "12 Floor Amendment by FUGATE",
+    "1  Amendment to Amendment by CALDWELL",
+    "3  Amendment to Amendment by HILBERT (UNTIMELY FILED)",
+    "Committee Amendment",
+    "Committee Amendment 1",
+    "Committee Amendment 4",
+    "Proposed Policy Committee Substitute 1",
+    "Proposed Policy Committee Substitute 1 - Amendment 2",
+    "Proposed Policy Committee Amendment 3",
+    "Proposed Committee Substitute (full committee) 4",
+    "Proposed Committee Substitute (sub committee) 1 - Amendment 1",
+    "Proposed Committee Amendment (sub committee) 2",
+    "Proposed Policy Committee Recommendation - - Amendment 2",
+    "Amendment to Proposed Committee Substitute (full committee) 2",
+    "Amendment to Sub Committee Recommendation",
+    "HB1001 (4-29-25) (THOMPSON) RT FA1.PDF",
+    "HB1081 (2-24-26) (RADER) FS WDFA1.PDF",
+    "HB1374 (4-23-26) (WOODS) FS FA3.PDF",
+    "HB1200 (5-07-25) (GRELLNER) FA4.PDF",
+    "HB1427 (3-04-26) (PAXTON) FS FA2 (2).PDF",
+    "SB346 (3-23-26) (BERGSTROM)  FS FA1.PDF",
+]
+
+
+@pytest.mark.parametrize("note", OK_PAPER_NOTES)
+def test_oklahoma_papers_are_not_versions_and_have_a_stage(note):
+    assert is_bill_version("Oklahoma", note) is False
+    assert note_stage(note)[0] == STAGE_AMENDMENT
+
+
+@pytest.mark.parametrize("note", OK_PAPER_NOTES + [n for n, _ in OK_VERSION_NOTES])
+def test_oklahoma_rules_do_not_reach_other_states(note):
+    assert is_bill_version("Florida", note) is True
+    stage, ordinal = note_stage(note)
+    for origin in ("house", "senate"):
+        assert version_sort_key(note, "", [], origin, "Florida") == (stage, "", ordinal, 0)
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        # Close shapes are not Oklahoma's papers: the rules are its exact names, nothing wider.
+        "Floor Amendment by KANE",
+        "Committee Amendments",
+        "Proposed Policy Committee Substitute",
+        "Committee Substitute Amendment",
+        "HB1001 (4-29-25) RT FA1",
+        "Floor (House) Amendment",
+    ],
+)
+def test_oklahoma_paper_rule_does_not_widen(note):
+    assert is_bill_version("Oklahoma", note) is True
+
+
+@pytest.mark.parametrize(
+    "note", ["Floor", "Floor (Joint)", "House Floor", "Policy Committee Recommendations", "Sub Committee", "HB1 FA1.PDF"]
+)
+def test_note_stage_oklahoma_rules_do_not_widen(note):
+    assert note_stage(note)[0] == STAGE_UNKNOWN
+
+
+@pytest.mark.parametrize(
+    ("bill", "true_order"),
+    [
+        # Real Oklahoma bills; the order is the bill page's own version dates (HB 4478: 1/15, 2/17, 3/5, 3/9, 3/17,
+        # 4/15/2026) and histories. A committee text's place depends on whether its chamber is the bill's own.
+        (
+            "HB 4478",
+            ["Introduced", "Sub Committee Recommendation", "House Committee Substitute", "Floor (House)", "Engrossed",
+             "Floor (Senate)"],
+        ),
+        (
+            "HB 1095",
+            ["Introduced", "Policy Committee Recommendation", "House Committee Substitute", "Floor (House)", "Engrossed",
+             "Senate Committee Substitute for House Bill", "Floor (Senate)", "Amended And Engrossed",
+             "Enrolled (final version)"],
+        ),
+        (
+            "SB 132",
+            ["Introduced", "Committee Substitute", "Floor (Senate)", "Engrossed", "Policy Committee Recommendation",
+             "House Committee Substitute for Senate Bill", "Floor (House)", "Amended And Engrossed",
+             "Senate Conference Committee Substitute", "Enrolled (final version)"],
+        ),
+        (
+            "HB 2104",
+            ["Introduced", "House Committee Substitute", "Floor (House)", "Engrossed", "Floor (Senate)",
+             "Amended And Engrossed", "House Conference Committee Substitute", "House Conference Committee Substitute 2",
+             "Enrolled (final version)"],
+        ),
+        ("SB 162", ["Introduced", "Floor (Senate)", "Engrossed", "Sub Committee Recommendation", "Floor (House)",
+                    "Amended And Engrossed", "Enrolled (final version)"]),
+    ],
+)
+def test_oklahoma_versions_rank_by_the_bills_own_chamber(bill, true_order):
+    origin = origin_chamber(bill)
+    for stored_order in (true_order, list(reversed(true_order))):
+        ranked = sorted(stored_order, key=lambda n: version_sort_key(n, "", [], origin, "Oklahoma"))
+        assert ranked == true_order
