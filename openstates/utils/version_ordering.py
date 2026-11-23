@@ -369,6 +369,15 @@ def note_stage(note: str) -> tuple:
         return (STAGE_CHAMBER_PASSAGE, 0.0)
     if lowered in {"private law", "local act"}:
         return (STAGE_ENACTED, 0.0)
+    # OPEN-773: Kentucky's "Current/Final" (the record page's second "Bill Documents" link, <bill>/bill.pdf) is the
+    # bill's latest printed text, which appears once the bill has passed or been adopted by at least one chamber: all
+    # 652 Kentucky bills that have one did, none of the 1,085 without one did (Mac replica, 2026RS, 2026-11-22). For
+    # the 202 enacted ones it is the enrolled text, for the rest the text one chamber passed, so it gets the stage that
+    # is true for all of them, as Pennsylvania's "Printer's No." (OPEN-482) does (Ramon, 2026-11-22). The order stays
+    # Introduced, Current/Final, then "Acts Chapter <N>" (enacted, by the "chapter" rule above). Last for the same
+    # reason as the blocks above, and an exact name: only Kentucky has it (Mac replica, 2026-11-22).
+    if lowered == "current/final":
+        return (STAGE_CHAMBER_PASSAGE, 0.0)
 
     return (STAGE_UNKNOWN, 0.0)
 
