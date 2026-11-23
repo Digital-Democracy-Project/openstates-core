@@ -40,6 +40,7 @@ from ..utils.cookie_provider import (
     content_matches_fake_404_block,
 )
 from ..utils.resilience_profiles import profile_for_netloc
+from ..utils.tls import VerifyingScraper
 from ..utils.waf_circuit_breaker import raise_if_waf_block_threshold_reached
 from ..utils.version_ordering import (
     STAGE_UNKNOWN as _STAGE_UNKNOWN,
@@ -89,8 +90,8 @@ logging.getLogger("s3transfer").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 stats = Instrumentation()
-# disable SSL validation and ignore warnings
-scraper = scrapelib.Scraper(verify=False)
+# Certificates checked per host, like the scrapers (OPEN-800: utils/tls.py).
+scraper = VerifyingScraper()
 scraper.user_agent = "Mozilla"
 # Match FL's own scraper's resilience settings (scrapers/fl/bills.py) instead of scrapelib's
 # bare defaults (0 retries) -- this scraper hits the same flaky state legislature sites FL's
@@ -245,7 +246,7 @@ _not_found_recheck_unanswered = False
 
 def _scraper_for_profile(profile) -> scrapelib.Scraper:
     if profile.name not in _profile_scrapers:
-        s = scrapelib.Scraper(verify=False)
+        s = VerifyingScraper()
         s.user_agent = "Mozilla"
         # OPEN-53 (reopened 2026-08-15): retry_attempts=0 here, deliberately unlike the plain
         # module-level `scraper` above -- scrapelib.RetrySession's own retry loop has no

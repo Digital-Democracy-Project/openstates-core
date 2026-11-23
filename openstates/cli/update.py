@@ -578,12 +578,6 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
         "--timeout", help="scraper timeout", type=int, dest="SCRAPELIB_TIMEOUT"
     )
     parser.add_argument(
-        "--no-verify",
-        help="skip tls verification",
-        action="store_false",
-        dest="SCRAPELIB_VERIFY",
-    )
-    parser.add_argument(
         "--retries", help="scraper retries", type=int, dest="SCRAPELIB_RETRIES"
     )
     parser.add_argument(
