@@ -11,13 +11,8 @@ SCRAPELIB_RPM = 60
 SCRAPELIB_TIMEOUT = 60
 SCRAPELIB_RETRY_ATTEMPTS = 3
 SCRAPELIB_RETRY_WAIT_SECONDS = 10
-try:
-    verify = os.environ.get("VERIFY_CERTS", False)
-    if verify == "False":
-        verify = False
-except Exception:
-    verify = False
-SCRAPELIB_VERIFY = verify
+# Certificates are always checked (OPEN-800): there is no VERIFY_CERTS / SCRAPELIB_VERIFY switch any
+# more. A host that must skip the check is a named entry in openstates/utils/tls.py.
 
 CACHE_DIR = os.environ.get("CACHE_DIR", os.path.join(os.getcwd(), "_cache"))
 SCRAPED_DATA_DIR = os.environ.get("SCRAPED_DATA_DIR", os.path.join(os.getcwd(), "_data"))

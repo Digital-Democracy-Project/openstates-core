@@ -17,6 +17,7 @@ from collections import defaultdict, OrderedDict
 from jsonschema import Draft3Validator, FormatChecker
 
 from .. import utils, settings
+from ..utils.tls import VerifyingScraper
 from ..exceptions import ScrapeError, ScrapeValueError, EmptyScrape
 
 
@@ -95,8 +96,8 @@ def get_random_user_agent():
     return random.choice(user_agents)
 
 
-class Scraper(scrapelib.Scraper):
-    """Base class for all scrapers"""
+class Scraper(VerifyingScraper):
+    """Base class for all scrapers (certificates checked per host, OPEN-800: utils/tls.py)"""
 
     # http_resilience_mode's own get_random_user_agent() rotation opt-out (OPEN-23). Default
     # True keeps every existing/future http_resilience_mode consumer's rotation behavior
@@ -134,7 +135,6 @@ class Scraper(scrapelib.Scraper):
         self.requests_per_minute = settings.SCRAPELIB_RPM
         self.retry_attempts = settings.SCRAPELIB_RETRY_ATTEMPTS
         self.retry_wait_seconds = settings.SCRAPELIB_RETRY_WAIT_SECONDS
-        self.verify = settings.SCRAPELIB_VERIFY
 
         # HTTP connection resilience settings
         self.http_resilience_mode = http_resilience_mode
