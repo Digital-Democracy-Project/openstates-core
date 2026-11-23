@@ -65,6 +65,7 @@ import typing
 
 from openstates.ddp_states import NON_BILL_AMENDMENT, state_values_by_name  # noqa: F401 (NON_BILL_AMENDMENT: re-exported)
 from openstates.ddp_states.al import _AL_FLOOR_MOTION_PAPER
+from openstates.ddp_states.ok import _OK_SENATE_FLOOR_AMENDMENT_FILE
 
 STAGE_INTRODUCED = 0
 STAGE_AMENDMENT = 1
@@ -390,6 +391,19 @@ def note_stage(note: str) -> tuple:
     # reason as the blocks above, and an exact name: only Kentucky has it (Mac replica, 2026-11-22).
     if lowered == "current/final":
         return (STAGE_CHAMBER_PASSAGE, 0.0)
+    # OPEN-788: Oklahoma's committee texts and floor versions (see openstates/ddp_states/ok.py). 4,522 of Oklahoma's
+    # 17,556 versions had no stage (Mac replica, 2025 and 2026 sessions, 2026-11-23). "Sub Committee Recommendation" and
+    # "Policy Committee Recommendation" are the texts a House subcommittee or policy committee recommends to the full
+    # committee; "Floor (House)" / "Floor (Senate)" are the texts a chamber's committee reported, placed on that floor.
+    # All four are amendment-stage texts here; ok.version_rank places them by the bill's own chamber. The Senate's floor
+    # amendments, named after their file ("HB1001 (4-29-25) (THOMPSON) RT FA1.PDF"), are not versions (ok.py's
+    # PROCEDURAL_DOCUMENT_NOTE_PATTERN) and rank as amendment papers only so they do not count as versions with no
+    # stage, as Alabama's floor-motion papers do. Last for the same reason as the blocks above, and exact names: only
+    # Oklahoma has them (Mac replica, 2026-11-23).
+    if lowered in {
+        "sub committee recommendation", "policy committee recommendation", "floor (house)", "floor (senate)",
+    } or re.fullmatch(_OK_SENATE_FLOOR_AMENDMENT_FILE, lowered):
+        return (STAGE_AMENDMENT, 0.0)
 
     return (STAGE_UNKNOWN, 0.0)
 
@@ -520,6 +534,10 @@ _DOCUMENT_ORDERED_JURISDICTIONS = frozenset(
     name for name, order in state_values_by_name("VERSION_ORDER").items() if order == "document"
 )
 
+# OPEN-788: a state whose version's place depends on the bill's origin chamber, not only on its note (Oklahoma's
+# `version_rank` in openstates/ddp_states/ok.py: (stage, ordinal), or None to keep note_stage's).
+_VERSION_RANKS = state_values_by_name("version_rank")
+
 
 def version_sort_key(
     note: str,
@@ -554,6 +572,8 @@ def version_sort_key(
     for one in `_DOCUMENT_ORDERED_JURISDICTIONS` (Georgia, OPEN-602) the site's document number
     comes first, (document-number, stage, date-or-empty, ordinal). For Virginia an amendment-stage
     version's ordinal is 0, so its LIS file number orders it (OPEN-593).
+    For a state with a `version_rank` (Oklahoma, OPEN-788) its (stage, ordinal) replaces note_stage's
+    for the notes it names, given `origin`.
 
     A note matching none of the known patterns returns stage STAGE_UNKNOWN -- the caller
     excludes those versions from the diff lineage entirely rather than guessing a position for
@@ -562,6 +582,9 @@ def version_sort_key(
     stage, ordinal = note_stage(note)
     if origin:
         ordinal = _az_chamber_ordinal(note, origin, ordinal)
+    version_rank = _VERSION_RANKS.get(jurisdiction_name)
+    if version_rank is not None:
+        stage, ordinal = version_rank(note, origin) or (stage, ordinal)
     if jurisdiction_name in _AMENDMENTS_BY_DOCUMENT_NUMBER and stage == STAGE_AMENDMENT:
         ordinal = 0.0  # OPEN-593: Virginia's substitutes are ordered by LIS file number alone
     has_date = bool(date) and bool(_DATE_RE.match(date))
