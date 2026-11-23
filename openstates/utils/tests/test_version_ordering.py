@@ -1741,3 +1741,135 @@ def test_montana_versions_rank_in_the_legislatures_order(true_order):
 @pytest.mark.parametrize("note", ["Draft", "Bill Draft 2", "LC Draft", "Bill Drafts", "Draft Bill", "LC0382.pdf"])
 def test_note_stage_montana_draft_rule_does_not_widen(note):
     assert note_stage(note)[0] == STAGE_UNKNOWN
+
+
+# --- OPEN-806: Missouri's versions and the papers stored beside them ----------------------------------------------
+
+# Every Missouri name that is a text of the bill (Mac replica, 2026 session, 2026-11-23, 4,798 versions; the Senate's
+# names carry the text's number): the stage note_stage() gives it, origin-free. "Perfected", "Re-Perfected" and
+# "Truly Agreed (to) and Finally Passed" had no stage before OPEN-806.
+MO_VERSION_NOTES = [
+    ("Perfected", (STAGE_CHAMBER_PASSAGE, 0.0)),
+    ("5507S.02P - Perfected", (STAGE_CHAMBER_PASSAGE, 0.0)),
+    ("Re-Perfected", (STAGE_CHAMBER_PASSAGE, 0.01)),
+    ("5607S.03R - Re-Perfected", (STAGE_CHAMBER_PASSAGE, 0.01)),
+    ("Truly Agreed and Finally Passed", (STAGE_FINAL_PASSAGE, 0.0)),
+    ("5607H.07T - Truly Agreed to and Finally Passed", (STAGE_FINAL_PASSAGE, 0.0)),
+    ("2602SR.01I - Introduced", (STAGE_INTRODUCED, 0.0)),
+    ("Introduced", (STAGE_INTRODUCED, 0.0)),
+    ("House Committee Substitute", (STAGE_AMENDMENT, 0.0)),
+    ("5607H.07C - House Committee Substitute", (STAGE_AMENDMENT, 0.0)),
+    ("House Substitute (House Floor Substitute)", (STAGE_AMENDMENT, 0.0)),
+    ("Senate Committee Substitute", (STAGE_AMENDMENT, 0.0)),
+    ("6560S.06C - Senate Committee Substitute", (STAGE_AMENDMENT, 0.0)),
+    ("Senate Committee Substitute - Committee Version", (STAGE_AMENDMENT, 0.0)),
+    ("Senate Substitute (Senate Floor Substitute)", (STAGE_AMENDMENT, 0.0)),
+    ("Conference Committee Substitute", (STAGE_CHAMBER_PASSAGE, 0.25)),
+]
+
+
+@pytest.mark.parametrize(("note", "expected"), MO_VERSION_NOTES)
+def test_note_stage_missouri_versions(note, expected):
+    assert note_stage(note) == expected
+    assert is_bill_version("Missouri", note) is True
+
+
+_CARD_BREAK = "\r\n                    \r\n                        "
+
+# Real Missouri papers: a House bill's amendments (house.mo.gov .../amendpdf/) and a Senate bill's "Amendments" tab
+# cards (senate.mo.gov), stored by the scraper as versions. Not versions, and ranked as amendment papers.
+MO_PAPER_NOTES = [
+    "Amendment HA 1 (Adopted)",
+    "Amendment HA 9 (Defeated)",
+    "Amendment 2002H03.18H (Distributed)",
+    "Amendment SENATE AMENDMENTS (Distributed)",
+    "Amendment CCR (Distributed)",
+    "Amendment HPA 1 (Adopted)",
+    "Amendment HSA 1 HA 2 (Adopted)",
+    "Amendment HA 2 (adopted, reconsidered, substituted) (Substitute Offered)",
+    "Amendment HA 1, A.A. (Adopted)",
+    "4/1/2026 - SS S offered & adopted (Henderson)--(5629S.04F)" + _CARD_BREAK + "4/1/2026 - Adopted",
+    "3/24/2026 - SA 1 to SS for SCS S offered & adopted (Hough)--(6560S10.02F)" + _CARD_BREAK + "3/24/2026 - Adopted",
+    "5/5/2026 - SS#2 S offered (Hudson)--(5530S.15F)" + _CARD_BREAK + "5/5/2026 - Adopted, as amended",
+    "2/18/2026 - SA 1 to SA 2 to SS S offered & adopted (Beck)--(5607S02.08S)" + _CARD_BREAK + "2/18/2026 - Adopted",
+    "5/13/2026 - CCR S offered & adopted (5940S07.1SR)" + _CARD_BREAK + "5/13/2026 - Adopted",
+    "5/13/2026 - CCS S Third Read and Passed - EC adopted" + _CARD_BREAK + "5/13/2026 - Passed",
+    "5530S15.02S - SA 1 SS 2" + _CARD_BREAK + "5/5/2026 - Adopted",
+]
+
+
+@pytest.mark.parametrize("note", MO_PAPER_NOTES)
+def test_missouri_papers_are_not_versions_and_have_a_stage(note):
+    assert is_bill_version("Missouri", note) is False
+    assert note_stage(note)[0] == STAGE_AMENDMENT
+
+
+@pytest.mark.parametrize("note", MO_PAPER_NOTES + [n for n, _ in MO_VERSION_NOTES])
+def test_missouri_rules_do_not_reach_other_states(note):
+    assert is_bill_version("Florida", note) is True
+    stage, ordinal = note_stage(note)
+    for origin in ("house", "senate"):
+        assert version_sort_key(note, "", [], origin, "Florida") == (stage, "", ordinal, 0)
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        # Close shapes are not Missouri's papers: the rules are its exact shapes, nothing wider.
+        "Amendment",
+        "Amendments HA 1 (Adopted)",
+        "4/1/2026 - SS S offered & adopted (Henderson)--(5629S.04F)",
+        "4/1/2026 - Adopted",
+        "Senate Amendment 1",
+    ],
+)
+def test_missouri_paper_rule_does_not_widen(note):
+    assert is_bill_version("Missouri", note) is True
+
+
+@pytest.mark.parametrize(
+    "note",
+    ["Perfect", "Perfected Version", "Not Perfected", "5607S.02P Perfected", "Truly Agreed", "Finally Passed",
+     "Truly Agreed and Finally Passed Senate", "5/13/2026 - CCS S Third Read and Passed"],
+)
+def test_note_stage_missouri_rules_do_not_widen(note):
+    assert note_stage(note)[0] == STAGE_UNKNOWN
+
+
+@pytest.mark.parametrize(
+    ("bill", "true_order"),
+    [
+        # Real Missouri bills. The order is the legislature's own: each printing's number (2002H.01I, .03C, .03P,
+        # 2002S.04C, .05F, 2002H.06S, .06T) and senate.mo.gov's version list (newest first: SB 1233 "Truly Agreed",
+        # "House Committee Substitute", "Re-Perfected", "Perfected", "Introduced"). A committee or floor substitute's
+        # place depends on whether its chamber is the bill's own.
+        (
+            "HB 2002",
+            ["Introduced", "House Committee Substitute", "Perfected", "Senate Committee Substitute",
+             "Senate Substitute (Senate Floor Substitute)", "Conference Committee Substitute",
+             "Truly Agreed and Finally Passed"],
+        ),
+        (
+            "HB 2576",
+            ["Introduced", "House Substitute (House Floor Substitute)", "Perfected", "Senate Committee Substitute",
+             "Senate Substitute (Senate Floor Substitute)", "Truly Agreed and Finally Passed"],
+        ),
+        ("HB 2742", ["Introduced", "House Committee Substitute", "Perfected", "Re-Perfected"]),
+        (
+            "SB 1233",
+            ["5607S.01I - Introduced", "5607S.02P - Perfected", "5607S.03R - Re-Perfected",
+             "5607H.07C - House Committee Substitute", "5607H.07T - Truly Agreed to and Finally Passed"],
+        ),
+        (
+            "SB 890",
+            ["4254S.01I - Introduced", "4254S.04C - Senate Committee Substitute", "4254S.06P - Perfected",
+             "4254H.10C - House Committee Substitute", "4254S.06T - Truly Agreed to and Finally Passed"],
+        ),
+        ("SB 1060", ["4565S.02I - Introduced", "Senate Committee Substitute - Committee Version"]),
+    ],
+)
+def test_missouri_versions_rank_by_the_bills_own_chamber(bill, true_order):
+    origin = origin_chamber(bill)
+    for stored_order in (true_order, list(reversed(true_order))):
+        ranked = sorted(stored_order, key=lambda n: version_sort_key(n, "", [], origin, "Missouri"))
+        assert ranked == true_order

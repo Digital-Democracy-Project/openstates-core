@@ -65,6 +65,7 @@ import typing
 
 from openstates.ddp_states import NON_BILL_AMENDMENT, state_values_by_name  # noqa: F401 (NON_BILL_AMENDMENT: re-exported)
 from openstates.ddp_states.al import _AL_FLOOR_MOTION_PAPER
+from openstates.ddp_states.mo import _MO_SENATE_AMENDMENT_CARD, TEXT_NUMBER_PREFIX as _MO_TEXT_NUMBER_PREFIX
 from openstates.ddp_states.ok import _OK_SENATE_FLOOR_AMENDMENT_FILE
 
 STAGE_INTRODUCED = 0
@@ -412,6 +413,25 @@ def note_stage(note: str) -> tuple:
     # distinct stored note on the Mac replica, 2026-11-23).
     if lowered == "bill draft":
         return (STAGE_INTRODUCED, -1.0)
+    # OPEN-806: Missouri's printings after its committee texts (see openstates/ddp_states/mo.py), named by the House
+    # ("Perfected") or by the Senate with the text's number ("5607S.02P - Perfected"). 495 of Missouri's 4,798 versions
+    # had no stage (Mac replica, 2026 session, 2026-11-23). "Perfected" (268 with "Re-Perfected") is the bill as its
+    # own chamber amended and ordered it printed before third reading (Senate Rules 21, 38, 46), so chamber passage as
+    # "Engrossed"; "Re-Perfected" is a second such printing, just after it. "Truly Agreed (to) and Finally Passed" (113)
+    # is the text both chambers passed, final passage as "Enrolled". The Senate's floor papers (the "Amendments" tab
+    # cards, not versions: mo.py's PROCEDURAL_DOCUMENT_NOTE_PATTERN) rank as amendment papers only so they do not count
+    # as versions with no stage, as Alabama's and Oklahoma's do. Last for the same reason as the blocks above, and exact
+    # names: only Missouri has them (every distinct stored note on the Mac replica, 2026-11-23).
+    mo_printing = re.fullmatch(
+        _MO_TEXT_NUMBER_PREFIX + r"(perfected|re-perfected|truly agreed (?:to )?and finally passed)", lowered
+    )
+    if mo_printing:
+        return {
+            "perfected": (STAGE_CHAMBER_PASSAGE, 0.0),
+            "re-perfected": (STAGE_CHAMBER_PASSAGE, 0.01),
+        }.get(mo_printing.group(1), (STAGE_FINAL_PASSAGE, 0.0))
+    if re.fullmatch(_MO_SENATE_AMENDMENT_CARD, lowered):
+        return (STAGE_AMENDMENT, 0.0)
 
     return (STAGE_UNKNOWN, 0.0)
 
@@ -543,7 +563,8 @@ _DOCUMENT_ORDERED_JURISDICTIONS = frozenset(
 )
 
 # OPEN-788: a state whose version's place depends on the bill's origin chamber, not only on its note (Oklahoma's
-# `version_rank` in openstates/ddp_states/ok.py: (stage, ordinal), or None to keep note_stage's).
+# `version_rank` in openstates/ddp_states/ok.py, Missouri's in mo.py (OPEN-806): (stage, ordinal), or None to keep
+# note_stage's).
 _VERSION_RANKS = state_values_by_name("version_rank")
 
 
@@ -580,7 +601,7 @@ def version_sort_key(
     for one in `_DOCUMENT_ORDERED_JURISDICTIONS` (Georgia, OPEN-602) the site's document number
     comes first, (document-number, stage, date-or-empty, ordinal). For Virginia an amendment-stage
     version's ordinal is 0, so its LIS file number orders it (OPEN-593).
-    For a state with a `version_rank` (Oklahoma, OPEN-788) its (stage, ordinal) replaces note_stage's
+    For a state with a `version_rank` (Oklahoma, OPEN-788; Missouri, OPEN-806) its (stage, ordinal) replaces note_stage's
     for the notes it names, given `origin`.
 
     A note matching none of the known patterns returns stage STAGE_UNKNOWN -- the caller
