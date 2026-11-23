@@ -1699,3 +1699,45 @@ def test_oklahoma_versions_rank_by_the_bills_own_chamber(bill, true_order):
     for stored_order in (true_order, list(reversed(true_order))):
         ranked = sorted(stored_order, key=lambda n: version_sort_key(n, "", [], origin, "Oklahoma"))
         assert ranked == true_order
+
+
+# --- OPEN-801: Montana's drafted bill ---------------------------------------------------------------------------------
+
+# The scraper names Montana's texts by their files (scrapers/mt/bills.py): "LC0382.pdf" "Bill Draft" (the drafted bill
+# before introduction, "_____ BILL NO. _____"), "_1" "Introduced", "_2", "_3" ... "Amended Version <n>", "_X"
+# "Enrolled". Only "Bill Draft" needed a rule; it had no stage, and it is 235 of Montana's 294 2027 versions.
+@pytest.mark.parametrize(
+    ("note", "expected"),
+    [
+        ("Bill Draft", (STAGE_INTRODUCED, -1.0)),
+        ("Introduced", (STAGE_INTRODUCED, 0.0)),
+        ("Amended Version 2", (STAGE_AMENDMENT, 2.0)),
+        ("Amended Version 7", (STAGE_AMENDMENT, 7.0)),
+        ("Enrolled", (STAGE_FINAL_PASSAGE, 0.0)),
+    ],
+)
+def test_note_stage_montana_vocabulary(note, expected):
+    assert note_stage(note) == expected
+    assert is_bill_version("Montana", note) is True
+
+
+@pytest.mark.parametrize(
+    "true_order",
+    [
+        # Real Montana bills, by the legislature's own version numbers (1, 2, ..., X); none has a date.
+        ["Bill Draft"],  # 2027 LC 0447, a draft not yet introduced
+        ["Bill Draft", "Introduced"],  # 2027 HB 16 (LC 0382)
+        ["Bill Draft", "Introduced", "Amended Version 2", "Amended Version 3", "Amended Version 4", "Enrolled"],  # SB 260
+        ["Introduced", "Amended Version 2", "Amended Version 4", "Amended Version 5", "Enrolled"],  # 2025 SB 116
+    ],
+)
+def test_montana_versions_rank_in_the_legislatures_order(true_order):
+    for stored_order in (true_order, true_order[::-1]):
+        ranked = sorted(stored_order, key=lambda n: version_sort_key(n, "", [], None, "Montana"))
+        assert ranked == true_order
+        assert _latest("Montana", [(n, "") for n in stored_order]) == true_order[-1]
+
+
+@pytest.mark.parametrize("note", ["Draft", "Bill Draft 2", "LC Draft", "Bill Drafts", "Draft Bill", "LC0382.pdf"])
+def test_note_stage_montana_draft_rule_does_not_widen(note):
+    assert note_stage(note)[0] == STAGE_UNKNOWN

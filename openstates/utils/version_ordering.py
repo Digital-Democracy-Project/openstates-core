@@ -404,6 +404,14 @@ def note_stage(note: str) -> tuple:
         "sub committee recommendation", "policy committee recommendation", "floor (house)", "floor (senate)",
     } or re.fullmatch(_OK_SENATE_FLOOR_AMENDMENT_FILE, lowered):
         return (STAGE_AMENDMENT, 0.0)
+    # OPEN-801: Montana's "Bill Draft", the name the scraper gives the LC file ("LC0382.pdf", the site's "LC Text"):
+    # the drafted bill before introduction ("_____ BILL NO. _____", no sponsor). Every Montana bill has one: 235 of the
+    # 294 versions of the 2027 pre-filing scrape (176 drafts not yet introduced, whose only text it is, and the 59
+    # pre-introduced bills; Mac replica, 2026-11-23). It comes before the bill's "Introduced" text, so it ranks just
+    # below it. Last for the same reason as the blocks above, and an exact name: no other jurisdiction has it (every
+    # distinct stored note on the Mac replica, 2026-11-23).
+    if lowered == "bill draft":
+        return (STAGE_INTRODUCED, -1.0)
 
     return (STAGE_UNKNOWN, 0.0)
 
