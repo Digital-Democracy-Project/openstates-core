@@ -1505,3 +1505,62 @@ def test_kentucky_versions_rank_introduced_then_current_final_then_acts_chapter(
 )
 def test_note_stage_kentucky_current_final_rule_does_not_widen(note):
     assert note_stage(note)[0] == STAGE_UNKNOWN
+
+
+# --- OPEN-784: Rhode Island's texts --------------------------------------------------------------------------------
+
+# The names the scraper gives Rhode Island's texts, from the files' endings ("", aa, A, Aaa, B, Baa): every ending in
+# the legislature's 2026 text indexes (read 2026-11-23). Before OPEN-784 every one after "Introduced" ranked
+# (STAGE_AMENDMENT, 0.0), so their order was the database's.
+RI_NOTES = [
+    ("Introduced", (STAGE_INTRODUCED, 0.0)),
+    ("As Amended", (STAGE_AMENDMENT, 0.5)),
+    ("Substitute A", (STAGE_AMENDMENT, 1.0)),
+    ("Substitute A As Amended", (STAGE_AMENDMENT, 1.5)),
+    ("Substitute B", (STAGE_AMENDMENT, 2.0)),
+    ("Substitute B As Amended", (STAGE_AMENDMENT, 2.5)),
+]
+
+
+@pytest.mark.parametrize(("note", "expected"), RI_NOTES)
+def test_note_stage_rhode_island_vocabulary(note, expected):
+    assert note_stage(note) == expected
+    assert is_bill_version("Rhode Island", note) is True
+
+
+@pytest.mark.parametrize(
+    ("bill", "true_order"),
+    [
+        # Real Rhode Island 2026 bills, in the order the legislature's text index prints their texts. None has a date.
+        (
+            "HR 7532",
+            ["Introduced", "Substitute A", "Substitute A As Amended", "Substitute B", "Substitute B As Amended"],
+        ),
+        ("HR 7031", ["Introduced", "Substitute A", "Substitute A As Amended"]),
+        ("HB 7030", ["Introduced", "Substitute A", "Substitute B"]),
+        ("HB 7007", ["Introduced", "As Amended"]),
+        ("SB 2048", ["Introduced", "As Amended", "Substitute A"]),
+    ],
+)
+def test_rhode_island_texts_rank_in_the_order_they_were_printed(bill, true_order):
+    for stored_order in (true_order, true_order[::-1]):
+        ranked = sorted(stored_order, key=lambda n: version_sort_key(n, "", [], None, "Rhode Island"))
+        assert ranked == true_order
+        assert _latest("Rhode Island", [(n, "") for n in stored_order]) == true_order[-1]
+
+
+@pytest.mark.parametrize(
+    ("note", "expected"),
+    [
+        # Close shapes keep the rank they had before OPEN-784: the rule is Rhode Island's exact names, nothing wider.
+        ("Substitute", (STAGE_AMENDMENT, 0.0)),
+        ("Substitute AA", (STAGE_AMENDMENT, 0.0)),
+        ("Substitute A1", (STAGE_AMENDMENT, 1.0)),
+        ("First Substitute", (STAGE_AMENDMENT, 1.0)),
+        ("Substitute As Amended", (STAGE_AMENDMENT, 0.0)),
+        ("Substitute A as amended in concurrence", (STAGE_AMENDMENT, 0.0)),
+        ("As Amended by Senate", (STAGE_AMENDMENT, 0.0)),
+    ],
+)
+def test_note_stage_rhode_island_rule_does_not_widen(note, expected):
+    assert note_stage(note) == expected
