@@ -195,6 +195,18 @@ def note_stage(note: str) -> tuple:
         return (STAGE_FINAL_PASSAGE, 0.0)
     if re.fullmatch(r"edition [1-9]\d*", lowered):
         return (STAGE_AMENDMENT, extract_ordinal(note))
+    # OPEN-784: Rhode Island's texts after the introduced one, named from their files' endings by the scraper:
+    # "As Amended" (aa), "Substitute A" (A), "Substitute A As Amended" (Aaa), "Substitute B" ... (each text's own
+    # header names it so). The rules below give them all (STAGE_AMENDMENT, 0.0), so a bill with two or more (55 of
+    # RI's 3,011 2026 bills) kept the database's order. The legislature's text index prints them in this order:
+    # As Amended, Substitute A, Substitute A As Amended, Substitute B, Substitute B As Amended (read 2026-11-23).
+    # Exact names: no other jurisdiction has them (every distinct stored note on the Mac replica, 2026-11-23).
+    if lowered == "as amended":
+        return (STAGE_AMENDMENT, 0.5)
+    ri_substitute = re.fullmatch(r"substitute ([a-z])( as amended)?", lowered)
+    if ri_substitute:
+        letter = ord(ri_substitute.group(1)) - ord("a") + 1
+        return (STAGE_AMENDMENT, letter + (0.5 if ri_substitute.group(2) else 0.0))
 
     if lowered in _INTRODUCED_RESOLUTION_NOTES:
         return (STAGE_INTRODUCED, 0.0)
