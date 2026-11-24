@@ -647,7 +647,9 @@ def test_vote_event_bill_actions_two_stage():
     # when second is imported, ensure that action stays pinned to first just as it would
     # have if they were both in same import
     VoteEventImporter("jid", bi).import_data([ve1.as_dict(), ve2.as_dict()])
-    votes = list(VoteEvent.objects.all())
+    # OPEN-879: oldest first; an unordered query returns the updated row last when the table holds dead rows
+    # from earlier tests, which made this test fail in CI once new tests ran before it
+    votes = list(VoteEvent.objects.order_by("created_at"))
     assert len(votes) == 2
     assert votes[0].bill_action is not None
     assert votes[1].bill_action is None
