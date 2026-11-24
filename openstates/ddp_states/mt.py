@@ -24,12 +24,15 @@ import typing
 #   `failure` comes from any line containing "failed" ("2nd Reading Pass Motion Failed; 3rd Reading Vote Required",
 #   "Veto Override Motion Failed"), a lost motion or amendment, not the bill. No 2025 or 2027 name contains "failed";
 #   the archive API's do.
-# The 2025 names carry no result: "(H) 3rd Reading" is the same text whether the bill passed or failed, and the result
-# ("BILL_PASSED", "BILL_NOT_PASSED", ...) is a separate field the scraper does not keep. So no reading, committee action
-# or veto override line can say `passage`, `failure` or `committee-passage` here; that needs the scraper to keep it.
+# The status names carry no result: "(H) 3rd Reading" is the same name whether the bill passed or failed. Since OPEN-851
+# (scrapers) the scraper writes the status row's result after the name, in the archive API's words ("(H) 3rd Reading
+# Passed", "(H) 3rd Reading Failed", "(S) 2nd Reading Not Adopted", "(H) Committee Executive Action--Bill Passed as
+# Amended - (H) Judiciary"), and labels the outcome itself (`passage`, `failure`, `committee-passage`, ...). So the
+# outcome words are set aside before the name is looked up below, and the scraper's outcome labels are kept.
 #
-# A name below gets exactly its labels; any other name keeps the scraper's labels, without `failure` unless it is the
-# bill's own loss ("3rd Reading Failed", "Died in Process").
+# A name below gets exactly its labels (plus the scraper's outcome labels when the line has outcome words); any other
+# name keeps the scraper's labels, without `failure` unless it is the bill's own loss ("3rd Reading Failed", "Died in
+# Process", a simple resolution's "2nd Reading Not Adopted").
 _PREFIX = re.compile(r"\A\((?:H|S|LC)\) ")
 
 _LABELS = (
@@ -55,11 +58,25 @@ _LABELS = (
     (re.compile(r"became law without governor's signature", re.I), ["became-law"]),
 )
 
-_BILL_LOST = re.compile(r"\A(?:3rd reading failed|(?:draft )?died in process)\Z", re.I)
+_BILL_LOST = re.compile(r"\A(?:3rd reading failed|2nd reading not adopted|(?:draft )?died in process)\Z", re.I)
+
+# OPEN-851's outcome words after a status name (" Passed", " Not Concurred as Amended", " Carried", ...). A committee's
+# "--Bill <words>" needs no rule: no committee action or report is in the table above.
+_OUTCOME = re.compile(r"(?: (?:Not )?(?:Passed|Concurred|Adopted)(?: as Amended)?| Rejected| Carried| Failed)\Z", re.I)
+_OUTCOME_LABELS = frozenset(
+    {
+        "passage",
+        "failure",
+        "committee-passage",
+        "committee-failure",
+        "veto-override-passage",
+        "veto-override-failure",
+    }
+)
 
 
 def _status_name(description: str) -> str:
-    """The status name alone: no chamber in front, no committee after."""
+    """The status name with its outcome words: no chamber in front, no committee after."""
     return _PREFIX.sub("", description.strip()).split(" - ", 1)[0].strip()
 
 
@@ -72,9 +89,12 @@ def classify_action(
 ) -> typing.List[str]:
     """An action's labels, read from its status name: see the block comment above."""
     name = _status_name(description or "")
+    bare = _OUTCOME.sub("", name)
     for pattern, labels in _LABELS:
-        if pattern.fullmatch(name):
-            return list(labels)
+        if pattern.fullmatch(bare):
+            if bare == name:
+                return list(labels)
+            return list(labels) + [c for c in classification if c in _OUTCOME_LABELS and c not in labels]
     if _BILL_LOST.match(name):
         return list(classification)
     return [c for c in classification if c != "failure"]
