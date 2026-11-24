@@ -1,0 +1,18 @@
+Floor Amend 1 AM 47 0219
+Amend SB 3EX (LC 47 4392) by inserting after "automatic repeal" on line 8 the following:
+to revise provisions related to certain recounts of votes;
+By inserting after line 49 the following:
+SECTION 1.1.
+Said chapter is further amended in Code Section 21-2-495, relating to procedure for recount
+or recanvass of votes, losing candidate's right to a recount, and rules and regulations, by
+adding a new subsection to read as follows:
+"(d.1)(1) Any other provision of this Code section to the contrary notwithstanding, prior
+to certification of the election results, each superintendent shall complete a manual
+recount of all votes cast in any election, special election, election runoff, special election
+runoff, primary, special primary, primary runoff, or special primary runoff on the two
+races at the top of the ballot; provided, however, that, if there is only one race on a ballot,
+a manual recount of that race is required.
+(2) If, upon the conclusion of a recount pursuant to paragraph (1) of this subsection, it
+is determined that the original count was incorrect, the returns and all papers prepared by
+the superintendent or the Secretary of State shall be corrected accordingly prior to
+certification of such election by the superintendent."
