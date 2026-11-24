@@ -33,13 +33,20 @@ import typing
 # line, matched to the end of the line. Every other line, and every other label, is as given; a reading line without a
 # result ("Third reading. Carried by X.") or with "Failed." gets no `passage`.
 _PRESIDING_OFFICER_SIGNED = re.compile(r"^(?:Speaker|President) signed\b", re.I)
-_FLOOR_RESULT = re.compile(
-    r"^(?:Rules suspended\.\s+)?(?:Third reading|Final reading|Read)(?: as Special Order of Business)?\..*"
-    r"\.\s+(?:Passed|Adopted)\.\Z"
-    r"|^Passed\.\Z",
-    re.I,
+_READING_LINE = (
+    r"^(?:Rules suspended\.\s+)?(?:Third reading|Final reading|Read)(?: as Special Order of Business)?\..*\.\s+"
 )
-_CONCURRED_AND_REPASSED = re.compile(r"\A(?:House|Senate) concurred in (?:House|Senate) amendments and repassed bill\.\Z")
+_FLOOR_RESULT = re.compile(_READING_LINE + r"(?:Passed|Adopted)\.\Z|^Passed\.\Z", re.I)
+# A floor vote the bill lost carries no `failure`: "Third reading. Carried by <member>. Failed." (HB 4098, its
+# only third reading: roll call 28-30) is stored with `reading-3` alone, and the bare "Failed." line OLIS adds when
+# that failure becomes final (HB 4098, 03-07, the session's last day, after a member's notice of possible
+# reconsideration lapsed; no roll call of its own) with no label. Both get `failure` (Ramon, 2026-11-24). They are
+# the only two such lines stored. The "Motion to ... failed." lines (substitute the minority report, refer, re-refer,
+# withdraw from committee, move on the calendar: 23 lines) decide a motion, not the bill, and get nothing.
+_FLOOR_FAILED = re.compile(_READING_LINE + r"Failed\.\Z|^Failed\.\Z", re.I)
+_CONCURRED_AND_REPASSED = re.compile(
+    r"\A(?:House|Senate) concurred in (?:House|Senate) amendments and repassed bill\.\Z"
+)
 
 
 def classify_action(
@@ -50,13 +57,15 @@ def classify_action(
     date: typing.Optional[str],
 ) -> typing.List[str]:
     """An action's labels: no `passage` on a presiding officer's signature, `passage` on a floor result line and on
-    a concurrence that repasses the bill, every other label as given."""
+    a concurrence that repasses the bill, `failure` on a floor vote the bill lost, every other label as given."""
     text = description or ""
     labels = list(classification)
     if _PRESIDING_OFFICER_SIGNED.match(text):
         labels = [c for c in labels if c != "passage"]
     elif (_FLOOR_RESULT.match(text) or _CONCURRED_AND_REPASSED.match(text)) and "passage" not in labels:
         labels.append("passage")
+    if _FLOOR_FAILED.match(text) and "failure" not in labels:
+        labels.append("failure")
     return labels
 
 

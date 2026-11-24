@@ -119,6 +119,17 @@ OR_HB4021_RELABELLED = [
     ["executive-signature"],
 ]
 
+# HB 4098: lost its third reading (roll call 28-30); a member gave notice of possible reconsideration, and the bare
+# "Failed." closed it on the session's last day (member names replaced by "Member")
+OR_HB4098 = [
+    ("2026-02-17T22:09:36+00:00", "lower", ["reading-2"], "Second reading."),
+    ("2026-02-18T18:55:18+00:00", "lower", [], "Motion to substitute Minority Report for Committee Report failed."),
+    ("2026-02-18T20:56:09+00:00", "lower", ["reading-3"], "Third reading. Carried by Member. Failed."),
+    ("2026-02-18T20:57:09+00:00", "lower", [], "Member served notice of possible reconsideration."),
+    ("2026-03-07T00:17:00+00:00", "lower", [], "Failed."),
+]
+OR_HB4098_RELABELLED = [["reading-2"], [], ["reading-3", "failure"], [], ["failure"]]
+
 
 def _rule(description, labels, chamber="lower", date="2026-02-24"):
     return classify_action(description=description, classification=labels, chamber=chamber, date=date)
@@ -157,10 +168,25 @@ def _rule(description, labels, chamber="lower", date="2026-02-24"):
         ("Third reading. Carried by Member. Passed. Vote explanation(s) filed.", [], "lower", []),
         # a carrier's name may itself end in a period ("Jr.")
         ("Third reading.  Carried by Member Jr.  Passed.", ["reading-3"], "upper", ["reading-3", "passage"]),
-        # no result on the line, or a failed one: no passage
-        ("Third reading. Carried by Helm.", [], "lower", []),
-        ("Third reading. Carried by Dobson. Failed.", ["reading-3"], "lower", ["reading-3"]),
-        ("Failed.", [], "lower", []),
+        # no result on the line: no passage, no failure
+        ("Third reading. Carried by Member.", [], "lower", []),
+        # a floor vote the bill lost, and the bare "Failed." when that failure becomes final (HB 4098): failure, not
+        # passage (Ramon, 2026-11-24)
+        ("Third reading. Carried by Member. Failed.", ["reading-3"], "lower", ["reading-3", "failure"]),
+        ("Failed.", [], "lower", ["failure"]),
+        ("Rules suspended. Third reading.  Carried by Member.  Failed.", [], "upper", ["failure"]),
+        ("Final reading.  Carried by Member.  Failed.", [], "upper", ["failure"]),
+        # a motion that failed decides the motion, not the bill: no failure (the stored "Motion to ... failed." lines)
+        ("Motion to substitute Minority Report for Committee Report failed.", [], "lower", []),
+        ("Rules suspended. Motion to substitute Minority Report for Committee Report failed.", [], "upper", []),
+        ("Motion to refer to Committee on Rules failed.", [], "upper", []),
+        ("Motion to withdraw from committee on Judiciary failed.", [], "upper", []),
+        ("Motion to take from today's Calendar and be placed on 03-08 Calendar failed.", [], "upper", []),
+        # the result must be the line's last sentence and end the line
+        ("Third reading. Carried by Member Failed.", ["reading-3"], "lower", ["reading-3"]),
+        ("Failed.\n", [], "lower", []),
+        ("Third reading. Carried by Member. Failed. Vote explanation(s) filed.", ["reading-3"], "lower", ["reading-3"]),
+        ("Failed to pass.", [], "lower", []),
         # only the bare line is the result: "Passed over" (skipped on the day's agenda, Nebraska's trap) is not
         ("Passed over.", [], "lower", []),
         # committee recommendations and motions that say "adopted" or "passed" are not the floor's result
@@ -189,7 +215,7 @@ def test_the_rule_returns_a_new_list_and_leaves_its_input_alone():
     assert _rule("Passed.", empty) == ["passage"] and empty == []
 
 
-@pytest.mark.parametrize("date,chamber,labels,description", OR_HB4134 + OR_HCR201 + OR_HB4045 + OR_HB4021)
+@pytest.mark.parametrize("date,chamber,labels,description", OR_HB4134 + OR_HCR201 + OR_HB4045 + OR_HB4021 + OR_HB4098)
 def test_the_rule_is_stable_on_its_own_output(date, chamber, labels, description):
     once = _rule(description, labels, chamber, date)
     assert _rule(description, once, chamber, date) == once
@@ -213,12 +239,15 @@ def test_the_importer_applies_oregons_rule_and_a_rescrape_changes_nothing():
             _scraped(OR_HCR201, "HCR 201", session="2026R1", chamber="lower"),
             _scraped(OR_HB4045, "HB 4045", session="2026R1", chamber="lower"),
             _scraped(OR_HB4021, "HB 4021", session="2026R1", chamber="lower"),
+            _scraped(OR_HB4098, "HB 4098", session="2026R1", chamber="lower"),
         ]
     )
     assert _stored("HB 4134") == OR_HB4134_RELABELLED
     assert _stored("HCR 201") == OR_HCR201_RELABELLED
     assert _stored("HB 4045") == OR_HB4045_RELABELLED
     assert _stored("HB 4021") == OR_HB4021_RELABELLED
+    assert _stored("HB 4098") == OR_HB4098_RELABELLED
+    assert Bill.objects.get(identifier="HB 4098").latest_passage_date is None
     # HB 4021's last passage is the House's concurrence and repassage, not the Senate's vote the day before
     assert Bill.objects.get(identifier="HB 4021").latest_passage_date == "2026-03-05T18:35:13+00:00"
     # the bill's last passage is the Senate's vote, not the President's signature a day later
