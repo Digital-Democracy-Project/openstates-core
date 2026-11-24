@@ -133,6 +133,19 @@ def test_never_the_same_person_twice_on_one_roll_call(house):
 
 
 @pytest.mark.django_db
+def test_two_different_names_left_with_the_same_member_match_neither(house):
+    member(house, "Chris Lewis", "Lewis")
+    member(house, "Derek Lewis", "Lewis", other_name="Lewis D")
+    member(house, "Scott Lewis", "Lewis", other_name="Lewis S")
+
+    # two different spellings, each left with the same member once the others are dropped
+    (rc,) = import_roll_calls(["Lewis", "LEWIS", "Lewis D", "Lewis S"])
+
+    assert rc["Lewis"] == [None]
+    assert rc["LEWIS"] == [None]
+
+
+@pytest.mark.django_db
 def test_a_member_not_seated_on_the_vote_day_is_not_a_candidate(house):
     chris = member(house, "Chris Lewis", "Lewis")
     derek = member(house, "Derek Lewis", "Lewis", other_name="Lewis D")
