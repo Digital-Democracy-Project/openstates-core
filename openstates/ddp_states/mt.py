@@ -6,6 +6,19 @@ import re
 import typing
 
 
+# ── Introduced drafts (OPEN-861) ─────────────────────────────────────────────────────────────────────────────────────
+
+# OPEN-861 (Ramon, 2026-11-24: hide the old draft record; store it, never delete it). Before the session, Montana's
+# scrape stores each bill draft under its draft number ("LC nnnn") as a bill of its own. Once the draft is introduced,
+# the legislature lists it under its bill number, and the scraper writes that bill with a link of this type to its draft
+# number (scrapers/mt/bills.py: `bill.add_related_bill(row["draft"]["draftNumber"], session, "replaces")`, on every
+# numbered bill and on no draft). The importer never deletes the draft's record, so it would show as a second bill.
+# api-v3 leaves a record that a bill of its jurisdiction links to this way out of `bill_types_only` lists, search and
+# counts (api/bill_types.py); the record stays stored and opens by direct link. Mac replica, 2026-11-24: 60 such links
+# in 2027, 1 resolved to a stored draft record.
+INTRODUCED_DRAFT_RELATION = "replaces"
+
+
 # ── Action labels (OPEN-826) ─────────────────────────────────────────────────────────────────────────────────────────
 
 
