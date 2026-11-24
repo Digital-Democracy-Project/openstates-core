@@ -69,6 +69,31 @@ def classify_action(
     return labels
 
 
+# ── Version rules (OPEN-846) ─────────────────────────────────────────────────────────────────────────────────────────
+
+
+# OPEN-846: beside the bill's texts ("Introduced", "A-Engrossed", "B-Engrossed", "C-Engrossed", "Enrolled": 652
+# documents), the scraper (scrapers/or/bills.py) stores amendment papers as versions. None is a text of the bill;
+# each is a list of line edits to one ("On page 1 of the printed bill, line 10, delete ... and insert ..."). Read on
+# every stored Oregon document, Mac replica, 2026R1, 2026-11-23 (1,085 documents, 433 of them papers):
+#   "<House|Senate> [Minority ]Amendments to <Introduced|A-Engrossed|B-Engrossed>": the amendments a committee
+#   reported (or its minority offered), from the measure's documents (MeasureDocument/<bill>/House Amendments to
+#   Introduced), 207 documents.
+#   "Minority Report [to ]<A-Engrossed|B-Engrossed>": a committee minority's report, 11.
+#   "<committee code> Amendment -<N>" ("HED Amendment -A2", "JWM Amendment -B26", "SECBH Amendment -1"): a committee's
+#   proposed amendment, from Downloads/ProposedAmendment/<id>, 215.
+# They now drop out of the comparison chain, and the next real text compares with the last real one (recompute dry
+# run, Mac replica: 433 documents not a version, 432 comparisons removed, 201 recomputed between real texts).
+PROCEDURAL_DOCUMENT_NOTE_PATTERN = re.compile(
+    r"\A(?:"
+    r"(?:house|senate) (?:minority )?amendments to (?:introduced|[a-z]-engrossed)"
+    r"|minority report (?:to )?(?:introduced|[a-z]-engrossed)"
+    r"|[a-z]+ amendment -[a-z]?[1-9]\d*"
+    r")\Z",
+    re.IGNORECASE,
+)
+
+
 # ── Reader choice (moved unchanged from openstates/fulltext/__init__.py's CONVERSION_FUNCTIONS, OPEN-554) ────────────
 
 
