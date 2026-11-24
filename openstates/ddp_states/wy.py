@@ -40,3 +40,25 @@ def classify_action(
     if _NUMBER_ASSIGNED.match(text):
         labels = [c for c in labels if c != "reading-1"]
     return labels
+
+
+# ── Version rules (OPEN-835) ─────────────────────────────────────────────────────────────────────────────────────────
+
+
+# OPEN-835: the bill page on wyoleg.gov lists, beside the bill's texts, every amendment offered on it and the
+# governor's veto letters, and the scraper stores them as versions. These are motions and letters, not versions of the
+# bill (read on the stored names and texts, Mac replica, session 2026, 1,295 documents on 335 bills, 2026-11-24):
+#   "Amendment <BILL><CHAMBER/COMMITTEE CODE><NNN>[.NN] (<stage>)[ - <sponsor or committee>][ (<disposition>)]", 840:
+#   a standing committee's, the Committee of the Whole's, a 2nd or 3rd reading, a conference committee's or a veto
+#   override amendment, adopted, failed, withdrawn, divided, corrected or ruled out of order. Each is a line edit
+#   ("Page 2-lines 12 through 23 Delete entirely and renumber as necessary"), 183 of them under 200 characters; they
+#   took a comparison like a version, so 87 Enrolled texts were compared with an amendment paper, not the Introduced
+#   text.
+#   "Governor's Veto Message", "Governor's Line Item Veto Message", "Governor's Line Item Vetoes", 5: the governor's
+#   letters to the presiding officer ("Re: Line-Item Veto of ..."), or empty.
+# The bill's texts stay versions: "Introduced", "Enrolled", and SF 1's "Chaptered Law with Final Veto Actions" (the
+# enacted budget with the vetoes marked in it).
+PROCEDURAL_DOCUMENT_NOTE_PATTERN = re.compile(
+    r"\A(?:amendment .+|governor's (?:line item )?veto(?: message|es))\Z",
+    re.IGNORECASE,
+)
