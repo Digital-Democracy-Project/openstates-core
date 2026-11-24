@@ -43,6 +43,21 @@ page in the whole file, before and after the struck words are removed:
 * Nevada AB 4, First Reprint, page 28: "[suspends]", "[,]" and a whole struck sub-section
   ("[permitting the child to drive a motor vehicle: (a) To and from work ...]") over 8 lines.
 * Nevada AB 4, First Reprint, page 2: nothing struck.
+
+OPEN-836 adds North Dakota, read the same way. North Dakota strikes removed law at 0.55 of the
+line height and underlines new words at 0.85, in every version kind, the enrollment included.
+Pages cut and font-subset as Nevada's, from the PDFs on ndlegis.gov (byte-identical to the
+archive's copies):
+
+* North Dakota HB 1011 (69th), First Engrossment, page 2: the fee table, "$200.00" struck before
+  the underlined "$240" (the ticket's example); page 1 has underlines and nothing struck.
+* North Dakota HB 1205, Introduced, page 2: struck sentences ("Neither the parent nor the ...").
+* North Dakota HB 1084, Introduced, page 1: a whole struck subsection (3), and the subsections
+  after it renumbered ("4.3." becomes "3.").
+* North Dakota HB 1194, First Engrossment, page 1: "A person" struck on its own line, the
+  underlined "An individual" inserted, "personindividual" becomes "individual".
+* North Dakota SB 2159, Enrollment, page 1: "TheIf" becomes "If", "may not conduct" becomes "may
+  conduct".
 """
 
 import difflib
@@ -540,6 +555,184 @@ def test_georgia_sb3_drops_the_struck_offices_from_the_ballot_order():
     )
 
 
+# North Dakota (OPEN-836): each change pinned as for Georgia, since whole struck lines drop out.
+ND_EXPECTED_CHANGES = {
+    "nd_hb1011_engrossment1_p2.pdf": [
+        (
+            [
+                "a. For each broker-dealer $200.00$240",
+                "b. For each agent $60.00$75",
+                "c. For each investment adviser or federal covered adviser $100.00$120",
+                "d. For each investment adviser representative $50.00$60",
+            ],
+            [
+                "a. For each broker-dealer $240",
+                "b. For each agent $75",
+                "c. For each investment adviser or federal covered adviser $120",
+                "d. For each investment adviser representative $60",
+            ],
+        )
+    ],
+    "nd_hb1205_introduced_p2.pdf": [
+        (["approved location. Neither the parent nor the"], ["approved location."]),
+        (
+            [
+                "prosecution under sections 14-07-15 and 14-09-22 for leaving an abandoned",
+                "infant.",
+                "3. An infant left under this section must be accepted at an approved location shall accept",
+                "an infant left under this section. The",
+            ],
+            [
+                "prosecution under sections 14-07-15 and 14-09-22",
+                ".",
+                "3. An infant left under this section must be accepted at an approved location",
+                ".",
+            ],
+        ),
+        (
+            [
+                "regarding the parents and shall provide the parent or the agent with a medical history"
+            ],
+            [
+                "regarding the parents and shall provide the parent or agent with a medical history"
+            ],
+        ),
+        (
+            [
+                "accepting thean infant has the infant's medical history, the hospital is not required to",
+                "provide the parent or the agent with a medical history form. Neither theA parent nor",
+                "theor agent is not required to provide any information.",
+                "4.5. IfExcept as provided in subsection 6, if an infant is left at a hospital, the hospital shall",
+                "provide the parent or the agent with a numbered identification bracelet to link the",
+                "parent or the agent to the infant, unless due to birth of the infant, the infant and parent",
+                "currentlyalready have an identification bracelet. Possession of an identification",
+                "bracelet does not entitle the bracelet holder to take custody of the infant on demand. If",
+            ],
+            [
+                "accepting an infant has the infant's medical history, the hospital is not required to",
+                "provide the parent or agent with a medical history form. A parent",
+                "or agent is not required to provide any information.",
+                "5. Except as provided in subsection 6, if an infant is left at a hospital, the hospital shall",
+                "provide the parent or agent with a numbered identification bracelet to link the",
+                "parent or agent to the infant, unless due to birth of the infant, the infant and parent",
+                "already have an identification bracelet. Possession of an identification",
+                "bracelet does not entitle the bracelet holder to take custody of the infant . If",
+            ],
+        ),
+        (
+            [
+                "5.6. If an abandoned infant is left in a newborn safety device at an approved location, the"
+            ],
+            [
+                "6. If an abandoned infant is left in a newborn safety device at an approved location, the"
+            ],
+        ),
+    ],
+    "nd_hb1084_introduced_p1.pdf": [
+        (
+            [
+                "3. Act as the state agency to cooperate with the United States department of agriculture",
+                "to provide federal-state grading service for poultry and poultry products offered for sale",
+                "at the retail level, to supervise the federal-state poultry grading service, and to enforce",
+                "regulations at the retail level as to identification by grade of all poultry sold.",
+                "4.3. Promote the welfare and improvement of the poultry industry and the marketing of",
+            ],
+            [
+                "3. Promote the welfare and improvement of the poultry industry and the marketing of"
+            ],
+        ),
+        (
+            [
+                "5.4. Adopt rules under chapter 28-32 as necessary to effectuate the purposes of this"
+            ],
+            [
+                "4. Adopt rules under chapter 28-32 as necessary to effectuate the purposes of this"
+            ],
+        ),
+    ],
+    "nd_hb1194_engrossment1_p1.pdf": [
+        (
+            [
+                "A person",
+                "1. An individual is guilty of a class A misdemeanor if that personindividual:",
+                "1. a. Gives false information or a false report to a law enforcement officer which that",
+                "personindividual knows to be false, and the information or report may interfere",
+            ],
+            [
+                "1. An individual is guilty of a class A misdemeanor if that individual:",
+                "a. Gives false information or a false report to a law enforcement officer which that",
+                "individual knows to be false, and the information or report may interfere",
+            ],
+        ),
+        (
+            [
+                "2. b. Falsely reports to a law enforcement officer or other security official the"
+            ],
+            [
+                "b. Falsely reports to a law enforcement officer or other security official the"
+            ],
+        ),
+        (
+            [
+                "response when that personindividual knows that the incident did not occur.",
+                '"Security official" means a public servant responsible for averting or dealing',
+                "withhandling emergencies involving public safety.",
+            ],
+            [
+                "response when that individual knows the incident did not occur.",
+                '"Security official" means a public servant responsible for averting or',
+                "handling emergencies involving public safety.",
+            ],
+        ),
+    ],
+    "nd_sb2159_enrollment_p1.pdf": [
+        (
+            [
+                "4. TheIf approved by the industrial commission and conducted in consultation with the high-level",
+                "radioactive waste advisory council, the state energy research center may not conduct",
+            ],
+            [
+                "4. If approved by the industrial commission and conducted in consultation with the high-level",
+                "radioactive waste advisory council, the state energy research center may conduct",
+            ],
+        )
+    ],
+}
+
+
+@pytest.mark.parametrize("name", sorted(ND_EXPECTED_CHANGES))
+def test_north_dakota_exactly_the_struck_words_are_taken_out(name):
+    data = _read(name)
+    old = _lines(extract_sometimes_numbered_pdf(data, META))
+    new = _lines(_pdf("nd")(data, META))
+    matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
+    changes = [
+        (old[i1:i2], new[j1:j2])
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes()
+        if tag != "equal"
+    ]
+    assert changes == ND_EXPECTED_CHANGES[name]
+    # Over the whole page, characters are only taken out, never added (spacing aside).
+    rest = iter("".join(old).replace(" ", ""))
+    assert all(ch in rest for ch in "".join(new).replace(" ", ""))
+
+
+def test_north_dakota_hb1011_reads_the_new_fee_only():
+    data = _read("nd_hb1011_engrossment1_p2.pdf")
+    old = "\n".join(_lines(extract_sometimes_numbered_pdf(data, META)))
+    new = "\n".join(_lines(_pdf("nd")(data, META)))
+    assert "For each broker-dealer $200.00$240" in old  # the defect the ticket reports
+    assert "For each broker-dealer $240" in new
+    assert "$200.00" not in new
+
+
+def test_a_north_dakota_page_with_underlines_only_is_read_exactly_as_before():
+    # North Dakota underlines new words at 0.85 of the line height, outside the strike band.
+    data = _read("nd_hb1011_engrossment1_p1.pdf")
+    assert without_struck_text(data) is data
+    assert _pdf("nd")(data, META) == extract_sometimes_numbered_pdf(data, META)
+
+
 def test_a_nevada_page_with_nothing_struck_is_read_exactly_as_before():
     data = _read("nv_ab4_r1_p2.pdf")
     assert without_struck_text(data) is data
@@ -548,12 +741,12 @@ def test_a_nevada_page_with_nothing_struck_is_read_exactly_as_before():
 
 def test_a_file_pymupdf_cannot_open_is_an_extraction_error():
     # As for Alabama: no quiet fallback that would bring the struck words back.
-    for state in ("ga", "la", "nc", "ne", "nv", "wa"):
+    for state in ("ga", "la", "nc", "nd", "ne", "nv", "wa"):
         with pytest.raises(Exception):
             _pdf(state)(b"%PDF-1.7\n" + b"\x00" * 64, META)
 
 
-def test_only_these_six_states_read_pdfs_without_struck_text():
+def test_only_these_seven_states_read_pdfs_without_struck_text():
     # Each of the five keeps its own text extractor underneath, and no other state's
     # reader or media type changes.
     # (Washington's is wrapped twice: OPEN-580 takes the emptied "((" "))" marks out.)
@@ -568,6 +761,7 @@ def test_only_these_six_states_read_pdfs_without_struck_text():
         "ga": extract_sometimes_numbered_pdf,
         "la": extract_sometimes_numbered_pdf,
         "nc": extract_sometimes_numbered_pdf,
+        "nd": extract_sometimes_numbered_pdf,
         "ne": extract_sometimes_numbered_pdf,
         "nv": extract_sometimes_numbered_pdf,
         "wa": extract_line_numbered_pdf,
@@ -576,6 +770,7 @@ def test_only_these_six_states_read_pdfs_without_struck_text():
     assert set(CONVERSION_FUNCTIONS["ga"]) == {"application/pdf"}
     assert set(CONVERSION_FUNCTIONS["la"]) == {"application/pdf"}
     assert set(CONVERSION_FUNCTIONS["nc"]) == {"application/pdf"}
+    assert set(CONVERSION_FUNCTIONS["nd"]) == {"application/pdf"}
     assert set(CONVERSION_FUNCTIONS["ne"]) == {"application/pdf"}
     assert set(CONVERSION_FUNCTIONS["nv"]) == {"application/pdf"}
     assert set(CONVERSION_FUNCTIONS["wa"]) == {"text/html", "application/pdf"}
