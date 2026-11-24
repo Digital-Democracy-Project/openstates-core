@@ -18,7 +18,20 @@ def test_a_state_is_found_by_its_name_and_a_non_state_finds_nothing():
 
 def test_shared_helpers_are_not_states():
     assert "_text" not in ddp_states.state_values("_drop_page_footer_lines")
-    assert set(ddp_states.state_values("clean_text")) == {"al", "az", "ga", "la", "ma", "mi", "nc", "ne", "pa", "va", "wa"}
+    assert set(ddp_states.state_values("clean_text")) == {
+        "al",
+        "az",
+        "ga",
+        "la",
+        "ma",
+        "mi",
+        "mt",
+        "nc",
+        "ne",
+        "pa",
+        "va",
+        "wa",
+    }
 
 
 def test_the_cleaner_runs_through_the_state_file():
