@@ -1,0 +1,7 @@
+Floor Amend 2 AM 47 0221
+Amend SB 3EX (LC 47 4392) by deleting "and" at the end of line 23, by replacing the period
+with a semicolon at the end of line 25, and by inserting between lines 25 and 26 the
+following:
+(4) Two members of the Senate to be appointed by the minority leader of the Senate; and
+(5) Two members of the House of Representatives to be appointed by the minority leader
+of the House of Representatives.
