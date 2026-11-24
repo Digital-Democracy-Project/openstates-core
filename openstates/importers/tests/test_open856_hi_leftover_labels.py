@@ -61,7 +61,7 @@ HI_HB1519_SENATE = [
     ("2026-04-14", "upper", ["amendment-introduction", "introduction"], "Floor Amendment No. 5 offered."),
     ("2026-04-14", "upper", AMENDMENT_ADOPTED, "Floor amendment adopted as amended (SD 3)."),
 ]
-HI_HB1519_SENATE_RELABELLED = [["amendment-introduction", "introduction"], ["amendment-passage"]]
+HI_HB1519_SENATE_RELABELLED = [["amendment-introduction"], ["amendment-passage"]]  # OPEN-867: not an introduction
 
 
 def _rule(description, labels, chamber="upper", date="2026-04-14"):
@@ -103,7 +103,6 @@ def test_a_line_that_is_not_the_bills_passage_loses_passage(chamber, description
 @pytest.mark.parametrize(
     "chamber,description,labels",
     [
-        ("upper", "Floor Amendment No. 5 offered.", ["amendment-introduction", "introduction"]),
         ("lower", "Floor amendment failed with Noes, 1.", ["amendment-failure"]),
         ("upper", "Recommitted to JDC.", []),
         ("lower", "Recommitted to Conference committee as amended in CD 1 with none voting no", []),
@@ -183,7 +182,7 @@ def test_relabel_hi_finds_the_stored_lines():
     result = _relabel_dry_run("hi")
 
     assert result.exit_code == 0, result.output
-    assert "[DRY RUN] actions changed=3 unchanged=6" in result.output
+    assert "[DRY RUN] actions changed=4 unchanged=5" in result.output
     assert "action: passage -> committee-failure: 1" in result.output
     assert "action: amendment-passage, passage -> amendment-passage: 1" in result.output
     assert (_labels(sb3000), _labels(hb1519)) == before
