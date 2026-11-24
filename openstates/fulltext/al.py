@@ -70,6 +70,14 @@ from .common import ExtractorFunc, Metadata, extract_line_numbered_pdf
 # stored texts change, none gains a character, 2,405 "[" and 2,405 "]" before, 0 after, no
 # errors. The struck sample words of the colour legend ("[omitted material]", "red
 # strikethrough") go too.
+#
+# OPEN-836: North Dakota prints struck words the same way, in every section of the Century Code a
+# bill "amends and reenacts", and in every version kind, the enrollment included (HB 1011 First
+# Engrossment: "For each broker-dealer $200.00$240", where "$200.00" is struck). Its strike sits at
+# 0.55 of the span's height and its underline at 0.85, so the same reader is reused unchanged.
+# Whole-archive comparison (2026-11-24, all 2,690 local North Dakota PDFs of 69, 69S1 and 69S2,
+# scripts/open560_compare_struck_text.py nd): 1,431 lose struck text, no stored text gains a
+# character, no rule at 0.6 or higher removes anything, no errors.
 _RULE_MAX_HEIGHT = 2.0
 _STRIKE_LOW = 0.35
 _STRIKE_HIGH = 0.7
