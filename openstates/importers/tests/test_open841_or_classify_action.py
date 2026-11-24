@@ -97,6 +97,28 @@ OR_HB4045 = [
 ]
 OR_HB4045_RELABELLED = [["reading-2"], [], ["passage", "reading-3"], ["reading-2"], ["passage", "reading-3"], [], [], ["executive-signature"]]
 
+# HB 4021: amended in the Senate, then the House concurred and repassed it (member names replaced by "Member")
+OR_HB4021 = [
+    ("2026-02-19T19:51:21+00:00", "lower", ["reading-2"], "Second reading."),
+    ("2026-02-20T18:44:01+00:00", "lower", ["passage", "reading-3"], "Third reading. Carried by Member. Passed."),
+    ("2026-03-02T23:25:52+00:00", "upper", ["committee-passage-favorable"], "Recommendation: Do pass with amendments to the A-Eng. bill. (Printed B-Eng.)"),
+    ("2026-03-04T22:38:39+00:00", "upper", ["passage", "reading-3"], "Third reading.  Carried by Member Jr.  Passed."),
+    ("2026-03-05T18:35:13+00:00", "lower", [], "House concurred in Senate amendments and repassed bill."),
+    ("2026-03-06T19:23:54+00:00", "lower", ["passage"], "Speaker signed."),
+    ("2026-03-07T01:36:00+00:00", "upper", ["passage"], "President signed."),
+    ("2026-04-07T22:30:54+00:00", "lower", ["executive-signature"], "Governor signed."),
+]
+OR_HB4021_RELABELLED = [
+    ["reading-2"],
+    ["passage", "reading-3"],
+    ["committee-passage-favorable"],
+    ["passage", "reading-3"],
+    ["passage"],
+    [],
+    [],
+    ["executive-signature"],
+]
+
 
 def _rule(description, labels, chamber="lower", date="2026-02-24"):
     return classify_action(description=description, classification=labels, chamber=chamber, date=date)
@@ -121,6 +143,20 @@ def _rule(description, labels, chamber="lower", date="2026-02-24"):
         ("Rules suspended. Final reading.  Carried by Jama.  Adopted.", ["passage"], "upper", ["passage"]),
         # a result the categorizer missed on a line that is otherwise right also gains passage (same class of line)
         ("Third reading.  Carried by Reynolds.  Passed.", ["reading-3"], "upper", ["reading-3", "passage"]),
+        # the originating chamber concurs in the other's amendments and repasses the bill: its final vote, passage
+        # (Ramon, 2026-11-24); the 23 stored lines are these two texts, unlabelled by the scraper
+        ("House concurred in Senate amendments and repassed bill.", [], "lower", ["passage"]),
+        ("Senate concurred in House amendments and repassed bill.", [], "upper", ["passage"]),
+        # a concurrence that does not repass the bill, or a refusal, is not passage
+        ("House concurred in Senate amendments.", [], "lower", []),
+        ("House refused to concur in Senate amendments.", [], "lower", []),
+        ("Senate concurred in House amendments and repassed bill. Vote explanation(s) filed.", [], "upper", []),
+        # the result must be the line's last sentence, after the carrier's, and end the line
+        ("Third reading. Carried by Member Passed.", [], "lower", []),
+        ("Passed.\n", [], "lower", []),
+        ("Third reading. Carried by Member. Passed. Vote explanation(s) filed.", [], "lower", []),
+        # a carrier's name may itself end in a period ("Jr.")
+        ("Third reading.  Carried by Member Jr.  Passed.", ["reading-3"], "upper", ["reading-3", "passage"]),
         # no result on the line, or a failed one: no passage
         ("Third reading. Carried by Helm.", [], "lower", []),
         ("Third reading. Carried by Dobson. Failed.", ["reading-3"], "lower", ["reading-3"]),
@@ -153,7 +189,7 @@ def test_the_rule_returns_a_new_list_and_leaves_its_input_alone():
     assert _rule("Passed.", empty) == ["passage"] and empty == []
 
 
-@pytest.mark.parametrize("date,chamber,labels,description", OR_HB4134 + OR_HCR201 + OR_HB4045)
+@pytest.mark.parametrize("date,chamber,labels,description", OR_HB4134 + OR_HCR201 + OR_HB4045 + OR_HB4021)
 def test_the_rule_is_stable_on_its_own_output(date, chamber, labels, description):
     once = _rule(description, labels, chamber, date)
     assert _rule(description, once, chamber, date) == once
@@ -176,11 +212,15 @@ def test_the_importer_applies_oregons_rule_and_a_rescrape_changes_nothing():
             _scraped(OR_HB4134, "HB 4134", session="2026R1", chamber="lower"),
             _scraped(OR_HCR201, "HCR 201", session="2026R1", chamber="lower"),
             _scraped(OR_HB4045, "HB 4045", session="2026R1", chamber="lower"),
+            _scraped(OR_HB4021, "HB 4021", session="2026R1", chamber="lower"),
         ]
     )
     assert _stored("HB 4134") == OR_HB4134_RELABELLED
     assert _stored("HCR 201") == OR_HCR201_RELABELLED
     assert _stored("HB 4045") == OR_HB4045_RELABELLED
+    assert _stored("HB 4021") == OR_HB4021_RELABELLED
+    # HB 4021's last passage is the House's concurrence and repassage, not the Senate's vote the day before
+    assert Bill.objects.get(identifier="HB 4021").latest_passage_date == "2026-03-05T18:35:13+00:00"
     # the bill's last passage is the Senate's vote, not the President's signature a day later
     assert Bill.objects.get(identifier="HB 4134").latest_passage_date == "2026-03-05T00:10:49+00:00"
     _, what = BillImporter(OR).import_item(_scraped(OR_HB4134, "HB 4134", session="2026R1", chamber="lower"))

@@ -17,23 +17,29 @@ import typing
 # * "Speaker signed." / "President signed." (153 lines each) are labelled `passage`. They are the presiding officers
 #   signing the enrolled bill after both chambers passed it, not a vote, so they lose `passage` (as Nebraska's
 #   "President/Speaker signed", ne.py). Without this, "Passed both chambers" is reached by the signatures.
-# * The chamber's result is sometimes printed on its own line: "Third reading. Carried by Helm." and then "Passed."
+# * The chamber's result is sometimes printed on its own line: "Third reading. Carried by <member>." and then "Passed."
 #   (HB 4134, 4145, 4014, SB 1507, 1599: 5 lines, House, each after a third reading or a failed motion to re-refer),
-#   and a special order is read with "Read as Special Order of Business. Carried by Boice, Grayber. Adopted." (HCR 201),
+#   and a special order is read with "Read as Special Order of Business. Carried by <members>. Adopted." (HCR 201),
 #   which the categorizer's "Read. ... Adopted" shape does not match. Neither got `passage`, so the bill's first passage
 #   was the other chamber's. They get it.
+# * "House concurred in Senate amendments and repassed bill." (14 lines) / "Senate concurred in House amendments and
+#   repassed bill." (9 lines, 23 bills in all) carry no label. That is the originating chamber's vote to accept the
+#   other chamber's amendments and pass the amended bill again, its final vote on the bill (no later floor vote is
+#   stored on any of the 23; the signatures follow), so it gets `passage` (Ramon, 2026-11-24, OPEN-841 comment 23171).
+#   These two are the only concurrence lines stored; a concurrence without "repassed bill" gets nothing.
 #
 # The floor result is a reading line ("Third reading", "Final reading", "Read", each possibly "as Special Order of
-# Business", possibly after "Rules suspended.") that ends "Passed." or "Adopted.", or a bare "Passed." line. Every
-# other line, and every other label, is as given; a reading line without a result ("Third reading. Carried by X.")
-# or with "Failed." gets no `passage`.
+# Business", possibly after "Rules suspended.") whose last sentence is "Passed." or "Adopted.", or a bare "Passed."
+# line, matched to the end of the line. Every other line, and every other label, is as given; a reading line without a
+# result ("Third reading. Carried by X.") or with "Failed." gets no `passage`.
 _PRESIDING_OFFICER_SIGNED = re.compile(r"^(?:Speaker|President) signed\b", re.I)
 _FLOOR_RESULT = re.compile(
     r"^(?:Rules suspended\.\s+)?(?:Third reading|Final reading|Read)(?: as Special Order of Business)?\..*"
-    r"\b(?:Passed|Adopted)\.\s*$"
-    r"|^Passed\.\s*$",
+    r"\.\s+(?:Passed|Adopted)\.\Z"
+    r"|^Passed\.\Z",
     re.I,
 )
+_CONCURRED_AND_REPASSED = re.compile(r"\A(?:House|Senate) concurred in (?:House|Senate) amendments and repassed bill\.\Z")
 
 
 def classify_action(
@@ -43,13 +49,13 @@ def classify_action(
     chamber: typing.Optional[str],
     date: typing.Optional[str],
 ) -> typing.List[str]:
-    """An action's labels: no `passage` on a presiding officer's signature, `passage` on a floor result line, every
-    other label as given."""
+    """An action's labels: no `passage` on a presiding officer's signature, `passage` on a floor result line and on
+    a concurrence that repasses the bill, every other label as given."""
     text = description or ""
     labels = list(classification)
     if _PRESIDING_OFFICER_SIGNED.match(text):
         labels = [c for c in labels if c != "passage"]
-    elif _FLOOR_RESULT.match(text) and "passage" not in labels:
+    elif (_FLOOR_RESULT.match(text) or _CONCURRED_AND_REPASSED.match(text)) and "passage" not in labels:
         labels.append("passage")
     return labels
 
