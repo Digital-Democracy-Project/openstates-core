@@ -14,8 +14,9 @@ from ..exceptions import DuplicateItemError, UnresolvedIdError, DataImportError
 from ..utils import get_pseudo_id, utcnow
 from ._types import _ID, _JsonDict, _RelatedModels, _TransformerMapping
 
+# (person spec, session start, session end, chamber, OPEN-817 day served for a vote after the session's end)
 _PersonCacheKey = typing.Tuple[
-    str, typing.Optional[str], typing.Optional[str], typing.Optional[str]
+    str, typing.Optional[str], typing.Optional[str], typing.Optional[str], typing.Optional[str]
 ]
 
 
@@ -23,6 +24,16 @@ def _is_full_date(date: typing.Optional[str]) -> bool:
     """A YYYY-MM-DD day, alone or followed by a time (the scrape schema's fuzzy_datetime shape). A vote dated only
     by year or month cannot place a person."""
     return bool(date) and re.match(r"\d{4}-\d{2}-\d{2}(T|$)", date) is not None  # type: ignore
+
+
+def _in_use_on(prefix: str, date: str) -> Q:
+    """A row (a membership, an other name) whose start/end dates cover `date`. Blank = open-ended. An end date given
+    only as YYYY or YYYY-MM covers the whole year or month."""
+    return (Q(**{prefix + "start_date": ""}) | Q(**{prefix + "start_date__lte": date})) & (
+        Q(**{prefix + "end_date": ""})
+        | Q(**{prefix + "end_date__gte": date})
+        | Q(**{prefix + "end_date__in": (date[:4], date[:7])})
+    )
 
 
 def omnihash(obj: typing.Any) -> int:
@@ -600,11 +611,18 @@ class BaseImporter:
         # who held a matching seat on that day, under a name in use that day
         # (an other name's start/end dates count), decide. A match that gives
         # one person today is never re-decided by the date.
-        cache_key = (psuedo_person_id, start_date, end_date, org_classification)
+        # OPEN-817: a vote held after its session's end (Maryland's 2026 veto overrides, voted in
+        # August on bills of a session that ended in April) also takes the people whose seat covers
+        # the vote's day, so a member seated after the session ended can match. A vote inside its
+        # session is looked up exactly as before.
+        served_on = None
+        if _is_full_date(date) and _is_full_date(end_date) and date[:10] > end_date[:10]:  # type: ignore
+            served_on = date[:10]  # type: ignore
+        cache_key = (psuedo_person_id, start_date, end_date, org_classification, served_on)
         if cache_key not in self.person_cache:
             self.person_cache[cache_key] = self._resolve_person_in_session(
                 psuedo_person_id, start_date, end_date, org_classification,
-                log_ambiguous=not _is_full_date(date),
+                log_ambiguous=not _is_full_date(date), served_on=served_on,
             )
         result_id = self.person_cache[cache_key]
         if result_id is None and cache_key in self.ambiguous_people and _is_full_date(date):
@@ -618,8 +636,9 @@ class BaseImporter:
         end_date: typing.Optional[str],
         org_classification: typing.Optional[str],
         log_ambiguous: bool,
+        served_on: typing.Optional[str] = None,
     ) -> typing.Optional[str]:
-        cache_key = (psuedo_person_id, start_date, end_date, org_classification)
+        cache_key = (psuedo_person_id, start_date, end_date, org_classification, served_on)
         # turn spec into DB query
         spec = get_pseudo_id(psuedo_person_id)
 
@@ -639,7 +658,7 @@ class BaseImporter:
         # lookup, cached, then wrongly reused for a same-session Florida
         # "Smith" House lookup that should have resolved to a different person
         # entirely (OPEN-110). The key is built in resolve_person() from these
-        # same four values.
+        # same values (plus OPEN-817's served_on).
 
         # a stable per-person identifier (e.g. bioguide, lis_id) takes priority over
         # name matching when the scraper had one on hand -- house/senate roll calls
@@ -681,9 +700,14 @@ class BaseImporter:
             )
         # if we know when the session ended, ensure that they didn't start after it ended
         if end_date:
-            common_spec &= Q(memberships__start_date="") | Q(
+            before_end = Q(memberships__start_date="") | Q(
                 memberships__start_date__lt=end_date
             )
+            # OPEN-817: or, for a vote after the session's end, held the seat on the vote's day.
+            # Same filter() call, so it is the same membership row as the chamber above.
+            if served_on:
+                before_end |= _in_use_on("memberships__", served_on)
+            common_spec &= before_end
 
         result_id, errmsg = None, None
 
@@ -762,26 +786,18 @@ class BaseImporter:
             return self.person_on_date_cache[day_key]
         candidates, name, spec, org_spec = self.ambiguous_people[cache_key]
 
-        def in_use_on(prefix: str) -> Q:
-            # blank = open-ended. An end date given only as YYYY or YYYY-MM covers the whole year or month.
-            return (Q(**{prefix + "start_date": ""}) | Q(**{prefix + "start_date__lte": date})) & (
-                Q(**{prefix + "end_date": ""})
-                | Q(**{prefix + "end_date__gte": date})
-                | Q(**{prefix + "end_date__in": (date[:4], date[:7])})
-            )
-
         if name is not None:
             # one filter() call, so the other name and its dates are the same row
             name_spec = (
                 Q(name__iexact=name)
                 | Q(family_name__iexact=name)
-                | (Q(other_names__name__iexact=name) & in_use_on("other_names__"))
+                | (Q(other_names__name__iexact=name) & _in_use_on("other_names__", date))
             )
         else:
             name_spec = Q(**spec)
         ids = set(
             Person.objects.filter(
-                Q(id__in=candidates) & name_spec & org_spec & in_use_on("memberships__")
+                Q(id__in=candidates) & name_spec & org_spec & _in_use_on("memberships__", date)
             ).values_list("id", flat=True)
         )
         result_id = ids.pop() if len(ids) == 1 else None
