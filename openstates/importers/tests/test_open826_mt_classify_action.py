@@ -167,8 +167,10 @@ def _rule(description, labels, chamber="lower", date="2025-01-27"):
         ("(H) Signed by Governor", ["executive-signature"], ["executive-signature"]),
         # failure: the bill's own loss keeps it
         ("(H) Died in Process", ["failure"], ["failure"]),
-        ("(LC) Draft Died in Process", ["failure"], ["failure"]),
         ("(S) 3rd Reading Failed", ["failure"], ["reading-3", "failure"]),
+        # OPEN-862: a draft that dies never became a bill, so its line carries nothing (the scraper says `failure`)
+        ("(LC) Draft Died in Process", ["failure"], []),
+        ("(LC) Draft Died in Process", [], []),
         # ... a lost motion or amendment does not (the older archive API's names, labelled `failure` by "failed")
         ("(H) 2nd Reading Pass Motion Failed; 3rd Reading Vote Required", ["reading-2", "failure"], ["reading-2"]),
         ("(S) 2nd Reading Motion to Amend Failed", ["amendment-failure", "failure"], ["amendment-failure"]),
@@ -296,3 +298,31 @@ def test_relabel_finds_nothing_left_to_change_after_an_import():
 
     assert result.exit_code == 0, result.output
     assert "actions changed=0 unchanged=19" in result.output
+
+
+# OPEN-862: a draft that dies in the drafting office, as the scraper writes it (its "died in process" gives `failure`).
+# The draft's number is made up; the lines are Montana's status names.
+MT_DRAFT_DIED_2027 = [("2026-10-01", "legislature", [], d) for d in _DRAFTING[:3]] + [
+    ("2026-11-01", "legislature", ["failure"], "(LC) Draft Died in Process"),
+]
+
+
+@pytest.mark.django_db
+def test_the_importer_stores_a_dead_draft_with_no_failure():
+    _mt("2027")
+
+    BillImporter(MT).import_item(_scraped(MT_DRAFT_DIED_2027, "LC 1", session="2027", chamber="legislature"))
+
+    assert _stored("LC 1") == [[], [], [], []]
+
+
+@pytest.mark.django_db
+def test_relabel_mt_takes_failure_off_a_stored_dead_draft():
+    draft = _bill(MT, "Montana", "LC 1", MT_DRAFT_DIED_2027)
+
+    result = _relabel_dry_run("mt")
+
+    assert result.exit_code == 0, result.output
+    assert "[DRY RUN] actions changed=1 unchanged=3" in result.output
+    assert "action: failure -> (none): 1" in result.output
+    assert _labels(draft) == [[], [], [], ["failure"]]
