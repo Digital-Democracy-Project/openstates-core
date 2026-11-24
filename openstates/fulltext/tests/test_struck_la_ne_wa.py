@@ -746,7 +746,7 @@ def test_a_file_pymupdf_cannot_open_is_an_extraction_error():
             _pdf(state)(b"%PDF-1.7\n" + b"\x00" * 64, META)
 
 
-def test_only_these_seven_states_read_pdfs_without_struck_text():
+def test_only_these_eight_states_read_pdfs_without_struck_text():
     # Each of the five keeps its own text extractor underneath, and no other state's
     # reader or media type changes.
     # (Washington's is wrapped twice: OPEN-580 takes the emptied "((" "))" marks out.)
@@ -760,6 +760,7 @@ def test_only_these_seven_states_read_pdfs_without_struck_text():
     assert wrapped == {
         "ga": extract_sometimes_numbered_pdf,
         "la": extract_sometimes_numbered_pdf,
+        "me": extract_sometimes_numbered_pdf,  # OPEN-871
         "nc": extract_sometimes_numbered_pdf,
         "nd": extract_sometimes_numbered_pdf,
         "ne": extract_sometimes_numbered_pdf,

@@ -86,3 +86,26 @@ def classify_action(
     elif _ENACTMENT.search(text):
         labels = [c for c in labels if c != "passage"]
     return labels
+
+
+def readers():
+    """Maine's text reader per media type; replaces upstream's entry in `fulltext.CONVERSION_FUNCTIONS`."""
+    # imported at call time: openstates.fulltext builds its reader table from this function
+    from openstates.fulltext import DoNotDownload
+    from openstates.fulltext.al import read_without_struck_text
+    from openstates.fulltext.common import extract_sometimes_numbered_pdf, extractor_for_elements_by_class
+
+    # OPEN-871: upstream's entry for Maine is DoNotDownload for PDF (and RTF), and the archiver skips such a link
+    # without a count, so the 11-24 archive "succeeded" with 0 of 5,131 versions saved. Every Maine version link is
+    # an application/pdf ("getPDF.asp?paper=...", no suffix). Measured 2026-11-24 on 21 PDFs (Introduced, amendments
+    # and chapters across 132R1, 132R2, 132S1): introduced bills and amendments number every body line (15-72% of the
+    # lines; an introduced bill's cover page with its title and sponsor is unnumbered), while chapter laws (Public
+    # Laws) have no line numbers (0-2%), so the line-numbered reader alone read a chapter to nothing. The shared
+    # reader decides from the document. Maine prints deleted text struck through in all of them (a whole paragraph
+    # in some), so the struck words are removed first, as for AL, GA, LA, NC, NE and NV (OPEN-560).
+    # The other two entries are upstream's, kept as they were (the scraper emits no HTML or RTF link for Maine).
+    return {
+        "text/html": extractor_for_elements_by_class("billtextbody"),
+        "application/rtf": DoNotDownload,
+        "application/pdf": read_without_struck_text(extract_sometimes_numbered_pdf),
+    }
