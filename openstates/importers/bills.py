@@ -1,5 +1,6 @@
+import datetime
 from typing import Union
-from .base import BaseImporter
+from .base import BaseImporter, _is_full_date
 from ._types import _JsonDict, Model
 from ..data.models import (
     Organization,
@@ -75,6 +76,22 @@ def resolve_related_bills(jurisdiction_id: str, session: Union[str, None], logge
             logger.debug(f"FAILED to resolve {rb.legislative_session} {rb.bill.identifier}")
 
     logger.info(f"Resolved {matches_found} bills out of {len(related_bills)} bills needing resolution")
+
+
+def _is_real_day(day: str) -> bool:
+    try:
+        datetime.date.fromisoformat(day)
+        return True
+    except ValueError:
+        return False
+
+
+def carried_over_since(actions: list, session_start: str) -> str:
+    """OPEN-809: the day a bill was introduced (its first dated action) when that is before its session began,
+    so the bill was carried over from an earlier session; "" otherwise, or when either date is unknown."""
+    days = [a["date"][:10] for a in actions if _is_full_date(a.get("date")) and _is_real_day(a["date"][:10])]
+    introduced = min(days) if days else ""
+    return introduced if _is_full_date(session_start) and introduced and introduced < session_start[:10] else ""
 
 
 class BillImporter(BaseImporter):
@@ -160,13 +177,35 @@ class BillImporter(BaseImporter):
                         entity["person_id"], session.start_date, session.end_date
                     )
 
+        introduced = carried_over_since(data["actions"], session.start_date)
         for sponsor in data["sponsorships"]:
             if sponsor.get("person_id"):
+                pseudo_id = sponsor["person_id"]
                 sponsor["person_id"] = self.resolve_person(
-                    sponsor["person_id"],
+                    pseudo_id,
                     session.start_date,
                     session.end_date,
                 )
+                # OPEN-809: a bill carried over from an earlier session keeps sponsors who left before this
+                # session began (Hawaii 2026: two members who left in 2025, on January 2025 bills). When this
+                # session's members give nobody (not several people), the members seated on the day the bill
+                # was introduced decide, through the same lookup with that day as the window (its bounds are
+                # strict, so the day before to the day after: a seat starting or ending on the day counts, as in
+                # OPEN-767) and, for a tie, OPEN-767's match on the day. A sponsor this session already matches
+                # is never re-decided.
+                if (
+                    sponsor["person_id"] is None
+                    and introduced
+                    and (pseudo_id, session.start_date, session.end_date, None)
+                    not in self.ambiguous_people
+                ):
+                    day = datetime.date.fromisoformat(introduced)
+                    sponsor["person_id"] = self.resolve_person(
+                        pseudo_id,
+                        str(day - datetime.timedelta(days=1)),
+                        str(day + datetime.timedelta(days=1)),
+                        date=introduced,
+                    )
             if sponsor.get("organization_id"):
                 sponsor["organization_id"] = self.org_importer.resolve_json_id(
                     sponsor["organization_id"], allow_no_match=True
