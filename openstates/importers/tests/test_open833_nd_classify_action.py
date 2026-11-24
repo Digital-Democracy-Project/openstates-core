@@ -94,6 +94,7 @@ ND_HCR3013 = [
     ("2025-03-13", "upper", R2, "Second reading, failed to adopt"),
 ]
 ND_HCR3013_RELABELLED = [list(labels) for _, _, labels, _ in ND_HCR3013]
+ND_HCR3013_RELABELLED[5] = R2 + ["passage"]  # OPEN-858: a resolution's adoption is its passage
 ND_HCR3013_RELABELLED[10] = R2F
 
 ALL = ND_HB1457 + ND_HB1242 + ND_SB2155 + ND_HCR3013
@@ -134,8 +135,6 @@ def test_a_second_reading_defeat_gains_failure_and_keeps_reading_2(chamber, desc
         ("lower", "Second reading, passed, yeas 86 nays 4", P2),
         ("upper", "Second reading, passed as amended, yeas 42 nays 4", P2),
         ("lower", "Second reading, passed, yeas 82 nays 8, Emergency clause carried", P2),
-        ("lower", "Second reading, adopted yeas 52 nays 40", R2),
-        ("upper", "Second reading, adopted", R2),
         # not stored: a wording outside the three forms is left alone until someone looks at it
         ("lower", "Second reading, failed to concur", R2),
         ("lower", "Second reading, failed", R2),
@@ -225,8 +224,9 @@ def test_relabel_nd_now_runs_and_finds_the_stored_defeats():
     result = _relabel_dry_run("nd")
 
     assert result.exit_code == 0, result.output
-    assert "[DRY RUN] actions changed=5 unchanged=38" in result.output
+    assert "[DRY RUN] actions changed=6 unchanged=37" in result.output
     assert "action: reading-2 -> reading-2, failure: 5" in result.output
+    assert "action: reading-2 -> reading-2, passage: 1" in result.output  # OPEN-858: HCR 3013's House adoption
     assert [_labels(b) for b in bills] == before
 
 
