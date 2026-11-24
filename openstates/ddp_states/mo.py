@@ -6,6 +6,46 @@ import re
 import typing
 
 
+# ── Action labels (OPEN-831) ─────────────────────────────────────────────────────────────────────────────────────────
+
+
+# OPEN-831: in Missouri a bill passes a chamber on "Third Read and Passed" (and finally on "Truly Agreed To and Finally
+# Passed"); a resolution passes the Senate on a bare "S adopted". The scraper's categorizer (scrapers/mo/bills.py) tags
+# `passage` on every line that contains "S adopted", and the Senate writes that for everything it adopts on the floor
+# before Third Reading: a substitute or committee substitute ("SS for SCS, as amended, S adopted", "SCS S adopted"),
+# an amendment to one ("SA 1 to SS, as amended, S adopted"), the conference committee's report ("S adopted CCR
+# (...)", followed by "CCS S Third Read and Passed", the bill's final vote) and a motion ("Motion to table SR 668 S
+# adopted (<member>)", "Motion to reconsider Perfection Vote S adopted (<member>)", "Motion to allow S conferees to
+# exceed differences S adopted"). On the Mac replica (2026-11-24, all 21,849 stored Missouri actions, session 2026)
+# 44 such lines carry `passage`, and SB 1534, SB 838, SB 841 (Senate) and SR 668 (tabled) read as passed through them
+# alone. So a line with "S adopted" or "H adopted" loses `passage` unless it is the bare "S adopted" / "H adopted" of
+# a resolution, or the line says "Passed" (none stored says both; it keeps a Third Read and Passed line that also
+# names an adoption a passage); other labels stay, and nothing is added. The House's same lines
+# ("HCS, as amended, H adopted", "H adopts CCR", "House conferees allowed to exceed the differences H adopted") are
+# stored with no label, and Missouri stores no `amendment-passage` or `failure` anywhere, so a tabled measure is left
+# untagged too: the Senate can take it from the table. Case is kept, as in the scraper's own rule. The rule reads only
+# the text (a state rule is not given the bill's identifier); on the replica a bare "S adopted" is stored only on SR
+# and SCR and a bare "H adopted" only on SCR, the resolutions the Senate and House adopt in one vote.
+_FLOOR_ADOPTED = re.compile(r"\b[SH] adopted\b")
+_RESOLUTION_ADOPTED = re.compile(r"^\s*[SH] adopted\.?\s*$")
+_PASSED = re.compile(r"\bPassed\b")
+
+
+def classify_action(
+    *,
+    description: typing.Optional[str],
+    classification: typing.Sequence[str],
+    chamber: typing.Optional[str],
+    date: typing.Optional[str],
+) -> typing.List[str]:
+    """An action's labels: no `passage` on a substitute, amendment, conference report or motion "S/H adopted" line,
+    every other label as given."""
+    text = description or ""
+    if _FLOOR_ADOPTED.search(text) and not _RESOLUTION_ADOPTED.match(text) and not _PASSED.search(text):
+        return [c for c in classification if c != "passage"]
+    return list(classification)
+
+
 # ── Version rules (OPEN-806) ─────────────────────────────────────────────────────────────────────────────────────────
 
 
