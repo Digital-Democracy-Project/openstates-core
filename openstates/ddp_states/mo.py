@@ -30,6 +30,17 @@ _FLOOR_ADOPTED = re.compile(r"\b[SH] adopted\b")
 _RESOLUTION_ADOPTED = re.compile(r"^\s*[SH] adopted\.?\s*$")
 _PASSED = re.compile(r"\bPassed\b")
 
+# OPEN-857: the House's adoption of a resolution is that resolution's passage in the House, but the categorizer has no
+# rule for the House's wording, so it is stored with no label (Mac replica, 2026-11-24, every stored Missouri action):
+# "Adopted (H)" on HR 1, HR 2, HR 3872, HR 3873, HCR 21 and HCR 22 (house.mo.gov's action list), "Adopted (H) - AYES:
+# 31 NOES: 0 PRESENT: 0" on HCR 21 and HCR 22, and the bare "H adopted" on SCR 21 (senate.mo.gov's list: the House
+# adopted the Senate's resolution on 05-14-26 after its committees reported it Do Pass). These gain `passage`, as the
+# Senate's bare "S adopted" already has it. (The two "AYES: 31" lines of 01-08-26 are the Senate's adoption, "On motion
+# of Senator ..., HCR 21 was adopted" in its stored roll call, which house.mo.gov prints with "(H)" and the scraper
+# stores under the House; the rule reads only the text, so they gain it too.) The House's adoption of a substitute ("HCS Adopted (H)", on HJRs) or of an
+# amendment ("... H adopted") is not a passage and is left as it is.
+_HOUSE_RESOLUTION_ADOPTED = re.compile(r"^\s*(?:Adopted \(H\)(?:\s+-\s+AYES:.*)?|H adopted\.?)\s*$")
+
 
 def classify_action(
     *,
@@ -39,8 +50,10 @@ def classify_action(
     date: typing.Optional[str],
 ) -> typing.List[str]:
     """An action's labels: no `passage` on a substitute, amendment, conference report or motion "S/H adopted" line,
-    every other label as given."""
+    `passage` on the House's adoption of a resolution, every other label as given."""
     text = description or ""
+    if _HOUSE_RESOLUTION_ADOPTED.match(text):
+        return list(classification) if "passage" in classification else list(classification) + ["passage"]
     if _FLOOR_ADOPTED.search(text) and not _RESOLUTION_ADOPTED.match(text) and not _PASSED.search(text):
         return [c for c in classification if c != "passage"]
     return list(classification)

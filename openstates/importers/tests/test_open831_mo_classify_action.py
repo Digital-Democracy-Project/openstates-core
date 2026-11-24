@@ -102,6 +102,7 @@ MO_SCR21 = [
 ]
 MO_SCR21_RELABELLED = [list(labels) for _, _, labels, _ in MO_SCR21]
 MO_SCR21_RELABELLED[3] = []
+MO_SCR21_RELABELLED[7] = ["passage"]  # OPEN-857: the House's adoption of the resolution is its House passage
 
 MO_SB973 = [
     ("2026-03-05", "upper", P3, "S Third Read and Passed"),
@@ -268,7 +269,7 @@ def test_the_importer_keeps_a_resolutions_adoption_and_a_bills_final_votes_and_a
     BillImporter(MO).import_item(_scraped(MO_SB973, "SB 973", session=SESSION, chamber="upper"))
     assert _stored("SCR 21") == MO_SCR21_RELABELLED
     assert _stored("SB 973") == MO_SB973_RELABELLED
-    assert Bill.objects.get(identifier="SCR 21").latest_passage_date == "2026-04-13"
+    assert Bill.objects.get(identifier="SCR 21").latest_passage_date == "2026-05-14"  # OPEN-857: the House's adoption
     assert Bill.objects.get(identifier="SB 973").latest_passage_date == "2026-05-15"
 
     _, what = BillImporter(MO).import_item(_scraped(MO_SB973, "SB 973", session=SESSION, chamber="upper"))
@@ -293,8 +294,9 @@ def test_relabel_mo_now_runs_and_finds_the_stored_adoptions():
     result = _relabel_dry_run("mo")
 
     assert result.exit_code == 0, result.output
-    assert "[DRY RUN] actions changed=7 unchanged=32" in result.output
+    assert "[DRY RUN] actions changed=8 unchanged=31" in result.output
     assert "action: passage -> (none): 7" in result.output
+    assert "action: (none) -> passage: 1" in result.output  # OPEN-857: SCR 21's "H adopted"
     assert [_labels(b) for b in bills] == before
 
 
