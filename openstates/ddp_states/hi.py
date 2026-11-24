@@ -6,6 +6,41 @@ import re
 import typing
 
 
+# ── Action labels (OPEN-824) ─────────────────────────────────────────────────────────────────────────────────────────
+
+
+# OPEN-824: in Hawaii a bill passes a chamber on Third Reading (or Final Reading, after conference). Before that, each
+# committee that reports the bill out has its report adopted on the floor, and the line says what happens next:
+# "Report adopted; Passed Second Reading ... and referred to WAM." (Senate), "Report adopted; referred to the
+# committee(s) on FIN ..." (House), "Report adopted, as amended (SD 1) and recommitted to EDU." The scraper's
+# categorizer (upstream `scrapers/hi/actions.py`, its "adopted" rule) tags every one of them `passage`. On the Mac
+# replica (2026-11-24, all 68,030 stored Hawaii actions, session 2026 with its bills carried over from 2025) 2,318
+# such lines carry it, and 955 (bill, chamber) pairs read as passed through them alone: 2026 HB 1800's Senate "Report
+# adopted; Passed Second Reading, as amended (SD 1)" on 04-10, four days before its Senate Third Reading. So a
+# committee-report adoption that is not a Third or Final Reading loses `passage`; its other labels (`reading-2`,
+# `referral-committee`) stay as given. The floor passages keep it: "Report adopted; Passed Third Reading ...", "Passed
+# Third Reading ...", "Passed Final Reading ...", and the adoption of a resolution ("Report and Resolution Adopted
+# ...", "Resolution adopted in final form.", "Adopted with ..."), which is a resolution's passage. Nothing is added.
+# The Senate writes both "Report adopted" and "Report Adopted" (stored only on Third Reading lines so far), so case is
+# ignored. No stored report adoption names Final Reading; it is kept with Third Reading so a future one cannot lose a
+# real passage.
+_COMMITTEE_REPORT_ADOPTED = re.compile(r"^\s*Report adopted\b(?!.*\b(?:Third|Final) Reading\b)", re.I)
+
+
+def classify_action(
+    *,
+    description: typing.Optional[str],
+    classification: typing.Sequence[str],
+    chamber: typing.Optional[str],
+    date: typing.Optional[str],
+) -> typing.List[str]:
+    """An action's labels: no `passage` on a committee report's adoption before Third Reading, every other label as
+    given."""
+    if _COMMITTEE_REPORT_ADOPTED.match(description or ""):
+        return [c for c in classification if c != "passage"]
+    return list(classification)
+
+
 # ── Version rules (OPEN-804) ─────────────────────────────────────────────────────────────────────────────────────────
 
 
