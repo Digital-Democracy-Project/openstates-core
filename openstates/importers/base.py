@@ -153,6 +153,7 @@ class BaseImporter:
         # OPEN-767: session-wide name matches that found several people, and their answers by date
         self.ambiguous_people: typing.Dict[_PersonCacheKey, typing.Any] = {}
         self.person_on_date_cache: typing.Dict[typing.Tuple, typing.Optional[str]] = {}
+        self.people_on_date_cache: typing.Dict[typing.Tuple, typing.FrozenSet[str]] = {}
         self.session_cache: typing.Dict[str, LegislativeSession] = {}
         # Get all_session_cache is a list of all sessions available for this jurisdiction.
         # It is different from session_cache: which is a dictionary session(s) that is loaded a session
@@ -615,19 +616,47 @@ class BaseImporter:
         # August on bills of a session that ended in April) also takes the people whose seat covers
         # the vote's day, so a member seated after the session ended can match. A vote inside its
         # session is looked up exactly as before.
-        served_on = None
-        if _is_full_date(date) and _is_full_date(end_date) and date[:10] > end_date[:10]:  # type: ignore
-            served_on = date[:10]  # type: ignore
-        cache_key = (psuedo_person_id, start_date, end_date, org_classification, served_on)
+        cache_key = self._person_cache_key(psuedo_person_id, start_date, end_date, org_classification, date)
         if cache_key not in self.person_cache:
             self.person_cache[cache_key] = self._resolve_person_in_session(
                 psuedo_person_id, start_date, end_date, org_classification,
-                log_ambiguous=not _is_full_date(date), served_on=served_on,
+                log_ambiguous=not _is_full_date(date), served_on=cache_key[4],
             )
         result_id = self.person_cache[cache_key]
         if result_id is None and cache_key in self.ambiguous_people and _is_full_date(date):
             result_id = self._resolve_person_on_date(cache_key, date[:10])  # type: ignore
         return result_id
+
+    @staticmethod
+    def _person_cache_key(
+        psuedo_person_id: str,
+        start_date: typing.Optional[str],
+        end_date: typing.Optional[str],
+        org_classification: typing.Optional[str],
+        date: typing.Optional[str],
+    ) -> _PersonCacheKey:
+        served_on = None
+        if _is_full_date(date) and _is_full_date(end_date) and date[:10] > end_date[:10]:  # type: ignore
+            served_on = date[:10]  # type: ignore
+        return (psuedo_person_id, start_date, end_date, org_classification, served_on)
+
+    def ambiguous_person_candidates(
+        self,
+        psuedo_person_id: str,
+        start_date: typing.Optional[str] = None,
+        end_date: typing.Optional[str] = None,
+        org_classification: typing.Optional[str] = None,
+        date: typing.Optional[str] = None,
+    ) -> typing.Set[str]:
+        """OPEN-844: the people a name that resolve_person() (same arguments, called first) left
+        unresolved because several fit: the session-wide matches, narrowed to who served on `date`
+        when the vote has a full date. Empty when the name found no one or one person."""
+        cache_key = self._person_cache_key(psuedo_person_id, start_date, end_date, org_classification, date)
+        if cache_key not in self.ambiguous_people:
+            return set()
+        if not _is_full_date(date):
+            return set(self.ambiguous_people[cache_key][0])
+        return set(self._people_on_date(cache_key, date[:10]))  # type: ignore
 
     def _resolve_person_in_session(
         self,
@@ -784,6 +813,20 @@ class BaseImporter:
         day_key = cache_key + (date,)
         if day_key in self.person_on_date_cache:
             return self.person_on_date_cache[day_key]
+        ids = set(self._people_on_date(cache_key, date))
+        result_id = ids.pop() if len(ids) == 1 else None
+        if result_id is None:
+            self.error(
+                "%s people returned for spec on %s", "multiple" if ids else "no", date
+            )
+        self.person_on_date_cache[day_key] = result_id
+        return result_id
+
+    def _people_on_date(self, cache_key: _PersonCacheKey, date: str) -> typing.FrozenSet[str]:
+        """The candidates of an ambiguous name who held a matching seat on `date` under a name in use on `date`."""
+        day_key = cache_key + (date,)
+        if day_key in self.people_on_date_cache:
+            return self.people_on_date_cache[day_key]
         candidates, name, spec, org_spec = self.ambiguous_people[cache_key]
 
         if name is not None:
@@ -795,15 +838,10 @@ class BaseImporter:
             )
         else:
             name_spec = Q(**spec)
-        ids = set(
+        ids = frozenset(
             Person.objects.filter(
                 Q(id__in=candidates) & name_spec & org_spec & _in_use_on("memberships__", date)
             ).values_list("id", flat=True)
         )
-        result_id = ids.pop() if len(ids) == 1 else None
-        if result_id is None:
-            self.error(
-                "%s people returned for spec on %s", "multiple" if ids else "no", date
-            )
-        self.person_on_date_cache[day_key] = result_id
-        return result_id
+        self.people_on_date_cache[day_key] = ids
+        return ids
