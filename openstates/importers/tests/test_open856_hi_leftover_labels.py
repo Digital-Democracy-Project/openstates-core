@@ -121,7 +121,11 @@ def test_a_line_that_is_not_the_bills_passage_loses_passage(chamber, description
             ["passage"],
         ),
         ("upper", "Report and Resolution Adopted.  Transmitted to House.", ["passage"]),
-        ("lower", "Adopted with none voting aye with reservations; none voting no (0) and  none excused (0).", ["passage"]),
+        (
+            "lower",
+            "Adopted with none voting aye with reservations; none voting no (0) and  none excused (0).",
+            ["passage"],
+        ),
     ],
 )
 def test_the_lines_around_them_are_unchanged(chamber, description, labels):

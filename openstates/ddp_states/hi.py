@@ -32,8 +32,8 @@ _COMMITTEE_REPORT_ADOPTED = re.compile(r"^\s*Report adopted\b(?!.*\b(?:Third|Fin
 #   no and none excused." (House), 30 lines. The chamber adopted an amendment, so `amendment-passage` stays.
 # - "HD 1 adopted and recommitted to AGR for further consideration with ...", 2 House lines. The House adopted its
 #   committee's draft and sent the bill back to that committee, like "Report adopted, as amended (SD 1) and
-#   recommitted to EDU." above.
-_NOT_THE_BILLS_PASSAGE = re.compile(r"^\s*(?:Floor amendment adopted\b|[HS]D\s*\d+ adopted and recommitted\b)", re.I)
+#   recommitted to EDU." above. The Senate writes its own as "Report adopted, as amended (SD 1) and recommitted ...".
+_NOT_THE_BILLS_PASSAGE = re.compile(r"^\s*(?:Floor amendment adopted\b|HD\s*\d+ adopted and recommitted\b)", re.I)
 
 # OPEN-856: "The recommendation was not adopted." (Senate, 14 lines on 14 bills) comes after a Senate committee's
 # decision-making vote whose recommendation did not get a majority of the committee. Example: SB 95 (2025), where JDC's
