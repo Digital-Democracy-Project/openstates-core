@@ -1,3 +1,4 @@
+import collections
 import json
 import typing
 from .base import BaseImporter
@@ -117,14 +118,47 @@ class VoteEventImporter(BaseImporter):
                     e,
                 )
 
-        for vote in data["votes"]:
+        self.resolve_voters(
+            data["votes"], session.start_date, session.end_date,
+            json.loads(organization_classification[1:]).get("classification", None),
+            data["start_date"],
+        )
+        return data
+
+    def resolve_voters(
+        self,
+        votes: typing.List[_JsonDict],
+        start_date: typing.Optional[str],
+        end_date: typing.Optional[str],
+        org_classification: typing.Optional[str],
+        date: typing.Optional[str],
+    ) -> None:
+        """Replace each vote's pseudo voter id with a person id (or None) in place."""
+        pseudo_ids = [vote["voter_id"] for vote in votes]
+        for vote, pseudo_id in zip(votes, pseudo_ids):
             # OPEN-767: the vote's own date settles a name two members share in the session
             vote["voter_id"] = self.resolve_person(
-                vote["voter_id"], session.start_date, session.end_date,
-                json.loads(organization_classification[1:]).get("classification", None),
-                date=data["start_date"],
+                pseudo_id, start_date, end_date, org_classification, date=date
             )
-        return data
+
+        # OPEN-844: a name several seated members fit (a bare surname, with three members of that
+        # surname seated) is settled by the roll call itself when the others are already matched
+        # on it under their own names: the one candidate left is matched. Two or more left, or the
+        # same person left for two names, stays unmatched. A matched vote is never changed.
+        matched = {vote["voter_id"] for vote in votes if vote["voter_id"]}
+        left_for: typing.Dict[int, str] = {}
+        for n, (vote, pseudo_id) in enumerate(zip(votes, pseudo_ids)):
+            if vote["voter_id"] is None:
+                left = self.ambiguous_person_candidates(
+                    pseudo_id, start_date, end_date, org_classification, date
+                ) - matched
+                if len(left) == 1:
+                    left_for[n] = left.pop()
+        times_left = collections.Counter(left_for.values())
+        for n, person_id in left_for.items():
+            if times_left[person_id] == 1:
+                votes[n]["voter_id"] = person_id
+                self.info("%s matched on %s by the other voters of its roll call", pseudo_ids[n], date)
 
     def postimport(self) -> None:
         # be sure not to delete vote events that were imported (meaning updated) this time through
