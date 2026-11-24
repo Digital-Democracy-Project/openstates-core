@@ -6,6 +6,59 @@ import re
 import typing
 
 
+# ── Action labels (OPEN-831) ─────────────────────────────────────────────────────────────────────────────────────────
+
+
+# OPEN-831: in Missouri a bill passes a chamber on "Third Read and Passed" (and finally on "Truly Agreed To and Finally
+# Passed"); a resolution passes the Senate on a bare "S adopted". The scraper's categorizer (scrapers/mo/bills.py) tags
+# `passage` on every line that contains "S adopted", and the Senate writes that for everything it adopts on the floor
+# before Third Reading: a substitute or committee substitute ("SS for SCS, as amended, S adopted", "SCS S adopted"),
+# an amendment to one ("SA 1 to SS, as amended, S adopted"), the conference committee's report ("S adopted CCR
+# (...)", followed by "CCS S Third Read and Passed", the bill's final vote) and a motion ("Motion to table SR 668 S
+# adopted (<member>)", "Motion to reconsider Perfection Vote S adopted (<member>)", "Motion to allow S conferees to
+# exceed differences S adopted"). On the Mac replica (2026-11-24, all 21,849 stored Missouri actions, session 2026)
+# 44 such lines carry `passage`, and SB 1534, SB 838, SB 841 (Senate) and SR 668 (tabled) read as passed through them
+# alone. So a line with "S adopted" or "H adopted" loses `passage` unless it is the bare "S adopted" / "H adopted" of
+# a resolution, or the line says "Passed" (none stored says both; it keeps a Third Read and Passed line that also
+# names an adoption a passage); other labels stay, and nothing is added. The House's same lines
+# ("HCS, as amended, H adopted", "H adopts CCR", "House conferees allowed to exceed the differences H adopted") are
+# stored with no label, and Missouri stores no `amendment-passage` or `failure` anywhere, so a tabled measure is left
+# untagged too: the Senate can take it from the table. Case is kept, as in the scraper's own rule. The rule reads only
+# the text (a state rule is not given the bill's identifier); on the replica a bare "S adopted" is stored only on SR
+# and SCR and a bare "H adopted" only on SCR, the resolutions the Senate and House adopt in one vote.
+_FLOOR_ADOPTED = re.compile(r"\b[SH] adopted\b")
+_RESOLUTION_ADOPTED = re.compile(r"^\s*[SH] adopted\.?\s*$")
+_PASSED = re.compile(r"\bPassed\b")
+
+# OPEN-857: the House's adoption of a resolution is that resolution's passage in the House, but the categorizer has no
+# rule for the House's wording, so it is stored with no label (Mac replica, 2026-11-24, every stored Missouri action):
+# "Adopted (H)" on HR 1, HR 2, HR 3872, HR 3873, HCR 21 and HCR 22 (house.mo.gov's action list), "Adopted (H) - AYES:
+# 31 NOES: 0 PRESENT: 0" on HCR 21 and HCR 22, and the bare "H adopted" on SCR 21 (senate.mo.gov's list: the House
+# adopted the Senate's resolution on 05-14-26 after its committees reported it Do Pass). These gain `passage`, as the
+# Senate's bare "S adopted" already has it. (The two "AYES: 31" lines of 01-08-26 are the Senate's adoption, "On motion
+# of Senator ..., HCR 21 was adopted" in its stored roll call, which house.mo.gov prints with "(H)" and the scraper
+# stores under the House; the rule reads only the text, so they gain it too.) The House's adoption of a substitute ("HCS Adopted (H)", on HJRs) or of an
+# amendment ("... H adopted") is not a passage and is left as it is.
+_HOUSE_RESOLUTION_ADOPTED = re.compile(r"^\s*(?:Adopted \(H\)(?:\s+-\s+AYES:.*)?|H adopted\.?)\s*$")
+
+
+def classify_action(
+    *,
+    description: typing.Optional[str],
+    classification: typing.Sequence[str],
+    chamber: typing.Optional[str],
+    date: typing.Optional[str],
+) -> typing.List[str]:
+    """An action's labels: no `passage` on a substitute, amendment, conference report or motion "S/H adopted" line,
+    `passage` on the House's adoption of a resolution, every other label as given."""
+    text = description or ""
+    if _HOUSE_RESOLUTION_ADOPTED.match(text):
+        return list(classification) if "passage" in classification else list(classification) + ["passage"]
+    if _FLOOR_ADOPTED.search(text) and not _RESOLUTION_ADOPTED.match(text) and not _PASSED.search(text):
+        return [c for c in classification if c != "passage"]
+    return list(classification)
+
+
 # ── Version rules (OPEN-806) ─────────────────────────────────────────────────────────────────────────────────────────
 
 

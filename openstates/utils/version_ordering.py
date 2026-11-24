@@ -440,6 +440,16 @@ def note_stage(note: str) -> tuple:
     hi_draft = re.fullmatch(r"(?:house|senate) draft ([1-9]\d*)", lowered)
     if hi_draft:
         return (STAGE_AMENDMENT, float(hi_draft.group(1)))
+    # OPEN-849: Nevada's "Reprint <N>" (the site's <bill>_R<N>.pdf): the bill reprinted with an adopted amendment, in
+    # either house, numbered through the session ("Amendment 5" makes "Reprint 1", "Amendment 15" to R1 makes "Reprint
+    # 2", ... "As Enrolled" last). 22 of Nevada's 263 versions had no stage (Mac replica, 2026-11-24), so they sat
+    # outside the lineage. An amended text, ordered by N, after "As Introduced" and before "As Enrolled", as NELIS
+    # lists them. The "Amendment <N>" papers themselves are not versions (nv.py's PROCEDURAL_DOCUMENT_NOTE_PATTERN).
+    # Last for the same reason as the blocks above, and an exact shape: only Nevada has it (every distinct stored note
+    # on the Mac replica, 2026-11-24).
+    nv_reprint = re.fullmatch(r"reprint ([1-9]\d*)", lowered)
+    if nv_reprint:
+        return (STAGE_AMENDMENT, float(nv_reprint.group(1)))
 
     return (STAGE_UNKNOWN, 0.0)
 

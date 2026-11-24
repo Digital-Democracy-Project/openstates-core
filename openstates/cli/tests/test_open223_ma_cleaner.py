@@ -218,7 +218,7 @@ def test_is_dispatched_for_massachusetts_only():
         "Utah",
         "Florida",
         "United States",
-        "Georgia",
+        "Ohio",  # OPEN-842: Georgia has a cleaner now
     ):  # no cleaner of their own
         assert apply_prediff_cleaning(
             BILL_TEXT, CHAPTER_LAW, jurisdiction_name=other, **args

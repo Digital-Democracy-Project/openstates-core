@@ -4,6 +4,41 @@ unchanged from the generic code that used to hold them).
 """
 
 import re
+import typing
+
+
+# ── Pre-diff text cleaning ──────────────────────────────────────────────────────────────────────────────────────────
+
+
+# OPEN-842: Georgia prints the Legislative Counsel number at the top of every page, alone on its line ("LC 47 4409S"),
+# and the number changes from one version to the next ("LC 62 0547" in one, "LC 47 4409S" in the substitute), so a
+# line diff reported every page break as a removed and an added line: 10 of the 23 changed lines of HB 83's
+# "LC 47 4409S/hs" comparison, 5 of 104 in SB 3's "LC 47 4417S/hss". Measured on the Mac replica (2026_ss, all 284
+# Georgia documents, 2026-11-24): 723 such lines in 181 documents, in five printed shapes: "LC 47 4356",
+# "LC 112 4337" (three-digit first number), "LC 47 4417S" (substitute), "LC 47 4395-EC" (a constitutional
+# amendment) and "LC LC 47 4355" (the prefix printed twice, HB 7). Only a line that is exactly that number is
+# dropped; a sentence that cites one ("Amend SB 3EX (LC 47 4392) by inserting ...") is body text and stays, and every
+# other line is left exactly as it was. The line is matched as printed (none of the 723 has a space around it), so a
+# padded or indented line is kept.
+_GA_LC_HEADER_LINE_RE = re.compile(r"(?:LC\s+)?LC\s+\d+\s+\d+(?:-?[A-Z]{1,3})?")
+
+
+def _clean_ga_text(text: str) -> str:
+    """Georgia-only cleaner, see the block comment above: the per-page Legislative Counsel number lines are dropped,
+    every other line is kept unchanged."""
+    return "\n".join(line for line in text.split("\n") if not _GA_LC_HEADER_LINE_RE.fullmatch(line))
+
+
+def clean_text(
+    prior_text: str,
+    raw_text: str,
+    *,
+    is_bill: bool,
+    prior_media_type: typing.Optional[str],
+    cur_media_type: str,
+) -> typing.Tuple[str, str]:
+    """Georgia's pre-diff cleaning of both sides (`text_extract.apply_prediff_cleaning`)."""
+    return _clean_ga_text(prior_text), _clean_ga_text(raw_text)
 
 
 # ── Version rules (moved unchanged from openstates/utils/version_ordering.py, OPEN-554) ─────────────────────────────
