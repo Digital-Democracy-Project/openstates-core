@@ -42,6 +42,12 @@ _NOT_THE_BILLS_PASSAGE = re.compile(r"^\s*(?:Floor amendment adopted\b|HD\s*\d+ 
 # left that committee. HB 2101 (2026) did, through a later committee vote.
 _RECOMMENDATION_NOT_ADOPTED = re.compile(r"^\s*The recommendation was not adopted\b", re.I)
 
+# OPEN-867: "Floor Amendment No. 5 offered." (Senate) and "Floor Amendment No. 9 offered by Rep. <name>." (House), 31
+# lines on 20 bills (Mac replica, 2026-11-24), are a member offering a floor amendment. The scraper's categorizer tags
+# them `amendment-introduction` and also `introduction`, so the amendment read as the bill's introduction. They lose
+# `introduction`; `amendment-introduction` stays. Every stored one carries both labels.
+_FLOOR_AMENDMENT_OFFERED = re.compile(r"^\s*Floor Amendment No\.\s*\d+ offered\b", re.I)
+
 
 def classify_action(
     *,
@@ -51,9 +57,11 @@ def classify_action(
     date: typing.Optional[str],
 ) -> typing.List[str]:
     """An action's labels: no `passage` on a committee report's adoption before Third Reading, on a floor amendment's
-    adoption or on a draft adopted and recommitted; a committee recommendation not adopted is `committee-failure`;
-    every other label as given."""
+    adoption or on a draft adopted and recommitted; a committee recommendation not adopted is `committee-failure`; no
+    `introduction` on a floor amendment offered; every other label as given."""
     text = description or ""
+    if _FLOOR_AMENDMENT_OFFERED.match(text):
+        return [c for c in classification if c != "introduction"]
     if _COMMITTEE_REPORT_ADOPTED.match(text) or _NOT_THE_BILLS_PASSAGE.match(text):
         return [c for c in classification if c != "passage"]
     if _RECOMMENDATION_NOT_ADOPTED.match(text):
