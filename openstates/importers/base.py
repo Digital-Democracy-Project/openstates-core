@@ -638,6 +638,9 @@ class BaseImporter:
         served_on = None
         if _is_full_date(date) and _is_full_date(end_date) and date[:10] > end_date[:10]:  # type: ignore
             served_on = date[:10]  # type: ignore
+        # OPEN-879: a vote dated before its session's start (a carried-over bill's earlier-year roll call)
+        if _is_full_date(date) and _is_full_date(start_date) and date[:10] < start_date[:10]:  # type: ignore
+            served_on = date[:10]  # type: ignore
         return (psuedo_person_id, start_date, end_date, org_classification, served_on)
 
     def ambiguous_person_candidates(
@@ -723,10 +726,15 @@ class BaseImporter:
         # we use them to exclude people that are definitely not serving in the session:
         # if we know when the session started, ensure they are either in office still or
         #   that their end date was after the start of the session
+        # OPEN-879: kept apart so that a vote dated before the session's start, when the lookup below finds
+        # no one, can be tried again on who held the seat that day
+        before_start_spec = None
         if start_date:
-            common_spec &= Q(memberships__end_date="") | Q(
-                memberships__end_date__gt=start_date
-            )
+            started = Q(memberships__end_date="") | Q(memberships__end_date__gt=start_date)
+            common_spec_no_start = common_spec
+            common_spec &= started
+            if served_on and served_on < start_date[:10]:
+                before_start_spec = common_spec_no_start & (started | _in_use_on("memberships__", served_on))
         # if we know when the session ended, ensure that they didn't start after it ended
         if end_date:
             before_end = Q(memberships__start_date="") | Q(
@@ -737,6 +745,8 @@ class BaseImporter:
             if served_on:
                 before_end |= _in_use_on("memberships__", served_on)
             common_spec &= before_end
+            if before_start_spec is not None:
+                before_start_spec &= before_end
 
         result_id, errmsg = None, None
 
@@ -779,6 +789,14 @@ class BaseImporter:
                 name_spec & common_spec
             ).values("id", "current_role")
             result_set = set([p["id"] for p in query_result])
+            # OPEN-879: nobody fits the session's window, and the vote is dated before the session began
+            # (Hawaii's 2026 bills carry their 2025 roll calls): the people who held a matching seat on the
+            # vote's day. Only when the window finds no one, so a name that matches today never changes.
+            if not result_set and before_start_spec is not None:
+                query_result = Person.objects.filter(
+                    name_spec & before_start_spec
+                ).values("id", "current_role")
+                result_set = set([p["id"] for p in query_result])
             if len(result_set) == 1:
                 result_id = result_set.pop()
             elif not result_set:
