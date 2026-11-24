@@ -196,7 +196,8 @@ class BillImporter(BaseImporter):
                 if (
                     sponsor["person_id"] is None
                     and introduced
-                    and (pseudo_id, session.start_date, session.end_date, None)
+                    # the session lookup's key (resolve_person's): no chamber, no OPEN-817 vote day
+                    and (pseudo_id, session.start_date, session.end_date, None, None)
                     not in self.ambiguous_people
                 ):
                     day = datetime.date.fromisoformat(introduced)
