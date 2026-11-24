@@ -33,6 +33,9 @@ import typing
 # A name below gets exactly its labels (plus the scraper's outcome labels when the line has outcome words); any other
 # name keeps the scraper's labels, without `failure` unless it is the bill's own loss ("3rd Reading Failed", "Died in
 # Process", a simple resolution's "2nd Reading Not Adopted").
+# OPEN-862 (Ramon, 2026-11-24): "(LC) Draft Died in Process" is not the bill's loss. A draft that dies never became a
+# bill, so the line falls to "any other name" and loses the `failure` the scraper gives it ("died in process" matches
+# inside the name; it is the only label the scraper gives that line).
 _PREFIX = re.compile(r"\A\((?:H|S|LC)\) ")
 
 _LABELS = (
@@ -58,7 +61,7 @@ _LABELS = (
     (re.compile(r"became law without governor's signature", re.I), ["became-law"]),
 )
 
-_BILL_LOST = re.compile(r"\A(?:3rd reading failed|2nd reading not adopted|(?:draft )?died in process)\Z", re.I)
+_BILL_LOST = re.compile(r"\A(?:3rd reading failed|2nd reading not adopted|died in process)\Z", re.I)
 
 # OPEN-851's outcome words after a status name (" Passed", " Not Concurred as Amended", " Carried", ...). A committee's
 # "--Bill <words>" needs no rule: no committee action or report is in the table above.
