@@ -26,6 +26,22 @@ import typing
 # real passage.
 _COMMITTEE_REPORT_ADOPTED = re.compile(r"^\s*Report adopted\b(?!.*\b(?:Third|Final) Reading\b)", re.I)
 
+# OPEN-856: two more kinds of line that the same "adopted" rule tags `passage` but that are not the bill's passage
+# (Mac replica, 2026-11-24, every stored Hawaii action):
+# - "Floor amendment adopted as amended (SD 1)." (Senate) and "Floor amendment adopted as amended CD 1 with none voting
+#   no and none excused." (House), 30 lines. The chamber adopted an amendment, so `amendment-passage` stays.
+# - "HD 1 adopted and recommitted to AGR for further consideration with ...", 2 House lines. The House adopted its
+#   committee's draft and sent the bill back to that committee, like "Report adopted, as amended (SD 1) and
+#   recommitted to EDU." above. The Senate writes its own as "Report adopted, as amended (SD 1) and recommitted ...".
+_NOT_THE_BILLS_PASSAGE = re.compile(r"^\s*(?:Floor amendment adopted\b|HD\s*\d+ adopted and recommitted\b)", re.I)
+
+# OPEN-856: "The recommendation was not adopted." (Senate, 14 lines on 14 bills) comes after a Senate committee's
+# decision-making vote whose recommendation did not get a majority of the committee. Example: SB 95 (2025), where JDC's
+# "recommend(s) that the measure be PASSED, WITH AMENDMENTS" got 2 ayes, 2 noes and 1 excused, followed by this line
+# the same day. The committee's vote failed, so the line is `committee-failure`, not `passage`. 13 of the 14 bills never
+# left that committee. HB 2101 (2026) did, through a later committee vote.
+_RECOMMENDATION_NOT_ADOPTED = re.compile(r"^\s*The recommendation was not adopted\b", re.I)
+
 
 def classify_action(
     *,
@@ -34,10 +50,15 @@ def classify_action(
     chamber: typing.Optional[str],
     date: typing.Optional[str],
 ) -> typing.List[str]:
-    """An action's labels: no `passage` on a committee report's adoption before Third Reading, every other label as
-    given."""
-    if _COMMITTEE_REPORT_ADOPTED.match(description or ""):
+    """An action's labels: no `passage` on a committee report's adoption before Third Reading, on a floor amendment's
+    adoption or on a draft adopted and recommitted; a committee recommendation not adopted is `committee-failure`;
+    every other label as given."""
+    text = description or ""
+    if _COMMITTEE_REPORT_ADOPTED.match(text) or _NOT_THE_BILLS_PASSAGE.match(text):
         return [c for c in classification if c != "passage"]
+    if _RECOMMENDATION_NOT_ADOPTED.match(text):
+        labels = [c for c in classification if c != "passage"]
+        return labels if "committee-failure" in labels else labels + ["committee-failure"]
     return list(classification)
 
 
