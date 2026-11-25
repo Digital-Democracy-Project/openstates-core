@@ -450,6 +450,25 @@ def note_stage(note: str) -> tuple:
     nv_reprint = re.fullmatch(r"reprint ([1-9]\d*)", lowered)
     if nv_reprint:
         return (STAGE_AMENDMENT, float(nv_reprint.group(1)))
+    # OPEN-893: Iowa's "Prefiled", "Reprinted" and "Reprinted Marked Up" (the names of legis.iowa.gov's own Bill Book
+    # version list, passed through by the scraper). 418 of Iowa's 6,630 versions had no stage (6.3%, over the Stage 3
+    # ceiling; Mac replica, 2026-11-25). Read from the legislature's own texts:
+    #   "Prefiled" (60, each the only version of a bill with no number or action yet): the text of a bill drafted and
+    #   posted before introduction ("SENATE/HOUSE FILE _____ BY (PROPOSED ... BILL)", TLSB drafting number). It comes
+    #   before the bill's "Introduced" text, so it ranks just below it, as Montana's "Bill Draft" (OPEN-801).
+    #   "Reprinted" (265): every one of the 265 texts is headed "(As Amended and Passed by the House|Senate <date>)",
+    #   so it is the bill as a chamber passed it after amending it: chamber passage, as Florida's "e1" or Georgia's "As
+    #   Passed". No bill has more than one (replica, 2026-11-25).
+    #   "Reprinted Marked Up" (93, always beside a "Reprinted"): the same reprint with its changes marked, so the same
+    #   stage, just after it. Whether it should stay in the diff lineage is not decided here.
+    # Last for the same reason as the blocks above, and exact names (every distinct stored note in every jurisdiction on
+    # the Mac replica, 2026-11-25: only Iowa has them).
+    if lowered == "prefiled":
+        return (STAGE_INTRODUCED, -1.0)
+    if lowered == "reprinted":
+        return (STAGE_CHAMBER_PASSAGE, 0.0)
+    if lowered == "reprinted marked up":
+        return (STAGE_CHAMBER_PASSAGE, 0.5)
 
     return (STAGE_UNKNOWN, 0.0)
 
