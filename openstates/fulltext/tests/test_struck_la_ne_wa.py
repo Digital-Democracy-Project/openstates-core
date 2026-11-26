@@ -58,6 +58,16 @@ archive's copies):
   underlined "An individual" inserted, "personindividual" becomes "individual".
 * North Dakota SB 2159, Enrollment, page 1: "TheIf" becomes "If", "may not conduct" becomes "may
   conduct".
+
+OPEN-895 adds Idaho (line-numbered pages, so `extract_line_numbered_pdf` underneath). Idaho draws a
+thin line through removed words at 0.5 of the line height and under inserted words, so the reader
+is reused unchanged. Pages cut and font-subset as above, from the PDFs on legislature.idaho.gov
+(byte-identical to the archive's copies), the 2026 session:
+
+* Idaho H 561, Bill Text, page 1: the flag list, "(g)" struck before the underlined "(f)" (the
+  "(c) (b)" pairs of the ticket), and the struck item "(h) Official flags of Idaho colleges ...".
+* Idaho H 570, Bill Text, page 1: the struck ", or" and "," around the reckless-driving offence.
+* Idaho H 570, Bill Text, page 2: nothing struck.
 """
 
 import difflib
@@ -733,6 +743,84 @@ def test_a_north_dakota_page_with_underlines_only_is_read_exactly_as_before():
     assert _pdf("nd")(data, META) == extract_sometimes_numbered_pdf(data, META)
 
 
+# Idaho (OPEN-895): each change pinned, since whole struck lines drop out.
+def _changes(old, new):
+    matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
+    return [
+        (old[i1:i2], new[j1:j2])
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes()
+        if tag != "equal"
+    ]
+
+
+def test_idaho_h561_drops_the_struck_flag_items_and_their_old_letters():
+    data = _read("id_h561_bill_text_p1.pdf")
+    old = _lines(extract_line_numbered_pdf(data, META))
+    new = _lines(_pdf("id")(data, META))
+    assert "(h) Official flags of Idaho colleges, universities, and public" in old  # the defect
+    assert _changes(old, new) == [
+        (
+            [
+                "(b) The official flag of a governmental entity as defined in this sec-",
+                "tion;",
+                "(c) (b) Official flags of any state in the United States and the offi-",
+            ],
+            ["(b) Official flags of any state in the United States and the offi-"],
+        ),
+        (
+            ["(d) (c) Official flags of any of the military branches and units of the"],
+            ["(c) Official flags of any of the military branches and units of the"],
+        ),
+        (
+            [
+                "(e) (d) The POW/MIA flag as provided for in section 67-2303, Idaho Code;",
+                "(f) (e) Official flags of recognized Indian tribes;",
+                "(g) (f) Official flags of countries other than the United States to",
+            ],
+            [
+                "(d) The POW/MIA flag as provided for in section 67-2303, Idaho Code;",
+                "(e) Official flags of recognized Indian tribes;",
+                "(f) Official flags of countries other than the United States to",
+            ],
+        ),
+        (["(h) Official flags of Idaho colleges, universities, and public", "schools."], []),
+        (
+            ["(3) (4) The division of veterans services is hereby authorized to pro-"],
+            ["(4) The division of veterans services is hereby authorized to pro-"],
+        ),
+    ]
+    text = "\n".join(new)
+    assert "Idaho colleges, universities" not in text
+    assert not re.search(r"\([a-z0-9]+\)\s+\([a-z0-9]+\)", text)
+
+
+def test_idaho_h570_reads_the_offence_without_its_struck_words():
+    data = _read("id_h570_bill_text_p1.pdf")
+    old = _lines(extract_line_numbered_pdf(data, META))
+    new = _lines(_pdf("id")(data, META))
+    assert _changes(old, new) == [
+        (
+            [
+                "likely to endanger any person or property, or; who passes when there is a line",
+                "in his lane indicating a sight distance restriction,; or who drives a vehi-",
+            ],
+            [
+                "likely to endanger any person or property ; who passes when there is a line",
+                "in his lane indicating a sight distance restriction ; or who drives a vehi-",
+            ],
+        )
+    ]
+    # Over the whole page, characters are only taken out, never added (spacing aside).
+    rest = iter("".join(old).replace(" ", ""))
+    assert all(ch in rest for ch in "".join(new).replace(" ", ""))
+
+
+def test_an_idaho_page_with_nothing_struck_is_read_exactly_as_before():
+    data = _read("id_h570_bill_text_p2.pdf")
+    assert without_struck_text(data) is data
+    assert _pdf("id")(data, META) == extract_line_numbered_pdf(data, META)
+
+
 def test_a_nevada_page_with_nothing_struck_is_read_exactly_as_before():
     data = _read("nv_ab4_r1_p2.pdf")
     assert without_struck_text(data) is data
@@ -741,12 +829,12 @@ def test_a_nevada_page_with_nothing_struck_is_read_exactly_as_before():
 
 def test_a_file_pymupdf_cannot_open_is_an_extraction_error():
     # As for Alabama: no quiet fallback that would bring the struck words back.
-    for state in ("ga", "la", "nc", "nd", "ne", "nv", "wa"):
+    for state in ("ga", "id", "la", "nc", "nd", "ne", "nv", "wa"):
         with pytest.raises(Exception):
             _pdf(state)(b"%PDF-1.7\n" + b"\x00" * 64, META)
 
 
-def test_only_these_eight_states_read_pdfs_without_struck_text():
+def test_only_these_nine_states_read_pdfs_without_struck_text():
     # Each of the five keeps its own text extractor underneath, and no other state's
     # reader or media type changes.
     # (Washington's is wrapped twice: OPEN-580 takes the emptied "((" "))" marks out.)
@@ -759,6 +847,7 @@ def test_only_these_eight_states_read_pdfs_without_struck_text():
     }
     assert wrapped == {
         "ga": extract_sometimes_numbered_pdf,
+        "id": extract_line_numbered_pdf,  # OPEN-895
         "la": extract_sometimes_numbered_pdf,
         "me": extract_sometimes_numbered_pdf,  # OPEN-871
         "nc": extract_sometimes_numbered_pdf,
@@ -769,6 +858,7 @@ def test_only_these_eight_states_read_pdfs_without_struck_text():
     }
     assert CONVERSION_FUNCTIONS["al"]["application/pdf"] is handle_alabama_pdf
     assert set(CONVERSION_FUNCTIONS["ga"]) == {"application/pdf"}
+    assert set(CONVERSION_FUNCTIONS["id"]) == {"application/pdf"}
     assert set(CONVERSION_FUNCTIONS["la"]) == {"application/pdf"}
     assert set(CONVERSION_FUNCTIONS["nc"]) == {"application/pdf"}
     assert set(CONVERSION_FUNCTIONS["nd"]) == {"application/pdf"}
