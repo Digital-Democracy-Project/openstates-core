@@ -22,6 +22,12 @@ so it gains `passage`. The scraper gave it `reading-2` alone, so SCR 4008 (69), 
 The other failed motions are left as the scraper labels them: "Amendment failed" (an amendment, `amendment-failure`),
 "Motion to reconsider failed" (the bill had already passed or failed), "Emergency clause failed" (the bill can still
 pass without it) and "Division A lost" (one part of a divided question).
+
+Pre-diff text cleaning (OPEN-909). North Dakota's "Enrollment" version (the latest version of every enacted bill) is
+the enrolled printing, and it carries what no earlier printing does: a running page header on every page and, after
+the last page of the bill, the certification pages (signatures, the chambers' vote, "Received by the Governor",
+"Approved at", "Filed in this office", and for a vetoed measure the Governor's objections and the failed override
+vote), so the changelog against the engrossment spent its lines on them. See `clean_text` below.
 """
 
 import re
@@ -79,3 +85,95 @@ def classify_action(
 # never became the measure's, so it is not a version (`version_ordering.is_procedural_document`), as other states'
 # failed amendment papers are not.
 PROCEDURAL_DOCUMENT_NOTE_PATTERN = re.compile(r"\A[a-z]+ engrossment - not adopted\Z", re.IGNORECASE)
+
+
+# ── Pre-diff text cleaning (OPEN-909) ────────────────────────────────────────────────────────────────────────────────
+
+# Measured on the Mac replica (all 648 stored North Dakota Enrollment documents, 2026-11-27; no other version carries
+# either shape, 2,042 documents checked):
+# * The running page header, alone on its line, as the PDF reader gives it, with the page break's form feed in front:
+#   "H. B. NO. 1540 - PAGE 8" (970 lines), "S. B. NO. 2032 - PAGE 3" (857), "H.C.R. NO. 3027 - PAGE 2" (27),
+#   "S.C.R. NO. 4005 - PAGE 2" (19), "H.M.R. NO. ..." (2), "H. R. NO. 3027 - PAGE 2" (1, spacing as printed: "H.   R."):
+#   chamber letter, one or two letters for the measure type, "NO.", number, "- PAGE", number.
+# * The certification pages: every one of the 648 has a page header whose next printed line is a signature rule
+#   ("____________________________", or two of them side by side), and the pages from there to the end of the text hold
+#   only the signature rules and titles, "This certifies that the within bill originated in ...", the vote lines
+#   ("House Vote:       Yeas 49 ..."), "Received by the Governor ...", "Approved at ...", "Filed in this office ...",
+#   and for a vetoed measure the Governor's objections ("Honorable Michael Howe / Secretary of State ... I certify this
+#   Act ... together with the objections of Governor ...") and the failed override vote (HB 1540, 45 to 48). A signature
+#   rule is also printed inside the body of some bills (a form that is to be signed: SB 2269, HB 1424), but never right
+#   after a page header, so the block starts at the page header and not at the first rule, and it is cut only when every line after the header is
+#   a certification shape (the classes below, measured on the same 648), otherwise it is left in place.
+# Everything else is left exactly as it was: the cover lines and sponsor list, the title, the body. A line that only
+# looks like a header ("NO. 1540" mid-sentence, a header with other words on its line) is body text and stays.
+_ND_PAGE_HEADER_RE = re.compile(r"\f?\s*[HS]\.\s*(?:[A-Z]\.\s*){1,2}NO\.\s*\d+\s*-\s*PAGE\s*\d+\s*")
+_ND_SIGNATURE_RULE_RE = re.compile(r"\s*_{8,}(?:\s+_{8,})*\s*")
+
+# The block is cut only when every line after the page header is a page header (a veto adds pages) or one of these shapes (a body page that happens to
+# start with a signature rule right after a header is therefore kept whole). Each is a whole line as measured in the
+# 648 stored Enrollments; the "prose" openers start a wrapped sentence that runs to the first line ending in a full
+# stop (the "This certifies that ..." paragraph and the veto "I certify this Act ..." paragraph, at most 8 lines, the longest measured being 6).
+_ND_TITLE = r"(?:Speaker of the House|President of the Senate|Chief Clerk of the House|Secretary of the Senate|Governor|Secretary of State)"
+_ND_CERTIFICATION_LINE_RE = re.compile(
+    r"\s*(?:"
+    + _ND_TITLE + r"(?:\s{2,}" + _ND_TITLE + r")?"
+    + r"|(?:House Vote|Senate Vote|Vote):\s+Yeas\s+\d+(?:\s+Nays\s+\d+\s+Absent\s+\d+)?"
+    + r"|Nays\s+\d+|Absent and|not voting\s+\d+"
+    + r"|Received by the Governor at .*|Approved at .*|Filed in this office .*|at _+ o.clock _+M\."
+    + r"|Honorable .*|Bismarck, North Dakota"
+    + r")\s*"
+)
+_ND_CERTIFICATION_PROSE_RE = re.compile(r"\s*(?:This certifies that|I certify this Act)\b")
+_ND_PROSE_MAX_LINES = 8  # the longest measured is 6 (a veto certificate)
+
+
+def _is_nd_certification(lines: typing.List[str]) -> bool:
+    """True when every non-blank line is a certification-page shape (see the block comment above)."""
+    prose = 0  # lines read so far of a sentence that has not reached its full stop
+    for line in lines:
+        if not line.strip():
+            continue
+        if prose:
+            prose += 1
+            if prose > _ND_PROSE_MAX_LINES:
+                return False
+            if line.rstrip().endswith("."):
+                prose = 0
+        elif (
+            _ND_PAGE_HEADER_RE.fullmatch(line)
+            or _ND_SIGNATURE_RULE_RE.fullmatch(line)
+            or _ND_CERTIFICATION_LINE_RE.fullmatch(line)
+        ):
+            continue
+        elif _ND_CERTIFICATION_PROSE_RE.match(line):
+            prose = 0 if line.rstrip().endswith(".") else 1
+        else:
+            return False
+    return prose == 0
+
+
+def _clean_nd_text(text: str) -> str:
+    """North Dakota-only cleaner, see the block comment above: the certification pages after the last page of the bill
+    (only when everything from the page header to the end is certification-shaped) and every page header line are
+    dropped, every other line is kept unchanged."""
+    lines = text.split("\n")
+    end = len(lines)
+    for i, line in enumerate(lines):
+        if _ND_PAGE_HEADER_RE.fullmatch(line):
+            following = next((x for x in lines[i + 1 :] if x.strip()), "")
+            if _ND_SIGNATURE_RULE_RE.fullmatch(following) and _is_nd_certification(lines[i + 1 :]):
+                end = i
+                break
+    return "\n".join(line for line in lines[:end] if not _ND_PAGE_HEADER_RE.fullmatch(line))
+
+
+def clean_text(
+    prior_text: str,
+    raw_text: str,
+    *,
+    is_bill: bool,
+    prior_media_type: typing.Optional[str],
+    cur_media_type: str,
+) -> typing.Tuple[str, str]:
+    """North Dakota's pre-diff cleaning of both sides (`text_extract.apply_prediff_cleaning`)."""
+    return _clean_nd_text(prior_text), _clean_nd_text(raw_text)

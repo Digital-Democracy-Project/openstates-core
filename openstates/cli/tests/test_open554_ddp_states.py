@@ -27,6 +27,7 @@ def test_shared_helpers_are_not_states():
         "mi",
         "mt",
         "nc",
+        "nd",
         "ne",
         "pa",
         "va",
