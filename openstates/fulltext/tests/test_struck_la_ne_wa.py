@@ -78,6 +78,7 @@ from pathlib import Path
 import fitz  # PyMuPDF
 import pytest
 
+from openstates.ddp_states.la import extract_la_pdf
 from openstates.fulltext import CONVERSION_FUNCTIONS
 from openstates.fulltext.al import _struck_runs, handle_alabama_pdf, without_struck_text
 from openstates.fulltext.common import (
@@ -848,7 +849,7 @@ def test_only_these_nine_states_read_pdfs_without_struck_text():
     assert wrapped == {
         "ga": extract_sometimes_numbered_pdf,
         "id": extract_line_numbered_pdf,  # OPEN-895
-        "la": extract_sometimes_numbered_pdf,
+        "la": extract_la_pdf,  # OPEN-915
         "me": extract_sometimes_numbered_pdf,  # OPEN-871
         "nc": extract_sometimes_numbered_pdf,
         "nd": extract_sometimes_numbered_pdf,

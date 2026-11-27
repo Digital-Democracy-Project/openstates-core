@@ -82,13 +82,65 @@ PROCEDURAL_DOCUMENT_NOTE_PATTERN = re.compile(
 )
 
 
-# ── Reader choice (moved unchanged from openstates/fulltext/__init__.py's CONVERSION_FUNCTIONS, OPEN-554) ────────────
+# ── Reader choice (OPEN-915 adds the page rule below; the struck-text wrapper is OPEN-560's) ───────────────────────
+
+
+# OPEN-915: upstream's `extract_sometimes_numbered_pdf` reads a Louisiana PDF with margin line numbers by keeping only the
+# lines that start with a number. That keeps all of a bill's law text (every line of it is numbered) and drops what is
+# not: the cover block (title, authors, summary line), the signature block, the page headers and footers, the DIGEST, and
+# any page with no margin numbers at all. Read on the Mac's archive copy of all 10,468 Louisiana 2026 PDFs: the law text of
+# the redistricting bills SB 136, HB 699 and SB 121 is complete (SB 121 Enrolled, pages 1 to 7). What they lose is the
+# "Plan Statistics" appendix the legislature attaches after the instrument (population and voter registration tables by
+# district and parish, 14 pages in SB 136), and behind it map pages whose labels are not text worth keeping.
+# Louisiana numbers the pages of the instrument "Page N of N", digest included ("Page 14 of 14" in SB 136), and appends
+# attachments after the last one. The digest ("DIGEST", then "The digest printed below ... constitutes no part of the
+# legislative instrument") is the drafters' summary, not law, and the scraper stores it as its own document link
+# (OPEN-902); it stays as it was, which is out of the text apart from its few lines that start with a number.
+# The rule: in a paper read with margin numbers, a page after the instrument's last page that has no margin number at
+# all is kept in full. Map pages carry numbers (their precinct labels) and are read as before, as is everything else, so
+# no line the old reader kept is lost (measured, see the PR). A page of the instrument with no numbers is not kept
+# either (the digest's last pages, HB 1's table of contents). A margin number alone on its line counts as a number: a
+# map page whose only number-like line is a bare precinct label ("4") is not an attachment table.
+# Each footer must follow the one before it ("Page 6 of 14", then "Page 7 of 14"); one that does not is ignored, so a
+# paper whose end cannot be told keeps the old reading throughout. Read on all 9,595 archived papers read with margin
+# numbers (2026-11-26): every one has its footers 1..M in order, exactly one with N = M, and it is the last footer.
+_LA_MARGIN_NUMBER = re.compile(r"\s*\d+(?:\s|$)")  # a margin number, alone on its line or before text
+_LA_LAST_PAGE = re.compile(r"^\s*Page\s+(\d+)\s+of\s+(\d+)\s*$", re.IGNORECASE)
+# upstream's choice between the two readings, copied as it counts (over all lines, blank ones too)
+_LA_UPSTREAM_NUMBERED = re.compile(r"^\s*\d+\s+(.*)", flags=re.MULTILINE)
+_LA_NUMBERED_SHARE = 0.10
+
+
+def extract_la_pdf(data: bytes, metadata: typing.Any) -> str:
+    # imported at call time: openstates.fulltext builds its reader table from this module
+    from openstates.fulltext.utils import pdfdata_to_text, text_after_line_numbers
+
+    text = pdfdata_to_text(data)
+    if len(_LA_UPSTREAM_NUMBERED.findall(text)) / len(text.split("\n")) <= _LA_NUMBERED_SHARE:
+        return text  # no margin numbers: read as it is printed, as upstream does
+    kept = []
+    after_instrument = False
+    page_no = total = 0  # the last footer accepted: its N and its M
+    for page in text.split("\f"):
+        lines = page.split("\n")
+        if after_instrument and not any(_LA_MARGIN_NUMBER.match(line) for line in lines):
+            kept.extend(line.strip() for line in lines if line.strip())  # an attachment page
+        else:
+            numbered = text_after_line_numbers(page)
+            if numbered:
+                kept.append(numbered)
+        for line in lines:
+            footer = _LA_LAST_PAGE.match(line)
+            if footer and (total == 0 or (int(footer.group(1)), int(footer.group(2))) == (page_no + 1, total)):
+                page_no, total = int(footer.group(1)), int(footer.group(2))
+                if page_no == total:
+                    after_instrument = True
+    return "\n".join(kept)
 
 
 def readers():
     """Louisiana's text reader per media type; replaces upstream's entry in `fulltext.CONVERSION_FUNCTIONS`."""
     # imported at call time: openstates.fulltext builds its reader table from this function
     from openstates.fulltext.al import read_without_struck_text
-    from openstates.fulltext.common import extract_sometimes_numbered_pdf
     # OPEN-560: struck-out words removed by Alabama's reader, see fulltext/al.py.
-    return {"application/pdf": read_without_struck_text(extract_sometimes_numbered_pdf)}
+    return {"application/pdf": read_without_struck_text(extract_la_pdf)}
