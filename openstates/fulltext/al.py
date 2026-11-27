@@ -84,6 +84,13 @@ from .common import ExtractorFunc, Metadata, extract_line_numbered_pdf
 # Whole-archive comparison (2026-11-25, all 924 local Idaho PDFs of 2026,
 # scripts/open560_compare_struck_text.py id): 438 lose struck text, no stored text gains a
 # character, no rule at 0.6 or higher removes anything, no errors.
+#
+# OPEN-927: Wyoming draws the same thin rule through removed words, at 0.50 of the line height
+# (0.55 on 155 of 14,591 removed runs), and an underline under inserted words at 0.95
+# (HB 144: "three (3)" struck before the underlined "ten (10)"). Whole-archive comparison
+# (2026-11-26, all 1,295 local Wyoming PDFs of 2026, scripts/open560_compare_struck_text.py wy):
+# 230 lose struck text, no stored text gains a character, no rule at 0.6 or higher removes
+# anything, no errors.
 _RULE_MAX_HEIGHT = 2.0
 _STRIKE_LOW = 0.35
 _STRIKE_HIGH = 0.7

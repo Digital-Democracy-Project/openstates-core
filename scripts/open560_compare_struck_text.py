@@ -251,7 +251,7 @@ def compare_one(args: tuple) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("state", choices=["ga", "id", "la", "nc", "nd", "ne", "nv", "wa"])
+    parser.add_argument("state", choices=["ga", "id", "la", "nc", "nd", "ne", "nv", "wa", "wy"])
     parser.add_argument(
         "--root",
         default=os.environ.get("ARCHIVE_ROOT_DIR", "/Volumes/DDP-HOT/bills/raw"),

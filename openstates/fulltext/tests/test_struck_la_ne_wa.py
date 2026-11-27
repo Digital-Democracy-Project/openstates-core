@@ -68,6 +68,18 @@ is reused unchanged. Pages cut and font-subset as above, from the PDFs on legisl
   "(c) (b)" pairs of the ticket), and the struck item "(h) Official flags of Idaho colleges ...".
 * Idaho H 570, Bill Text, page 1: the struck ", or" and "," around the reckless-driving offence.
 * Idaho H 570, Bill Text, page 2: nothing struck.
+
+OPEN-927 adds Wyoming (`extract_sometimes_numbered_pdf` underneath). Wyoming draws a thin line through
+removed words at 0.50 of the line height (0.55 on a few) and under inserted words at 0.95, so the reader is
+reused unchanged. Pages cut and font-subset as above, from the 2026 Introduced PDFs on wyoleg.gov
+(byte-identical to the archive's copies):
+
+* Wyoming HB 144, page 2: "three (3)" struck beside the new "ten (10)" ("the amount of three (3) ten (10)
+  mills", the levy LegBot read as three ten-mill levies).
+* Wyoming HB 166, page 2: the struck "35-7-1014(d)(xiii) or" references in the edible-products definitions.
+* Wyoming HB 166, page 4: "marihuana" struck before the new "marijuana"; the page that adds "(ii) Marijuana."
+  to Schedule III.
+* Wyoming HB 166, page 8: nothing struck.
 """
 
 import difflib
@@ -821,6 +833,66 @@ def test_an_idaho_page_with_nothing_struck_is_read_exactly_as_before():
     assert _pdf("id")(data, META) == extract_line_numbered_pdf(data, META)
 
 
+# Wyoming (OPEN-927): each change pinned.
+def test_wyoming_hb144_reads_ten_mills_not_three_ten_mills():
+    data = _read("wy_hb144_introduced_p2.pdf")
+    old = _lines(extract_sometimes_numbered_pdf(data, META))
+    new = _lines(_pdf("wy")(data, META))
+    assert "in any one (1) year the amount of three (3) ten (10) mills" in old  # the defect
+    assert _changes(old, new) == [
+        (
+            ["in any one (1) year the amount of three (3) ten (10) mills"],
+            ["in any one (1) year the amount of ten (10) mills"],
+        )
+    ]
+
+
+def test_wyoming_hb166_reads_marijuana_without_the_struck_marihuana_and_references():
+    data = _read("wy_hb166_introduced_p4.pdf")
+    old = _lines(extract_sometimes_numbered_pdf(data, META))
+    new = _lines(_pdf("wy")(data, META))
+    assert _changes(old, new) == [
+        (
+            ["in otherwise cleaning or refining marihuana marijuana;"],
+            ["in otherwise cleaning or refining marijuana;"],
+        ),
+        (
+            ["ingesting, inhaling or otherwise introducing marihuana"],
+            ["ingesting, inhaling or otherwise introducing"],
+        ),
+    ]
+    # The line that adds marijuana to Schedule III is underlined, not struck: it stays.
+    assert "(ii) Marijuana." in new
+    data = _read("wy_hb166_introduced_p2.pdf")
+    old = _lines(extract_sometimes_numbered_pdf(data, META))
+    new = _lines(_pdf("wy")(data, META))
+    assert _changes(old, new) == [
+        (
+            ["W.S. 35-7-1014(d)(xiii) or (xxi) 35-7-1014(d)(xxi),"],
+            ["W.S. 35-7-1014(d)(xxi),"],
+        ),
+        (
+            [
+                "controlled substance listed under W.S. 35-7-1014(d)(xiii)",
+                "or (xxi) 35-7-1014(d)(xxi) or 35-7-1018(h)(ii); or",
+            ],
+            [
+                "controlled substance listed under W.S.",
+                "35-7-1014(d)(xxi) or 35-7-1018(h)(ii); or",
+            ],
+        ),
+    ]
+    # Characters are only taken out, never added (spacing aside).
+    rest = iter("".join(old).replace(" ", ""))
+    assert all(ch in rest for ch in "".join(new).replace(" ", ""))
+
+
+def test_a_wyoming_page_with_nothing_struck_is_read_exactly_as_before():
+    data = _read("wy_hb166_introduced_p8.pdf")
+    assert without_struck_text(data) is data
+    assert _pdf("wy")(data, META) == extract_sometimes_numbered_pdf(data, META)
+
+
 def test_a_nevada_page_with_nothing_struck_is_read_exactly_as_before():
     data = _read("nv_ab4_r1_p2.pdf")
     assert without_struck_text(data) is data
@@ -829,12 +901,12 @@ def test_a_nevada_page_with_nothing_struck_is_read_exactly_as_before():
 
 def test_a_file_pymupdf_cannot_open_is_an_extraction_error():
     # As for Alabama: no quiet fallback that would bring the struck words back.
-    for state in ("ga", "id", "la", "nc", "nd", "ne", "nv", "wa"):
+    for state in ("ga", "id", "la", "nc", "nd", "ne", "nv", "wa", "wy"):
         with pytest.raises(Exception):
             _pdf(state)(b"%PDF-1.7\n" + b"\x00" * 64, META)
 
 
-def test_only_these_nine_states_read_pdfs_without_struck_text():
+def test_only_these_ten_states_read_pdfs_without_struck_text():
     # Each of the five keeps its own text extractor underneath, and no other state's
     # reader or media type changes.
     # (Washington's is wrapped twice: OPEN-580 takes the emptied "((" "))" marks out.)
@@ -855,6 +927,7 @@ def test_only_these_nine_states_read_pdfs_without_struck_text():
         "ne": extract_sometimes_numbered_pdf,
         "nv": extract_sometimes_numbered_pdf,
         "wa": extract_line_numbered_pdf,
+        "wy": extract_sometimes_numbered_pdf,  # OPEN-927
     }
     assert CONVERSION_FUNCTIONS["al"]["application/pdf"] is handle_alabama_pdf
     assert set(CONVERSION_FUNCTIONS["ga"]) == {"application/pdf"}
@@ -865,3 +938,4 @@ def test_only_these_nine_states_read_pdfs_without_struck_text():
     assert set(CONVERSION_FUNCTIONS["ne"]) == {"application/pdf"}
     assert set(CONVERSION_FUNCTIONS["nv"]) == {"application/pdf"}
     assert set(CONVERSION_FUNCTIONS["wa"]) == {"text/html", "application/pdf"}
+    assert set(CONVERSION_FUNCTIONS["wy"]) == {"application/pdf"}
