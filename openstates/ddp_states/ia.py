@@ -27,11 +27,17 @@ import typing
 # Neither alone does: 67 numbered papers have "GOVERNOR" in their first 400 characters ("BY (PROPOSED GOVERNOR
 # BILL)"), and three numbered papers (SF 162's enrolled text and the amendments to SF 615 and HF 583) are under 10%. Of
 # the 6,594 PDFs exactly the 393 with a text layer match; the other 6,201 read as before.
-# Known limit: two joint resolutions' "Enrolled" papers (SJR 9, SJR 11), text PDFs with no margin numbers and no letter,
-# still read as 60 characters; they are not a signed paper and are left for a ticket of their own.
+# OPEN-930: the "Enrolled" papers of two joint resolutions (SJR 9 and SJR 11, 2025) are text PDFs with no margin numbers
+# and no letter: one numbered line each ("4 BE IT RESOLVED ..."), 1.6% and 2.3% of their lines, so they read as 60
+# characters of 1,757 and 2,888. A paper whose title line ends "- Enrolled" and has at most 5% numbered lines is read as
+# plain text too. Of the 6,631 PDFs on the archive (2026-11-27), 379 unsigned text papers carry that title; the three lowest
+# numbered shares are SJR 11 (1.6%), SJR 9 (2.3%) and SF 162 (6.7%, read as before), then 16.7% and up. The title keeps
+# out the other low-share papers (the amendments to SF 615 at 2.7% and HF 583 at 8.8%); the 5% line keeps out SF 162.
 _LETTER = re.compile(r"GOVERNOR|Governor|Secretary\s*of\s*the\s*Senate")
 _LETTER_WITHIN = 400  # characters of the paper's opening (OCR letters vary: "KliM", "KLM", "Secretary ofthe Senate"; the title line is stable)
 _UNNUMBERED = 0.10
+_NO_MARGIN = 0.05
+_ENROLLED_TITLE = re.compile(r"[ \t]*[^\n]+ - Enrolled[ \t]*(\n|$)")  # the first line, e.g. "Senate Joint Resolution 9 - Enrolled"
 _NUMBERED_LINE = re.compile(r"^\s*\d+\s+(.*)", flags=re.MULTILINE)
 
 
@@ -44,6 +50,13 @@ def is_signed_paper(text: str) -> bool:
     return len(_NUMBERED_LINE.findall(text)) / len(lines) <= _UNNUMBERED
 
 
+def is_unnumbered_enrolled_paper(text: str) -> bool:
+    """True for an "Enrolled" paper that is text with no margin numbers (SJR 9, SJR 11): the title line, then at most 5% numbered lines."""
+    if not _ENROLLED_TITLE.match(text):
+        return False
+    return len(_NUMBERED_LINE.findall(text)) / len(text.split("\n")) <= _NO_MARGIN
+
+
 def readers():
     """Iowa's text reader per media type; replaces upstream's entry in `fulltext.CONVERSION_FUNCTIONS`."""
     # imported at call time: openstates.fulltext builds its reader table from this function
@@ -52,7 +65,7 @@ def readers():
 
     def extract_ia_pdf(data: bytes, metadata: typing.Any) -> str:
         text = pdfdata_to_text(data)
-        if is_signed_paper(text):
+        if is_signed_paper(text) or is_unnumbered_enrolled_paper(text):
             return text
         return text_after_line_numbers(text)  # what upstream's extract_line_numbered_pdf does
 
