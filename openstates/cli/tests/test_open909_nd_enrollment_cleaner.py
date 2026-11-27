@@ -142,3 +142,24 @@ def test_a_certification_page_with_a_line_of_body_in_it_is_not_cut():
     got = _clean_nd_text("\n".join(lines))
     assert "SECTION 9. The department shall report yearly." in got
     assert "Received by the Governor" in got
+
+
+def _page_then_certification_sentence(lines_in_sentence, ends_with_full_stop=True):
+    """A body, a page header, a signature rule, then a certification sentence of the given number of lines (the opener
+    included), made of the real lines of HB 1412's "This certifies" paragraph and the veto letter's continuations."""
+    opener = "This certifies that the within bill originated in the House of Representatives of the Sixty-ninth Legislative"
+    middle = "the Governor were entered upon the Journal on April 24, 2025; that the Bill was taken up for"
+    last = "Assembly of North Dakota and is known on the records of that body as House Bill No. 1412."
+    sentence = [opener] + [middle] * (lines_in_sentence - 2) + [last if ends_with_full_stop else middle]
+    rule = "                        ____________________________"
+    return "SECTION 1. The department shall report yearly.\n\x0c  H. B. NO. 1412 - PAGE 2\n\n" + rule + "\n\n" + "\n".join(sentence)
+
+
+@pytest.mark.parametrize("count,cut", [(2, True), (8, True), (9, False)])
+def test_a_certification_sentence_longer_than_the_longest_measured_is_not_cut(count, cut):
+    text = _page_then_certification_sentence(count)
+    assert (_clean_nd_text(text) == "SECTION 1. The department shall report yearly.") is cut
+
+
+def test_a_certification_sentence_that_never_ends_is_not_cut():
+    assert "This certifies that" in _clean_nd_text(_page_then_certification_sentence(4, ends_with_full_stop=False))

@@ -112,7 +112,7 @@ _ND_SIGNATURE_RULE_RE = re.compile(r"\s*_{8,}(?:\s+_{8,})*\s*")
 # The block is cut only when every line after the page header is a page header (a veto adds pages) or one of these shapes (a body page that happens to
 # start with a signature rule right after a header is therefore kept whole). Each is a whole line as measured in the
 # 648 stored Enrollments; the "prose" openers start a wrapped sentence that runs to the first line ending in a full
-# stop (the "This certifies that ..." paragraph and the veto "I certify this Act ..." paragraph, at most 12 lines).
+# stop (the "This certifies that ..." paragraph and the veto "I certify this Act ..." paragraph, at most 8 lines, the longest measured being 6).
 _ND_TITLE = r"(?:Speaker of the House|President of the Senate|Chief Clerk of the House|Secretary of the Senate|Governor|Secretary of State)"
 _ND_CERTIFICATION_LINE_RE = re.compile(
     r"\s*(?:"
@@ -124,7 +124,7 @@ _ND_CERTIFICATION_LINE_RE = re.compile(
     + r")\s*"
 )
 _ND_CERTIFICATION_PROSE_RE = re.compile(r"\s*(?:This certifies that|I certify this Act)\b")
-_ND_PROSE_MAX_LINES = 12
+_ND_PROSE_MAX_LINES = 8  # the longest measured is 6 (a veto certificate)
 
 
 def _is_nd_certification(lines: typing.List[str]) -> bool:
