@@ -20,7 +20,16 @@ import typing
 # dropped; a sentence that cites one ("Amend SB 3EX (LC 47 4392) by inserting ...") is body text and stays, and every
 # other line is left exactly as it was. The line is matched as printed (none of the 723 has a space around it), so a
 # padded or indented line is kept.
-_GA_LC_HEADER_LINE_RE = re.compile(r"(?:LC\s+)?LC\s+\d+\s+\d+(?:-?[A-Z]{1,3})?")
+#
+# OPEN-905: the regular session (2025_26) prints the number with a version suffix after it, which the pattern above
+# missed: 649 of its 1,931 stored comparisons still held a changed header line (4,053 of them). Measured on the Mac
+# replica (2025_26 and 2026_ss, 9,121 documents, 2026-11-26), the suffixes after the number are "/AP" ("LC 57 0200/AP",
+# "LC 62 0513S/AP", "LC 59 0350-ECS/AP", "LC 44 3113ER/AP") and the committee-substitute tag (SCS) ("LC 61 0483S
+# (SCS)", "LC 60 0155S(SCS)", "LC 56 0640-ECS (SCS)"), with or without a space before the bracket; letters in the
+# suffix are capitals in every one of the 37,050 lines that start "LC" (33,736 match the old pattern, all 37,050 the new
+# one), and no line has both tags, so the pattern takes one or the other and nothing else ("/ABC", "(NOTE)"). A
+# lower-case tag such as "/hss" is only in a version's name, never in its text, and still does not match.
+_GA_LC_HEADER_LINE_RE = re.compile(r"(?:LC\s+)?LC\s+\d+\s+\d+(?:-?[A-Z]{1,3})?(?:\s?\(SCS\)|/AP)?")
 
 
 def _clean_ga_text(text: str) -> str:
