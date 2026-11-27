@@ -84,3 +84,94 @@ def version_rank(note: str, origin: typing.Optional[str]) -> typing.Optional[typ
     if chamber == origin:
         return (STAGE_AMENDMENT, float(step))
     return (STAGE_CHAMBER_PASSAGE, 0.01 * (step + 1))
+
+
+# ── Reader choice (OPEN-914; replaces upstream's entry in openstates/fulltext/__init__.py's CONVERSION_FUNCTIONS) ─────
+
+
+# OPEN-914: upstream reads Oklahoma's PDFs with `extract_sometimes_numbered_pdf`: a paper with margin line numbers on
+# more than 10% of its lines is read with `extract_line_numbered_pdf`, which keeps only the lines that start with a
+# number. Oklahoma prints margin numbers 1-24 on every page, but pdftotext does not put them beside every line of
+# text: the title paragraph's numbers sit on every other line ("9   An Act relating to debtors and creditors; creating"
+# / "    the Uniform Assignment for Benefit of Creditors Act;" / "10  defining terms; ..."), a number is sometimes
+# printed on a line of its own above the text ("B. The Board is authorized and empowered to:" and the items 1 and 2
+# under it, SB 439 introduced), and a few lines hold a heading or a short continuation ("and", "FOR"). Every such line,
+# a whole paragraph in places, was dropped. Read on the Mac's archive copy, 251 sampled Oklahoma PDFs (2026-11-27):
+# 97 lose 5% or more of their body lines and 35 lose 10% or more (SB 374 introduced 200 of 792).
+# A line without a number between the first and the last numbered line of the paper is body text and is kept, as
+# Missouri's reader keeps the House's line 1 (OPEN-908). What is not body, as before, stays out: a line that is only a
+# number, and the running header or footer a page repeats ("Req. No. 1140  Page 1", "ENGR. H. B. NO. 3588  Page 2",
+# "SENATE FLOOR VERSION - SB1 SFLR", "BOLD FACE denotes Committee Amendments."): an unnumbered line among the first
+# two or last three text lines of a page whose text, digits aside, is among those lines on three or more pages (the
+# footer is printed in pieces, so it is not always the very last line), or that ends "Page <n>" (so a two-page paper's
+# footer goes too). Only those occurrences go: the same words in the middle of a page stay.
+_NUMBERED = re.compile(r"\s*\d+\s+(.*)")
+_BARE_NUMBER = re.compile(r"\s*\d+\s*\Z")
+_PAGE_EDGES_TO_REPEAT = 3  # pages that must share an edge line for it to be a running header or footer
+_HEAD_LINES, _FOOT_LINES = 2, 3
+_PAGE_FOOTER = re.compile(r"(?:\A| )Page 0\Z")
+
+
+def _running_key(line: str) -> str:
+    """A line's text with digits blanked and spacing collapsed, so "Page 1" and "Page 12" are one footer."""
+    return " ".join(re.sub(r"\d+", "0", line).split())
+
+
+def _running_lines(lines: typing.List[str]) -> typing.Set[int]:
+    """The indexes of the unnumbered lines that are a running header or footer: at the top or bottom of their page, with
+    text (digits aside) that sits there on three or more pages, or ending "Page <n>" (a page footer even in a paper of
+    two pages). Only those occurrences, not the same text mid-page."""
+    pages: typing.List[typing.List[int]] = [[]]
+    for i, line in enumerate(lines):
+        if "\f" in line:  # pdftotext puts a form feed at the start of a page's first line
+            pages.append([])
+        if line.strip() and not _BARE_NUMBER.match(line.replace("\f", "")):
+            pages[-1].append(i)
+    edges: typing.Dict[str, typing.Set[int]] = {}
+    at_edge: typing.List[typing.Tuple[int, int]] = []
+    for n, page in enumerate(pages):
+        for i in page[:_HEAD_LINES] + page[-_FOOT_LINES:]:
+            if not _NUMBERED.match(lines[i].replace("\f", "")):
+                edges.setdefault(_running_key(lines[i]), set()).add(n)
+                at_edge.append((i, n))
+    return {
+        i
+        for i, _ in at_edge
+        if len(edges[_running_key(lines[i])]) >= _PAGE_EDGES_TO_REPEAT or _PAGE_FOOTER.search(_running_key(lines[i]))
+    }
+
+
+def extract_ok_pdf(data: bytes, metadata: typing.Any) -> str:
+    # imported at call time: openstates.fulltext builds its reader table from this module
+    from openstates.fulltext.utils import pdfdata_to_text
+
+    text = pdfdata_to_text(data)
+    lines = text.split("\n")
+    # upstream's switch between the numbered and the plain reading, unchanged (`extract_sometimes_numbered_pdf`)
+    # (counted over the whole text, as upstream does: its `\s+` can run across a line break)
+    numbered = re.findall(r"^\s*\d+\s+(.*)", text, flags=re.MULTILINE)
+    if len(numbered) / len(lines) <= 0.10:
+        return text
+    at = [i for i, line in enumerate(lines) if _NUMBERED.match(line)]
+    if not at:
+        return ""  # as `extract_line_numbered_pdf` returns
+    first, last = at[0], at[-1]
+    running = _running_lines(lines)
+    kept = []
+    for i, line in enumerate(lines):
+        match = _NUMBERED.match(line)
+        if match:
+            kept.append(match.group(1))
+        elif (
+            first < i < last
+            and line.strip()
+            and not _BARE_NUMBER.match(line)
+            and i not in running
+        ):
+            kept.append(line.strip())
+    return "\n".join(kept)
+
+
+def readers():
+    """Oklahoma's text reader per media type; replaces upstream's entry in `fulltext.CONVERSION_FUNCTIONS`."""
+    return {"application/pdf": extract_ok_pdf}
