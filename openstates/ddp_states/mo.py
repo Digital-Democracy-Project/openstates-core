@@ -126,3 +126,29 @@ def version_rank(note: str, origin: typing.Optional[str]) -> typing.Optional[typ
     if chamber == origin:
         return (STAGE_AMENDMENT, float(step))
     return (STAGE_CHAMBER_PASSAGE, 0.1 * step)
+
+
+# ── Reader choice (OPEN-908; replaces upstream's entry in openstates/fulltext/__init__.py's CONVERSION_FUNCTIONS) ────
+
+
+# OPEN-908: upstream reads every Missouri PDF with `extract_line_numbered_pdf`, which keeps only the lines that start
+# with a margin line number. A bill's introduced and perfected printing has one ("1  Section A. Section 144.014,
+# RSMo, ..."), but two kinds of paper do not: the Senate's committee substitutes (senate.mo.gov .../SCSfromResearch/
+# SB1017.pdf: "SENATE COMMITTEE SUBSTITUTE FOR SENATE BILLS NOS. 1017 & 1239", body text unnumbered) and the Senate's
+# resolutions (SCR 21: "Whereas, to secure the blessings of liberty ..."). For those the reader kept only the lines that
+# happened to start with a digit, 53 characters of SB 1017's substitute ("are nonseverable and if any of the powers
+# vested with") and 52 of SCR 21 ("Missouri Commission, and its forty-nine counterparts", from the line "250 Missouri
+# Commission, ..."), or nothing. Read on the Mac's archive copy of all 4,856 Missouri 2026 PDFs and on the replica,
+# 2026-11-26: 4,814 are text PDFs that pdftotext reads in full (the other 42, 34 of them amendment papers, have no text layer
+# and read empty before and after). `extract_sometimes_numbered_pdf` (la, ne, nc, ga,
+# nv) tells the two kinds apart by "more than 10% of the lines start with a number". Of the 4,856 PDFs it reads 132
+# differently (63 Senate committee substitutes, 66 introduced papers, 3 others; 66 of them were empty, 130 had 300
+# characters or fewer, none gets shorter) and the other 4,724 exactly as before; the 132 gain 1.99 million characters.
+# Known limit: 36 of the 66 introduced papers are one-section House bills whose few margin numbers fall under the 10%
+# (blank lines count), so they are read as plain text, header and margin digits included, not as numbered ones.
+def readers():
+    """Missouri's text reader per media type; replaces upstream's entry in `fulltext.CONVERSION_FUNCTIONS`."""
+    # imported at call time: openstates.fulltext builds its reader table from this function
+    from openstates.fulltext.common import extract_sometimes_numbered_pdf
+
+    return {"application/pdf": extract_sometimes_numbered_pdf}
