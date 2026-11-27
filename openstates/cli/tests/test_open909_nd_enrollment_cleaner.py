@@ -6,7 +6,6 @@ and a stretch of SB 2269 whose body holds signature rules of its own.
 """
 
 import pathlib
-import re
 
 import pytest
 
@@ -109,3 +108,37 @@ def test_the_reader_is_unchanged():
     # OPEN-909 adds a cleaner only: ND's reader entry is still the one OPEN-836 set
     assert set(nd.readers()) == {"application/pdf"}
     assert set(fulltext.CONVERSION_FUNCTIONS["nd"]) == set(nd.readers())
+
+
+def test_a_body_page_that_starts_with_a_signature_rule_is_not_cut():
+    # the reviewer's case: a page header, a signature rule right after it, and real body after the rule
+    text = (
+        "SECTION 1. Petition.\nI swear\n\x0c   S. B. NO. 2269 - PAGE 3\n\n   ______\\_\n   (signature)\n"
+        "SECTION 2. Real body continues.\nSECTION 3. More.\n"
+    ).replace("______\\_", "____________________________")
+    assert _clean_nd_text(text) == (
+        "SECTION 1. Petition.\nI swear\n\n   ____________________________\n   (signature)\n"
+        "SECTION 2. Real body continues.\nSECTION 3. More.\n"
+    )
+
+
+def test_real_petition_text_with_a_rule_right_after_a_header_keeps_everything_after_it():
+    # real SB 2269 lines: the page header and the circulator's rule, put directly one after the other
+    lines = _read("sb2269_signature_rule_in_body.txt").split("\n")
+    header = next(x for x in lines if "- PAGE 3" in x)
+    rule = next(x for x in lines if x.strip().startswith("____") and set(x.strip()) == {"_"})
+    at = lines.index(header)
+    text = "\n".join(lines[:at] + [header, "", rule] + lines[at + 1 :])
+    got = _clean_nd_text(text)
+    assert got == "\n".join(lines[:at] + ["", rule] + lines[at + 1 :])
+    assert "recalled who are sponsoring the recall." in got  # the end of the stretch is still there
+
+
+def test_a_certification_page_with_a_line_of_body_in_it_is_not_cut():
+    raw = _read("hb1412_whole.txt")
+    lines = raw.split("\n")
+    at = next(i for i, x in enumerate(lines) if "Received by the Governor" in x)
+    lines.insert(at, "SECTION 9. The department shall report yearly.")
+    got = _clean_nd_text("\n".join(lines))
+    assert "SECTION 9. The department shall report yearly." in got
+    assert "Received by the Governor" in got
