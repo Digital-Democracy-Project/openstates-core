@@ -51,3 +51,35 @@ def classify_action(
     elif _RESOLUTION_ADOPTED.match(text) and "passage" not in labels:
         labels.append("passage")
     return labels
+
+
+# ── Reader choice (OPEN-906; replaces upstream's entry in openstates/fulltext/__init__.py's CONVERSION_FUNCTIONS) ──────
+
+# Kentucky's bill PDFs print a margin line number on every line, and upstream reads them with
+# `extract_line_numbered_pdf`, which keeps only the lines that start with a number. The chaptered acts ("Acts Chapter N",
+# the version the legislature publishes once a bill is enacted, apps.legislature.ky.gov/law/acts/26RS/documents/NNNN.pdf)
+# are a different layout: a Word document with no line numbers, so that reader kept only the page-header lines ("2
+# ACTS OF THE GENERAL ASSEMBLY") or nothing. Read on the replica and the archive copy, 2026RS, 2026-11-26: 202 acts, 164
+# of them 300 characters or fewer (23 empty), every one a normal text PDF that pdftotext reads in full. Every act opens
+# with "CHAPTER <number>" and no bill PDF does (checked on all 202 acts and all 2,359 bill PDFs), so an act is read as
+# plain text. Not by `extract_sometimes_numbered_pdf` alone: its "10% of lines start with a number" rule takes a claims
+# act (HB 816, whose addresses begin "3139 B Canton Street") for a numbered one and keeps 1,108 of its 20,118 characters.
+# The same reader (the rest of the bills) also fixes the long road-plan and budget papers (HB 502, HB 533, HJR 52, 75, 76),
+# whose tables carry no line numbers and were cut to a few thousand characters; the 2,351 other bill PDFs read exactly
+# as before.
+_ACT = re.compile(r"\s*CHAPTER \d+\b")
+
+
+def readers():
+    """Kentucky's text reader per media type; replaces upstream's entry in `fulltext.CONVERSION_FUNCTIONS`."""
+    # imported at call time: openstates.fulltext builds its reader table from this function
+    from openstates.fulltext.common import extract_sometimes_numbered_pdf
+    from openstates.fulltext.utils import pdfdata_to_text
+
+    def extract_ky_pdf(data: bytes, metadata: typing.Any) -> str:
+        text = pdfdata_to_text(data)
+        if _ACT.match(text):
+            return text
+        return extract_sometimes_numbered_pdf(data, metadata)
+
+    return {"application/pdf": extract_ky_pdf}
