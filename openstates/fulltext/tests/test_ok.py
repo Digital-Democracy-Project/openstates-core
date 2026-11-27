@@ -121,3 +121,22 @@ def test_a_footer_repeated_on_three_pages_stays_out_but_mid_page_text_that_repea
     out = READ(b"", META).split("\n")
     assert out.count("and") == 3  # a body word on a line of its own is not a footer: it is mid-page
     assert not any("Req. No." in line or "ENGR." in line for line in out)
+
+
+def test_a_bare_page_number_footer_goes_in_a_two_page_paper(monkeypatch):
+    p1 = "\n".join([" 1   alpha", " 2   beta", "", "     Page 1", "\f"])
+    p2 = "\n".join([" 1   gamma", " 2   delta", "", "     Page 2", "\f"])
+    _fake(monkeypatch, p1 + p2)
+    # page 1's footer sits between numbered lines (page 2 follows it), so only the rule for "Page <n>" takes it out
+    assert READ(b"", META).split("\n") == ["alpha", "beta", "gamma", "delta"]
+
+
+def test_text_that_matches_a_footer_but_sits_mid_page_stays_in(monkeypatch):
+    pages = "".join(
+        _page(n, [" 1   one", " 2   two", " 3   three", "     Req. No. 9   Page 7", " 4   four", " 5   five", " 6   six"])
+        for n in (1, 2, 3)
+    )
+    _fake(monkeypatch, pages)
+    out = READ(b"", META).split("\n")
+    assert out.count("Req. No. 9   Page 7") == 3  # mid-page, so body (the page's own footer is the one that goes)
+    assert not any(line.endswith("Page 1") or line.endswith("Page 2") for line in out)

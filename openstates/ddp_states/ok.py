@@ -103,11 +103,13 @@ def version_rank(note: str, origin: typing.Optional[str]) -> typing.Optional[typ
 # number, and the running header or footer a page repeats ("Req. No. 1140  Page 1", "ENGR. H. B. NO. 3588  Page 2",
 # "SENATE FLOOR VERSION - SB1 SFLR", "BOLD FACE denotes Committee Amendments."): an unnumbered line among the first
 # two or last three text lines of a page whose text, digits aside, is among those lines on three or more pages (the
-# footer is printed in pieces, so it is not always the very last line).
+# footer is printed in pieces, so it is not always the very last line), or that ends "Page <n>" (so a two-page paper's
+# footer goes too). Only those occurrences go: the same words in the middle of a page stay.
 _NUMBERED = re.compile(r"\s*\d+\s+(.*)")
 _BARE_NUMBER = re.compile(r"\s*\d+\s*\Z")
 _PAGE_EDGES_TO_REPEAT = 3  # pages that must share an edge line for it to be a running header or footer
 _HEAD_LINES, _FOOT_LINES = 2, 3
+_PAGE_FOOTER = re.compile(r"(?:\A| )Page 0\Z")
 
 
 def _running_key(line: str) -> str:
@@ -115,16 +117,28 @@ def _running_key(line: str) -> str:
     return " ".join(re.sub(r"\d+", "0", line).split())
 
 
-def _running_lines(pages: typing.List[typing.List[str]]) -> typing.Set[str]:
-    """The unnumbered lines' texts (digits blanked) that sit at the top or bottom of three or more pages."""
-    seen: typing.Dict[str, typing.Set[int]] = {}
+def _running_lines(lines: typing.List[str]) -> typing.Set[int]:
+    """The indexes of the unnumbered lines that are a running header or footer: at the top or bottom of their page, with
+    text (digits aside) that sits there on three or more pages, or ending "Page <n>" (a page footer even in a paper of
+    two pages). Only those occurrences, not the same text mid-page."""
+    pages: typing.List[typing.List[int]] = [[]]
+    for i, line in enumerate(lines):
+        if "\f" in line:  # pdftotext puts a form feed at the start of a page's first line
+            pages.append([])
+        if line.strip() and not _BARE_NUMBER.match(line.replace("\f", "")):
+            pages[-1].append(i)
+    edges: typing.Dict[str, typing.Set[int]] = {}
+    at_edge: typing.List[typing.Tuple[int, int]] = []
     for n, page in enumerate(pages):
-        text = [line for line in page if line.strip() and not _BARE_NUMBER.match(line)]
-        for line in text[:_HEAD_LINES] + text[-_FOOT_LINES:]:
-            if not _NUMBERED.match(line):
-                seen.setdefault(_running_key(line), set()).add(n)
-    # a line that ends "Page <n>" is a page footer wherever it sits, even in a paper of two pages
-    return {key for key, on in seen.items() if len(on) >= _PAGE_EDGES_TO_REPEAT or key.endswith(" Page 0")}
+        for i in page[:_HEAD_LINES] + page[-_FOOT_LINES:]:
+            if not _NUMBERED.match(lines[i].replace("\f", "")):
+                edges.setdefault(_running_key(lines[i]), set()).add(n)
+                at_edge.append((i, n))
+    return {
+        i
+        for i, _ in at_edge
+        if len(edges[_running_key(lines[i])]) >= _PAGE_EDGES_TO_REPEAT or _PAGE_FOOTER.search(_running_key(lines[i]))
+    }
 
 
 def extract_ok_pdf(data: bytes, metadata: typing.Any) -> str:
@@ -142,7 +156,7 @@ def extract_ok_pdf(data: bytes, metadata: typing.Any) -> str:
     if not at:
         return ""  # as `extract_line_numbered_pdf` returns
     first, last = at[0], at[-1]
-    running = _running_lines([page.split("\n") for page in text.split("\f")])
+    running = _running_lines(lines)
     kept = []
     for i, line in enumerate(lines):
         match = _NUMBERED.match(line)
@@ -152,7 +166,7 @@ def extract_ok_pdf(data: bytes, metadata: typing.Any) -> str:
             first < i < last
             and line.strip()
             and not _BARE_NUMBER.match(line)
-            and _running_key(line) not in running
+            and i not in running
         ):
             kept.append(line.strip())
     return "\n".join(kept)
