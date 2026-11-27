@@ -88,6 +88,29 @@ def classify_action(
     return labels
 
 
+# ── Version rules (OPEN-907) ─────────────────────────────────────────────────────────────────────────────────────────
+
+
+# OPEN-907: the scraper stores every paper on a bill's page as a version, and "Amendment <letter> (<filing number>)"
+# papers are not the bill: each is an instruction sheet that opens with the House or Senate header and says "Amend the
+# bill by striking out ..." / "Amend the amendment by ...", with a SUMMARY of what it changes. A committee amendment
+# ("C-A") that rewrites most of the bill is still an instruction ("Amend the bill by striking out all of section 3 and
+# inserting the following"), never a reprint of the bill. Read on the Mac replica (2026-11-26, 5,131 Maine documents):
+# the 1,792 "Amendment ..." documents (1,344 bills) all carry the amendment header and an "Amend the ..." instruction
+# and none is a full text (4 of them hold the words "be it enacted" only inside quoted new law); the other 3,339 are
+# the bill as introduced (2,368) or the chaptered law (971, "Chapter <N>" and "ACTPS  Chapter <N>"), which are full
+# texts. The bill as amended is not published as a paper before enactment, so the Chapter law is the next real version
+# after "Introduced". Summarising or comparing an amendment as a version made LD 1009's summary describe the amendment, and
+# put a later amendment before an earlier one (LD 2233: the Senate amendment to the committee amendment, S-659, sorted
+# before the committee amendment it amends, H-1025, because the filing number is the only ordinal). Shapes: "C-A" (committee),
+# "H-A"/"S-A" (floor), "S-A to C-A", "H-A to C-B" (to a committee amendment); letters run to "H-U" in the notes read.
+# Their stage is untouched (note_stage's amendment rule places them); they drop out of the comparison chain, so a
+# chaptered law compares with the introduced bill instead of with the last amendment paper.
+PROCEDURAL_DOCUMENT_NOTE_PATTERN = re.compile(
+    r"\Aamendment [chs]-[a-z]+(?: to [chs]-[a-z]+)? \([a-z]+-\d+\)\Z", re.IGNORECASE
+)
+
+
 def readers():
     """Maine's text reader per media type; replaces upstream's entry in `fulltext.CONVERSION_FUNCTIONS`."""
     # imported at call time: openstates.fulltext builds its reader table from this function
