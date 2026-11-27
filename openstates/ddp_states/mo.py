@@ -141,14 +141,49 @@ def version_rank(note: str, origin: typing.Optional[str]) -> typing.Optional[typ
 # Commission, ..."), or nothing. Read on the Mac's archive copy of all 4,856 Missouri 2026 PDFs and on the replica,
 # 2026-11-26: 4,814 are text PDFs that pdftotext reads in full (the other 42, 34 of them amendment papers, have no text layer
 # and read empty before and after). `extract_sometimes_numbered_pdf` (la, ne, nc, ga,
-# nv) tells the two kinds apart by "more than 10% of the lines start with a number". Of the 4,856 PDFs it reads 132
+# nv) tells the two kinds apart by "more than 10% of the lines start with a number"; `extract_mo_pdf` below does the
+# same with the share counted over the non-blank lines. On the first rule alone, of the 4,856 PDFs 132 read
 # differently (63 Senate committee substitutes, 66 introduced papers, 3 others; 66 of them were empty, 130 had 300
 # characters or fewer, none gets shorter) and the other 4,724 exactly as before; the 132 gain 1.99 million characters.
-# Known limit: 36 of the 66 introduced papers are one-section House bills whose few margin numbers fall under the 10%
-# (blank lines count), so they are read as plain text, header and margin digits included, not as numbered ones.
+# OPEN-908 (second fix): the House prints no margin number "1" on the first line of a section, so even a numbered House
+# bill lost those lines: "Section A. Chapter 167, RSMo, is amended by adding thereto one new section, to be" and
+# "167.209. No school district or charter school ..." (HB 1880, whose stored text was 229 of 1,285 characters) both sit
+# right above a line numbered "2". Read on the same archive copy (2026-11-26): 2,622 PDFs (2,586 on House bills) have such a
+# line, 14,159 lines in all, each the opening line of a section or of a "That at the next general election ..." question.
+# A line directly above a line numbered "2" that has no number of its own and is more than three characters (a bare
+# "1" is the appropriations bills' number printed on a line of its own, 1,218 times, and a petition bill's "D" and "HD"
+# marks are not text either) is that missing line 1, and is kept. Senate papers print the "1" (the 31 PDFs on
+# Senate bills that gain such a line are the House's committee substitutes of them, typeset by the House).
+# The 10% rule of `extract_sometimes_numbered_pdf` counts blank lines, which sends a one-section House bill (HB 1651:
+# two numbered lines of sixteen) to the plain-text branch; here the share is of the non-blank lines.
+_MARGIN_NUMBER = re.compile(r"\s*\d+\s+(.*)")
+_MARGIN_TWO = re.compile(r"\s*2\s+\S")
+_NUMBERED_SHARE = 0.10
+
+
+def extract_mo_pdf(data: bytes, metadata: typing.Any) -> str:
+    # imported at call time: openstates.fulltext builds its reader table from this module
+    from openstates.fulltext.utils import pdfdata_to_text
+
+    text = pdfdata_to_text(data)
+    lines = text.split("\n")
+    numbered = sum(1 for line in lines if _MARGIN_NUMBER.match(line))
+    if numbered <= _NUMBERED_SHARE * sum(1 for line in lines if line.strip()):
+        return text  # no margin numbers: a committee substitute or a resolution, read as it is printed
+    kept = []
+    for i, line in enumerate(lines):
+        match = _MARGIN_NUMBER.match(line)
+        if match:
+            kept.append(match.group(1))
+        elif (
+            i + 1 < len(lines)
+            and len(line.strip()) > 3
+            and _MARGIN_TWO.match(lines[i + 1])
+        ):
+            kept.append(line.strip())  # the House's line 1, printed without its number
+    return "\n".join(kept)
+
+
 def readers():
     """Missouri's text reader per media type; replaces upstream's entry in `fulltext.CONVERSION_FUNCTIONS`."""
-    # imported at call time: openstates.fulltext builds its reader table from this function
-    from openstates.fulltext.common import extract_sometimes_numbered_pdf
-
-    return {"application/pdf": extract_sometimes_numbered_pdf}
+    return {"application/pdf": extract_mo_pdf}
