@@ -15,7 +15,7 @@ import typing
 # number. A federal bill prints the numbers beside its text lines but not beside a section heading or a table-of-contents
 # entry ("Sec. 1. Short title; table of contents.", "TITLE I", "Sec. 101. Purpose."), and a simple resolution numbers only
 # its "Resolved" clause, so its "Whereas" paragraphs were dropped (S.Res. 54 kept 738 characters of 4,197). Read on the
-# Mac's archive copy (2026-11-27): 3,682 of 7,202 resolutions change (all gain), and a bill gains its heading lines
+# Mac's archive copy (2026-11-27): 3,687 of 7,202 resolutions change (all gain), and a bill gains its heading lines
 # (S. 241: 24 lines, HR 8540: 38; the OPEN-911 sweep's larger counts also counted the printer's page furniture).
 # The body now starts at the first line after the paper's title block (the line after "A BILL" / "RESOLUTION" /
 # "JOINT RESOLUTION" / "AN ACT" and the title under it, up to a "Whereas"; the first numbered line when there is none, or when it comes
