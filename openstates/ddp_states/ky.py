@@ -18,14 +18,15 @@ Every other line, and every other label, is as given: the bills' real votes ("3r
 32-6", "adopted by voice vote") keep `passage`, and a simple resolution's bare "adopted 38-0" and the veto-override
 "adopted 88-4" are left alone.
 
-Not changed here, on purpose: "enrolled, signed by President of the Senate" / "... Speaker of the House" (240 lines
-each) also carry `passage` although they are the presiding officers' signatures, not votes. The scraper stores every
-other floor line under the bill's own chamber (the actor is read from the end of the text, and "3rd reading, passed
-38-0" names none), so on the replica all 973 real passage lines sit under the origin chamber, including the 407 cast
-in the second chamber. The Senate President's signature is the only line under the other chamber, so it is the only
-thing that makes a Kentucky bill read as passed by both chambers: without it all 204 bills that reach "Passed both
-chambers" (`validate_bill_stages`) would lose that stage. The signatures can lose `passage` once the second chamber's
-lines are stored under that chamber (OPEN-845 pull request).
+Presiding officers' signatures (OPEN-947): "enrolled, signed by President of the Senate" / "... Speaker of the House"
+(240 lines each) also carried `passage` although they are signatures, not votes (the same check that rejects
+Washington's "Speaker signed." and Oregon's signature lines). OPEN-845 kept them on purpose: the scraper then stored
+every second-chamber floor line under the origin chamber, so the Senate President's signature was the only line under
+the other chamber and the only thing that made a bill read as passed by both chambers. OpenStates scrapers' OPEN-852
+now stores a second-chamber line under the chamber that voted (187 of 501 "3rd reading, passed ..." lines on the
+replica, the rest correctly under the origin chamber), so the signatures lose `passage`. 203 of the 204 bills with
+an "enrolled, signed" line already have real passage lines in both chambers; the one that does not, HB 642, is a
+documented known miss (Ramon, 2026-11-24).
 """
 
 import re
@@ -33,6 +34,7 @@ import typing
 
 _PASSED_OVER = re.compile(r"^passed over and retained\b", re.I)
 _RESOLUTION_ADOPTED = re.compile(r"^3rd reading, adopted\b", re.I)
+_SIGNED = re.compile(r"^enrolled, signed by\b", re.I)
 
 
 def classify_action(
@@ -42,11 +44,11 @@ def classify_action(
     chamber: typing.Optional[str],
     date: typing.Optional[str],
 ) -> typing.List[str]:
-    """An action's labels: no `passage` on a "passed over and retained ..." line, `passage` added on a "3rd reading,
-    adopted ..." line, every other label as given."""
+    """An action's labels: no `passage` on a "passed over and retained ..." or an "enrolled, signed by ..." line,
+    `passage` added on a "3rd reading, adopted ..." line, every other label as given."""
     text = description or ""
     labels = list(classification)
-    if _PASSED_OVER.match(text):
+    if _PASSED_OVER.match(text) or _SIGNED.match(text):
         labels = [c for c in labels if c != "passage"]
     elif _RESOLUTION_ADOPTED.match(text) and "passage" not in labels:
         labels.append("passage")
