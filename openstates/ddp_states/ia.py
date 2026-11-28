@@ -6,6 +6,34 @@ import re
 import typing
 
 
+# ── Version rules (OPEN-962) ─────────────────────────────────────────────────────────────────────────────────────────
+
+
+# OPEN-962: the scraper stores the paper behind every amendment action on a bill's page as a version named "Amendment H-<n>"
+# or "Amendment S-<n>" (scrapers/ia/bills.py; filed, adopted, lost, withdrawn and out-of-order amendments alike). Read on
+# the Mac replica (2026-11-28, all 6,631 Iowa documents): 1,274 such papers (821 House, 453 Senate), every one opening
+# "Amend ..." and none holding "be it enacted". Three shapes: 791 line edits to the bill ("Amend House File 583 as follows:
+# 1. Page 4, by striking lines 23 and 24. 2. ... 4. By renumbering as necessary."; median 777 characters), 212 amendments
+# to another amendment ("Amend the amendment, H-1153, to House File 872, as follows:"; they stay fragments even when one
+# strikes a page of the amendment and inserts a whole replacement, 21 of them), and 271 strikers, which replace the bill:
+# "Amend House File 387 as follows: 1. By striking everything after the enacting clause and inserting: <Section 1. ...>",
+# the new bill body in full (median 7,042 characters, up to 168,447). A striker keeps the enacting clause, so it carries
+# no "be it enacted" for core's enacting-clause test to see; the first instruction tells it from a line edit. The line
+# edits and amendments to an amendment are not the bill, so they are not versions; the strikers are whole bill texts,
+# like Georgia's whole-bill SFA papers (OPEN-959), and stay versions (138 of the 271 were adopted, 133 filed and lost,
+# withdrawn, ruled out of order or never acted on; whether an unadopted striker is a version is Ramon's call, see the PR).
+# The note cannot tell the three shapes apart ("Amendment H-8031" for all), so the text decides, through core's
+# `is_amendment_text` (OPEN-564), as for Georgia: a document with no text is never excluded.
+# The head of a striker: the instruction block opens at the first colon, within the header, and its first instruction is
+# the strike-everything one. "Amend the amendment ..." and "Amend the House amendment ..." never match it.
+_BILL_TARGET = r"(?:house|senate)\s+(?:file|joint\s+resolution|concurrent\s+resolution|study\s+bill|resolution)\b"
+AMENDMENT_TEXT_OPENING = re.compile(
+    r"\A\s*amend\b"
+    r"(?!\s+" + _BILL_TARGET + r"[^:]{0,250}:\s*1\.\s*by\s+striking\s+everything\s+after\s+the\s+(?:enacting|resolving)\s+clause\b)",
+    re.IGNORECASE,
+)
+
+
 # ── Reader choice (OPEN-913; replaces upstream's entry in openstates/fulltext/__init__.py's CONVERSION_FUNCTIONS) ────
 
 

@@ -1,0 +1,267 @@
+{
+ "HF 2697": [
+  {
+   "id": 339837,
+   "bill_id": "ocd-bill/25fb2a5c-1749-4086-b7aa-653eeb3ef043",
+   "identifier": "HF 2697",
+   "bclass": [
+    "bill"
+   ],
+   "version_note": "Introduced",
+   "version_date": "",
+   "media_type": "application/pdf",
+   "is_error": false,
+   "raw_text": "An Act relating to the payment of pecuniary damages,\nrestitution, and prosecution costs.\nBE IT ENACTED BY THE GENERAL ASSEMBLY OF THE STATE OF IOWA:\nSection 1. Section 910.2, Code 2026, is amended by adding\nthe following new subsection:\nNEW SUBSECTION. 3. Notwithstanding any other statute\nor rule of law, with the consent of the defendant and the\nprosecuting attorney, the court may order as part of the\ndismissal of a public offense that the defendant pay pecuniary\ndamages to the victim, category \u201cB\u201d restitution, which shall\ninclude court costs, and prosecution costs under section\n815.13.\nEXPLANATION\nThe inclusion of this explanation does not constitute agreement with\nthe explanation\u2019s substance by the members of the general assembly.\nThis bill relates to the payment of pecuniary damages,\nrestitution, and prosecution costs.\nThe bill provides that notwithstanding any other statute\nor rule of law, with the consent of the defendant and the\nprosecuting attorney, the court may order as part of the\ndismissal of a public offense that the defendant pay pecuniary\ndamages to the victim, category \u201cB\u201d restitution, which shall\ninclude court costs, and prosecution costs.",
+   "is_bill_version": true,
+   "diff_baseline_id": null,
+   "diff_from_previous_version": null,
+   "source_url": "https://www.legis.iowa.gov/docs/publications/LGI/91/HF2697.pdf"
+  },
+  {
+   "id": 339839,
+   "bill_id": "ocd-bill/25fb2a5c-1749-4086-b7aa-653eeb3ef043",
+   "identifier": "HF 2697",
+   "bclass": [
+    "bill"
+   ],
+   "version_note": "Amendment H-8118",
+   "version_date": "",
+   "media_type": "application/pdf",
+   "is_error": false,
+   "raw_text": "Amend House File 2697 as follows:\n1. Page 1, line 6, after <offense> by inserting <or\nviolation of an ordinance>\n2. Page 1, by striking lines 8 and 9 and inserting <include\ncourt costs.>",
+   "is_bill_version": true,
+   "diff_baseline_id": 339837,
+   "diff_from_previous_version": "--- \n+++ \n@@ -1,23 +1,5 @@\n-An Act relating to the payment of pecuniary damages,\n-restitution, and prosecution costs.\n-BE IT ENACTED BY THE GENERAL ASSEMBLY OF THE STATE OF IOWA:\n-Section 1. Section 910.2, Code 2026, is amended by adding\n-the following new subsection:\n-NEW SUBSECTION. 3. Notwithstanding any other statute\n-or rule of law, with the consent of the defendant and the\n-prosecuting attorney, the court may order as part of the\n-dismissal of a public offense that the defendant pay pecuniary\n-damages to the victim, category \u201cB\u201d restitution, which shall\n-include court costs, and prosecution costs under section\n-815.13.\n-EXPLANATION\n-The inclusion of this explanation does not constitute agreement with\n-the explanation\u2019s substance by the members of the general assembly.\n-This bill relates to the payment of pecuniary damages,\n-restitution, and prosecution costs.\n-The bill provides that notwithstanding any other statute\n-or rule of law, with the consent of the defendant and the\n-prosecuting attorney, the court may order as part of the\n-dismissal of a public offense that the defendant pay pecuniary\n-damages to the victim, category \u201cB\u201d restitution, which shall\n-include court costs, and prosecution costs.\n+Amend House File 2697 as follows:\n+1. Page 1, line 6, after <offense> by inserting <or\n+violation of an ordinance>\n+2. Page 1, by striking lines 8 and 9 and inserting <include\n+court costs.>",
+   "source_url": "https://www.legis.iowa.gov/docs/publications/AMDI/91/H8118.pdf"
+  },
+  {
+   "id": 339841,
+   "bill_id": "ocd-bill/25fb2a5c-1749-4086-b7aa-653eeb3ef043",
+   "identifier": "HF 2697",
+   "bclass": [
+    "bill"
+   ],
+   "version_note": "Signed Enrolled Bill (PDF)",
+   "version_date": "",
+   "media_type": "application/pdf",
+   "is_error": true,
+   "raw_text": "",
+   "is_bill_version": true,
+   "diff_baseline_id": null,
+   "diff_from_previous_version": null,
+   "source_url": "https://www.legis.iowa.gov/docs/publications/LGE/91/Attachments/HF2697_GovLetter.pdf"
+  },
+  {
+   "id": 339843,
+   "bill_id": "ocd-bill/25fb2a5c-1749-4086-b7aa-653eeb3ef043",
+   "identifier": "HF 2697",
+   "bclass": [
+    "bill"
+   ],
+   "version_note": "Enrolled with Governor's Action",
+   "version_date": "",
+   "media_type": "application/pdf",
+   "is_error": false,
+   "raw_text": "BE IT ENACTED BY THE GENERAL ASSEMBLY OF THE STATE OF IOWA:\nSection 1. Section 910.2, Code 2026, is amended by adding\nthe following new subsection:\nNEW SUBSECTION. 3. Notwithstanding any other statute\nor rule of law, with the consent of the defendant and the\nprosecuting attorney, the court may order as part of the\nthe defendant pay pecuniary damages to the victim, category \u201cB\u201d\nrestitution, which shall include court costs.",
+   "is_bill_version": true,
+   "diff_baseline_id": 339839,
+   "diff_from_previous_version": "--- \n+++ \n@@ -1,5 +1,8 @@\n-Amend House File 2697 as follows:\n-1. Page 1, line 6, after <offense> by inserting <or\n-violation of an ordinance>\n-2. Page 1, by striking lines 8 and 9 and inserting <include\n-court costs.>\n+BE IT ENACTED BY THE GENERAL ASSEMBLY OF THE STATE OF IOWA:\n+Section 1. Section 910.2, Code 2026, is amended by adding\n+the following new subsection:\n+NEW SUBSECTION. 3. Notwithstanding any other statute\n+or rule of law, with the consent of the defendant and the\n+prosecuting attorney, the court may order as part of the\n+the defendant pay pecuniary damages to the victim, category \u201cB\u201d\n+restitution, which shall include court costs.",
+   "source_url": "https://www.legis.iowa.gov/docs/publications/LGE/91/HF2697.pdf"
+  },
+  {
+   "id": 339845,
+   "bill_id": "ocd-bill/25fb2a5c-1749-4086-b7aa-653eeb3ef043",
+   "identifier": "HF 2697",
+   "bclass": [
+    "bill"
+   ],
+   "version_note": "Reprinted",
+   "version_date": "",
+   "media_type": "application/pdf",
+   "is_error": false,
+   "raw_text": "An Act relating to the payment of pecuniary damages,\nrestitution, and prosecution costs.\nBE IT ENACTED BY THE GENERAL ASSEMBLY OF THE STATE OF IOWA:\nSection 1. Section 910.2, Code 2026, is amended by adding\nthe following new subsection:\nNEW SUBSECTION. 3. Notwithstanding any other statute\nor rule of law, with the consent of the defendant and the\nprosecuting attorney, the court may order as part of the\ndismissal of a public offense or violation of an ordinance that\nthe defendant pay pecuniary damages to the victim, category \u201cB\u201d\nrestitution, which shall include court costs.",
+   "is_bill_version": true,
+   "diff_baseline_id": null,
+   "diff_from_previous_version": null,
+   "source_url": "https://www.legis.iowa.gov/docs/publications/LGR/91/HF2697.pdf"
+  }
+ ],
+ "HF 872": [
+  {
+   "id": 346599,
+   "bill_id": "ocd-bill/32e1838d-9cb7-421e-9345-1c097bfc93c3",
+   "identifier": "HF 872",
+   "bclass": [
+    "bill"
+   ],
+   "version_note": "Introduced",
+   "version_date": "",
+   "media_type": "application/pdf",
+   "is_error": false,
+   "raw_text": "An Act relating to the maximum annual gross income for an\nenterprise to qualify as a targeted small business.\nBE IT ENACTED BY THE GENERAL ASSEMBLY OF THE STATE OF IOWA:\nSection 1. Section 15.102, subsection 12, paragraph a, Code\n2025, is amended to read as follows:\na. \u201cTargeted small business\u201d means a small business any\nenterprise which is fifty-one percent or more owned, operated,\nand actively managed by one or more women, minority persons,\nservice-disabled veterans, or persons with a disability\nprovided the business enterprise meets all of the following\nrequirements:\n(1) Is located in this state.\n(2) Is operated for profit and under a single management.\n(3) Has either fewer than twenty employees or an annual\ngross income of less than four ten million dollars computed as\nan average of the three preceding fiscal years.\nEXPLANATION\nThe inclusion of this explanation does not constitute agreement with\nthe explanation\u2019s substance by the members of the general assembly.\nThis bill relates to the maximum annual gross income for\nan enterprise to qualify as a targeted small business. Under\nthe bill, an enterprise must have an annual gross income of\nless than $10 million to qualify as a targeted small business.\nUnder current law, the maximum is $4 million.",
+   "is_bill_version": true,
+   "diff_baseline_id": null,
+   "diff_from_previous_version": null,
+   "source_url": "https://www.legis.iowa.gov/docs/publications/LGI/91/HF872.pdf"
+  },
+  {
+   "id": 346600,
+   "bill_id": "ocd-bill/32e1838d-9cb7-421e-9345-1c097bfc93c3",
+   "identifier": "HF 872",
+   "bclass": [
+    "bill"
+   ],
+   "version_note": "Amendment H-1153",
+   "version_date": "",
+   "media_type": "application/pdf",
+   "is_error": false,
+   "raw_text": "Amend House File 872 as follows:\n1. Page 1, by striking line 11 and inserting:\n<(3) Has fewer than twenty employees and an annual>",
+   "is_bill_version": true,
+   "diff_baseline_id": 346599,
+   "diff_from_previous_version": "--- \n+++ \n@@ -1,24 +1,3 @@\n-An Act relating to the maximum annual gross income for an\n-enterprise to qualify as a targeted small business.\n-BE IT ENACTED BY THE GENERAL ASSEMBLY OF THE STATE OF IOWA:\n-Section 1. Section 15.102, subsection 12, paragraph a, Code\n-2025, is amended to read as follows:\n-a. \u201cTargeted small business\u201d means a small business any\n-enterprise which is fifty-one percent or more owned, operated,\n-and actively managed by one or more women, minority persons,\n-service-disabled veterans, or persons with a disability\n-provided the business enterprise meets all of the following\n-requirements:\n-(1) Is located in this state.\n-(2) Is operated for profit and under a single management.\n-(3) Has either fewer than twenty employees or an annual\n-gross income of less than four ten million dollars computed as\n-an average of the three preceding fiscal years.\n-EXPLANATION\n-The inclusion of this explanation does not constitute agreement with\n-the explanation\u2019s substance by the members of the general assembly.\n-This bill relates to the maximum annual gross income for\n-an enterprise to qualify as a targeted small business. Under\n-the bill, an enterprise must have an annual gross income of\n-less than $10 million to qualify as a targeted small business.\n-Under current law, the maximum is $4 million.\n+Amend House File 872 as follows:\n+1. Page 1, by striking line 11 and inserting:\n+<(3) Has fewer than twenty employees and an annual>",
+   "source_url": "https://www.legis.iowa.gov/docs/publications/AMDI/91/H1153.pdf"
+  },
+  {
+   "id": 346601,
+   "bill_id": "ocd-bill/32e1838d-9cb7-421e-9345-1c097bfc93c3",
+   "identifier": "HF 872",
+   "bclass": [
+    "bill"
+   ],
+   "version_note": "Amendment H-1173",
+   "version_date": "",
+   "media_type": "application/pdf",
+   "is_error": false,
+   "raw_text": "Amend the amendment, H-1153, to House File 872, as follows:\n1. Page 1, after line 1 by inserting:\n<1. Page 1, by striking line 10 and inserting:\n<(2) Is operated for profit and under single management.>>\n2. By renumbering as necessary.",
+   "is_bill_version": true,
+   "diff_baseline_id": 346600,
+   "diff_from_previous_version": "--- \n+++ \n@@ -1,3 +1,5 @@\n-Amend House File 872 as follows:\n-1. Page 1, by striking line 11 and inserting:\n-<(3) Has fewer than twenty employees and an annual>\n+Amend the amendment, H-1153, to House File 872, as follows:\n+1. Page 1, after line 1 by inserting:\n+<1. Page 1, by striking line 10 and inserting:\n+<(2) Is operated for profit and under single management.>>\n+2. By renumbering as necessary.",
+   "source_url": "https://www.legis.iowa.gov/docs/publications/AMDI/91/H1173.pdf"
+  },
+  {
+   "id": 346602,
+   "bill_id": "ocd-bill/32e1838d-9cb7-421e-9345-1c097bfc93c3",
+   "identifier": "HF 872",
+   "bclass": [
+    "bill"
+   ],
+   "version_note": "Reprinted",
+   "version_date": "",
+   "media_type": "application/pdf",
+   "is_error": false,
+   "raw_text": "An Act relating to the maximum annual gross income for an\nenterprise to qualify as a targeted small business.\nBE IT ENACTED BY THE GENERAL ASSEMBLY OF THE STATE OF IOWA:\nSection 1. Section 15.102, subsection 12, paragraph a, Code\n2025, is amended to read as follows:\na. \u201cTargeted small business\u201d means a small business any\nenterprise which is fifty-one percent or more owned, operated,\nand actively managed by one or more women, minority persons,\nservice-disabled veterans, or persons with a disability\nprovided the business enterprise meets all of the following\nrequirements:\n(1) Is located in this state.\n(2) Is operated for profit and under single management.\n(3) Has fewer than twenty employees and an annual gross\nincome of less than four ten million dollars computed as an\naverage of the three preceding fiscal years.",
+   "is_bill_version": true,
+   "diff_baseline_id": null,
+   "diff_from_previous_version": null,
+   "source_url": "https://www.legis.iowa.gov/docs/publications/LGR/91/HF872.pdf"
+  }
+ ],
+ "HF 642": [
+  {
+   "id": 348652,
+   "bill_id": "ocd-bill/4dbfddcd-429a-4cbe-b31a-cfa5df2b91af",
+   "identifier": "HF 642",
+   "bclass": [
+    "bill"
+   ],
+   "version_note": "Introduced",
+   "version_date": "",
+   "media_type": "application/pdf",
+   "is_error": false,
+   "raw_text": "An Act relating to members of county advisory boards.\nBE IT ENACTED BY THE GENERAL ASSEMBLY OF THE STATE OF IOWA:\nSection 1. Section 217.43, subsection 1, paragraph a, Code\n2025, is amended by adding the following new subparagraph:\nNEW SUBPARAGRAPH. (4) A member shall reside in the county\nthat the county advisory board serves.\nEXPLANATION\nThe inclusion of this explanation does not constitute agreement with\nthe explanation\u2019s substance by the members of the general assembly.\nThis bill requires a member appointed to a county advisory\nboard to reside in the county the county advisory board serves.",
+   "is_bill_version": true,
+   "diff_baseline_id": null,
+   "diff_from_previous_version": null,
+   "source_url": "https://www.legis.iowa.gov/docs/publications/LGI/91/HF642.pdf"
+  },
+  {
+   "id": 348653,
+   "bill_id": "ocd-bill/4dbfddcd-429a-4cbe-b31a-cfa5df2b91af",
+   "identifier": "HF 642",
+   "bclass": [
+    "bill"
+   ],
+   "version_note": "Amendment H-1144",
+   "version_date": "",
+   "media_type": "application/pdf",
+   "is_error": false,
+   "raw_text": "Amend House File 642 as follows:\n1. Page 1, by striking line 3 and inserting:\n<NEW SUBPARAGRAPH. (4) A member appointed on or after July\n1, 2025, shall reside in the county>",
+   "is_bill_version": true,
+   "diff_baseline_id": 348652,
+   "diff_from_previous_version": "--- \n+++ \n@@ -1,11 +1,4 @@\n-An Act relating to members of county advisory boards.\n-BE IT ENACTED BY THE GENERAL ASSEMBLY OF THE STATE OF IOWA:\n-Section 1. Section 217.43, subsection 1, paragraph a, Code\n-2025, is amended by adding the following new subparagraph:\n-NEW SUBPARAGRAPH. (4) A member shall reside in the county\n-that the county advisory board serves.\n-EXPLANATION\n-The inclusion of this explanation does not constitute agreement with\n-the explanation\u2019s substance by the members of the general assembly.\n-This bill requires a member appointed to a county advisory\n-board to reside in the county the county advisory board serves.\n+Amend House File 642 as follows:\n+1. Page 1, by striking line 3 and inserting:\n+<NEW SUBPARAGRAPH. (4) A member appointed on or after July\n+1, 2025, shall reside in the county>",
+   "source_url": "https://www.legis.iowa.gov/docs/publications/AMDI/91/H1144.pdf"
+  }
+ ],
+ "HCR 105": [
+  {
+   "id": 359043,
+   "bill_id": "ocd-bill/f6be1a10-a7e0-4a48-9cfd-ba52848ee281",
+   "identifier": "HCR 105",
+   "bclass": [
+    "concurrent resolution"
+   ],
+   "version_note": "Introduced",
+   "version_date": "",
+   "media_type": "application/pdf",
+   "is_error": false,
+   "raw_text": "A Concurrent Resolution to provide for the business\nof the first extraordinary session of the 2026\nlegislative session.\nWHEREAS, Governor Kim Reynolds has convened an\nextraordinary session of the Ninety-first General\nAssembly on Friday, October 2, 2026; NOW THEREFORE,\nBE IT RESOLVED BY THE HOUSE OF REPRESENTATIVES,\nTHE SENATE CONCURRING, That pursuant to Joint Rule 3,\nthe business of the first extraordinary session of\nthe 2026 legislative session shall be limited to the\nconsideration of a bill for an Act relating to the\nmajor economic growth attraction program and including\neffective date provisions; and any other resolutions\nthat either chamber may adopt.",
+   "is_bill_version": true,
+   "diff_baseline_id": null,
+   "diff_from_previous_version": null,
+   "source_url": "https://www.legis.iowa.gov/docs/publications/LGI/91/HCR105.pdf"
+  },
+  {
+   "id": 359044,
+   "bill_id": "ocd-bill/f6be1a10-a7e0-4a48-9cfd-ba52848ee281",
+   "identifier": "HCR 105",
+   "bclass": [
+    "concurrent resolution"
+   ],
+   "version_note": "Amendment H-8496",
+   "version_date": "",
+   "media_type": "application/pdf",
+   "is_error": false,
+   "raw_text": "Amend House Concurrent Resolution 105 as follows:\n1. Page 1, after line 3 by inserting: <WHEREAS, Iowans are\nfacing rising costs for diesel, gasoline, housing, groceries,\nand health care, and whereas the wages of Iowans have not kept\nup with the rising costs; and>\n2. Page 1, line 13, after <provisions;> by inserting <a bill\nfor an Act relating to affordability for Iowans and including\neffective date provisions;>",
+   "is_bill_version": true,
+   "diff_baseline_id": 359043,
+   "diff_from_previous_version": "--- \n+++ \n@@ -1,14 +1,8 @@\n-A Concurrent Resolution to provide for the business\n-of the first extraordinary session of the 2026\n-legislative session.\n-WHEREAS, Governor Kim Reynolds has convened an\n-extraordinary session of the Ninety-first General\n-Assembly on Friday, October 2, 2026; NOW THEREFORE,\n-BE IT RESOLVED BY THE HOUSE OF REPRESENTATIVES,\n-THE SENATE CONCURRING, That pursuant to Joint Rule 3,\n-the business of the first extraordinary session of\n-the 2026 legislative session shall be limited to the\n-consideration of a bill for an Act relating to the\n-major economic growth attraction program and including\n-effective date provisions; and any other resolutions\n-that either chamber may adopt.\n+Amend House Concurrent Resolution 105 as follows:\n+1. Page 1, after line 3 by inserting: <WHEREAS, Iowans are\n+facing rising costs for diesel, gasoline, housing, groceries,\n+and health care, and whereas the wages of Iowans have not kept\n+up with the rising costs; and>\n+2. Page 1, line 13, after <provisions;> by inserting <a bill\n+for an Act relating to affordability for Iowans and including\n+effective date provisions;>",
+   "source_url": "https://www.legis.iowa.gov/docs/publications/AMDI/91/H8496.pdf"
+  }
+ ],
+ "SF 2342": [
+  {
+   "id": 339723,
+   "bill_id": "ocd-bill/b480d35d-9b70-4eac-81f9-92753f2b093c",
+   "identifier": "SF 2342",
+   "bclass": [
+    "bill"
+   ],
+   "version_note": "Introduced",
+   "version_date": "",
+   "media_type": "application/pdf",
+   "is_error": false,
+   "raw_text": "An Act relating to the required beneficiary and use of a public\nofficer insurance policy.\nBE IT ENACTED BY THE GENERAL ASSEMBLY OF THE STATE OF IOWA:\nSection 1. Section 64.3, subsection 4, Code 2026, is amended\nby striking the subsection.\nEXPLANATION\nThe inclusion of this explanation does not constitute agreement with\nthe explanation\u2019s substance by the members of the general assembly.\nUnder current law, certain public officers are required to\nobtain a bond that runs to the state for the use and benefit\nof any corporation, public or private, or person injured or\nsustaining loss, with a right of action in the name of the\nstate for its or the corporation\u2019s or person\u2019s use (Code\nsection 64.18). In 2024, the general assembly enacted a\nprovision allowing public officers to obtain an insurance\npolicy in lieu of such a bond. The state is required to be the\nbeneficiary of the insurance policy and the policy is required\nto be for the use and benefit of any corporation, public or\nprivate, or person injured or sustaining loss, with a right of\naction in the name of the state for its or the corporation\u2019s\nor person\u2019s use (Code section 64.3(4)). This bill strikes\nthese requirements for an insurance policy obtained in lieu of\na bond.",
+   "is_bill_version": true,
+   "diff_baseline_id": null,
+   "diff_from_previous_version": null,
+   "source_url": "https://www.legis.iowa.gov/docs/publications/LGI/91/SF2342.pdf"
+  },
+  {
+   "id": 339725,
+   "bill_id": "ocd-bill/b480d35d-9b70-4eac-81f9-92753f2b093c",
+   "identifier": "SF 2342",
+   "bclass": [
+    "bill"
+   ],
+   "version_note": "Amendment S-5039",
+   "version_date": "",
+   "media_type": "application/pdf",
+   "is_error": false,
+   "raw_text": "Amend Senate File 2342 as follows:\n1. Page 1, after line 2 by inserting:\n<Sec. ___. EFFECTIVE DATE. This Act, being deemed of\nimmediate importance, takes effect upon enactment.>\n2. Title page, line 2, after <policy> by inserting <, and\nincluding effective date provisions>\n3. By renumbering as necessary.",
+   "is_bill_version": true,
+   "diff_baseline_id": 339723,
+   "diff_from_previous_version": "--- \n+++ \n@@ -1,23 +1,7 @@\n-An Act relating to the required beneficiary and use of a public\n-officer insurance policy.\n-BE IT ENACTED BY THE GENERAL ASSEMBLY OF THE STATE OF IOWA:\n-Section 1. Section 64.3, subsection 4, Code 2026, is amended\n-by striking the subsection.\n-EXPLANATION\n-The inclusion of this explanation does not constitute agreement with\n-the explanation\u2019s substance by the members of the general assembly.\n-Under current law, certain public officers are required to\n-obtain a bond that runs to the state for the use and benefit\n-of any corporation, public or private, or person injured or\n-sustaining loss, with a right of action in the name of the\n-state for its or the corporation\u2019s or person\u2019s use (Code\n-section 64.18). In 2024, the general assembly enacted a\n-provision allowing public officers to obtain an insurance\n-policy in lieu of such a bond. The state is required to be the\n-beneficiary of the insurance policy and the policy is required\n-to be for the use and benefit of any corporation, public or\n-private, or person injured or sustaining loss, with a right of\n-action in the name of the state for its or the corporation\u2019s\n-or person\u2019s use (Code section 64.3(4)). This bill strikes\n-these requirements for an insurance policy obtained in lieu of\n-a bond.\n+Amend Senate File 2342 as follows:\n+1. Page 1, after line 2 by inserting:\n+<Sec. ___. EFFECTIVE DATE. This Act, being deemed of\n+immediate importance, takes effect upon enactment.>\n+2. Title page, line 2, after <policy> by inserting <, and\n+including effective date provisions>\n+3. By renumbering as necessary.",
+   "source_url": "https://www.legis.iowa.gov/docs/publications/AMDI/91/S5039.pdf"
+  }
+ ]
+}
