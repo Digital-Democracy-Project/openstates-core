@@ -75,14 +75,14 @@ def clean_text(
 # 0012"), 12 "Actuarial Investigation", 8 "Local Ads" (plural) and 5 "HB nnn - withdrawn" stubs (67 characters of
 # text). A fiscal note on HB 136, SB 52 and SB 129 and an auditor's certification on SB 285 and SB 261 could have been
 # shown as the bill's latest version.
-# OPEN-959 (Ramon's decision, OPEN-587 comment 24285): of the 40 papers with SFA in the name, the 9 "SFA" ones are
-# floor-amendment fragments ("Amend the House substitute to SB 170 (LC 44 3197S) by inserting after ... on line 23"; SB
-# 170 is 624 characters), the same kind of paper as "Sen Floor Amend 1", so they are not versions: "SFA to HB 1283",
-# "SFA to SB 17", "HB 54/SFA", "SB 131/SFA". The 31 "SCSFA" ones ("SCSFA to HB 61", "SCSFA HB 1121", "HB 1193 SCSFA")
-# are the Senate committee substitute with the floor amendments written in, complete bill text, and stay versions: the
-# SFA alternative needs the "sfa" to start the word, so "scsfa" never matches. (SB 17 and SB 131's SFA replace the
-# whole bill, "by replacing lines 1 through the end", so for those two the SFA is the enacted text; see OPEN-959.)
-_GA_BILL_NUMBER = r"[hs]b\s+\d+"  # bills only: no resolution has an SFA paper (the replica holds none)
+# OPEN-959 (Ramon, 2026-11-28, OPEN-587 comment 24285 and option B): of the 40 papers with SFA in the name, the 31
+# "SCSFA" ones ("SCSFA to HB 61", "SCSFA HB 1121", "HB 1193 SCSFA") are the Senate committee substitute with the floor
+# amendments written in, complete bill text, and stay versions. The 9 "SFA" ones ("SFA to SB 170", "HB 54/SFA") are
+# the adopted Senate floor amendment: seven are line edits ("Amend the House substitute to SB 170 (LC 44 3197S) by
+# inserting after ... on line 23"; SB 170 is 624 characters), the same kind of paper as "Sen Floor Amend 1", and are not
+# versions. Two, SB 17 and SB 131, replace the whole bill ("by replacing lines 1 through 90 with the following",
+# "through the end"), carry its enacting clause and are the enacted text, so they stay versions. The note cannot tell
+# them apart ("SFA to SB 17" and "SFA to SB 170" have one shape), the text can: see AMENDMENT_TEXT_OPENING below.
 _GA_LC_NUMBER = r"lc\s+\d+\s+\d+(?:-ec)?s?"
 PROCEDURAL_DOCUMENT_NOTE_PATTERN = re.compile(
     r"\A\s*(?:"
@@ -91,11 +91,16 @@ PROCEDURAL_DOCUMENT_NOTE_PATTERN = re.compile(
     r"|(?:" + _GA_LC_NUMBER + r"\s+)?(?:local\s+government\s+)?fiscal\s+note(?:\s+" + _GA_LC_NUMBER + r")?"
     r"|(?:(?:lc|am)\s+\d+\s+\d+(?:-ec)?s?\s+)?auditor'?s\s+certification(?:\s+" + _GA_LC_NUMBER + r")?"
     r"|actuarial\s+investigation"
-    r"|sfa\s+(?:to\s+)?" + _GA_BILL_NUMBER + r"|" + _GA_BILL_NUMBER + r"(?:/|\s+)sfa"
     r"|[hs][br]\s+\d+\s+-\s+withdrawn"
     r")\s*\Z",
     re.IGNORECASE,
 )
+
+# OPEN-959: a Senate floor amendment paper is headed "HB 54/SFA" or "SB 170/SFA" and opens "Amend ..." (all 9 on the Mac
+# replica, 2026-11-28; "SCSFA" papers are headed "/SCSFA" and open with the bill's title, so the slash must be followed
+# by "sfa" itself). Used by version_ordering.is_amendment_text (OPEN-564), which also needs the text to have no enacting
+# clause ("BE IT ENACTED"): a strike-and-replace amendment that carries the whole bill (SB 17, SB 131) is bill text.
+AMENDMENT_TEXT_OPENING = re.compile(r"\A\s*[hs]b\s+\d+/sfa\s+amend\b", re.IGNORECASE)
 
 # OPEN-602: Georgia's versions carry no date and its names do not place them in time: a House
 # substitute to a Senate bill ("LC 49 2362S/hss") comes after "As Passed Senate", and a bill can
