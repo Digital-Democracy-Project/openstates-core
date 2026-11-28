@@ -83,3 +83,32 @@ def readers():
         return extract_sometimes_numbered_pdf(data, metadata)
 
     return {"application/pdf": extract_ky_pdf}
+
+
+# ── Pre-diff cleaning (OPEN-946) ─────────────────────────────────────────────────────────────────────────────────────
+
+# Kentucky's PDFs justify the margin numbers and the "(1)    text" / "SECTION 1.      A NEW SECTION" runs differently
+# from one print to the next, so the Introduced and the Current/Final text differ in the number of spaces only, and
+# the stored comparison lists those lines as removed and added (HB 508: both changed lines; HB 312: 4 of 4; HB 103:
+# its whole 52-line hunk). Mac replica, 2026-11-27, all 854 stored comparisons (483 not empty): 388,827 changed lines,
+# 105,300 (27.1%) a removed and an added line that are the same once spacing is collapsed (87,028 of them differ as
+# printed; the rest are lines moved unchanged, which stay); 28 comparisons are 95% or more such lines.
+# Each line is cut to its words, joined by one space, before the comparison. Only the text that goes
+# into the comparison is changed, never the stored text. Words are untouched, so a "[deleted law]" bracket or a real
+# word change shows as before.
+def _clean_ky_text(text: str) -> str:
+    """Kentucky-only cleaner: every line's runs of white space become one space and its ends are trimmed. Lines are cut where
+    the comparison cuts them (`str.splitlines`, which also breaks at a form feed), so no line is joined or split."""
+    return "\n".join(" ".join(line.split()) for line in text.splitlines())
+
+
+def clean_text(
+    prior_text: str,
+    raw_text: str,
+    *,
+    is_bill: bool,
+    prior_media_type: typing.Optional[str],
+    cur_media_type: str,
+) -> typing.Tuple[str, str]:
+    """Kentucky's pre-diff cleaning of both sides (`text_extract.apply_prediff_cleaning`)."""
+    return _clean_ky_text(prior_text), _clean_ky_text(raw_text)

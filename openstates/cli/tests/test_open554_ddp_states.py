@@ -22,6 +22,7 @@ def test_shared_helpers_are_not_states():
         "al",
         "az",
         "ga",
+        "ky",
         "la",
         "ma",
         "mi",
