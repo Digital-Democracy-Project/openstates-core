@@ -41,9 +41,9 @@ KY_SB137 = [
     ("2026-03-31", "lower", ["passage"], "enrolled, signed by Speaker of the House"),
     ("2026-04-10", "upper", ["executive-signature"], "signed by Governor (Acts Ch. 89)"),
 ]
-# the two deferrals lose passage; the votes and (on purpose, see ky.py) the signatures keep it
+# the two deferrals and (OPEN-947) the two signatures lose passage; the votes keep it
 KY_SB137_RELABELLED = [list(labels) for _, _, labels, _ in KY_SB137]
-KY_SB137_RELABELLED[3] = KY_SB137_RELABELLED[4] = []
+KY_SB137_RELABELLED[3] = KY_SB137_RELABELLED[4] = KY_SB137_RELABELLED[9] = KY_SB137_RELABELLED[10] = []
 
 KY_SJR62 = [
     ("2026-01-27", "upper", ["introduction"], "introduced in Senate"),
@@ -103,9 +103,10 @@ def _rule(description, labels, chamber="upper", date="2026-03-11"):
         ("passed 32-6", ["passage"], ["passage"]),
         ("passed 30-7 with Committee Substitute (1)", ["passage"], ["passage"]),
         ("adopted by voice vote", ["passage"], ["passage"]),
-        # held on purpose (ky.py): the signatures are the only lines stored under the second chamber
-        ("enrolled, signed by President of the Senate", ["passage"], ["passage"]),
-        ("enrolled, signed by Speaker of the House", ["passage"], ["passage"]),
+        # OPEN-947: the presiding officers' signatures are not votes
+        ("enrolled, signed by President of the Senate", ["passage"], []),
+        ("enrolled, signed by Speaker of the House", ["passage"], []),
+        ("enrolled, signed by Speaker of the House", ["passage", "reading-3"], ["reading-3"]),
         # left alone: a simple resolution's bare adoption, the veto override's vote, the calendar line, the rest
         ("adopted 38-0", [], []),
         ("posted for passage in the Regular Orders of the Day for Tuesday, March 03 2026", [], []),
