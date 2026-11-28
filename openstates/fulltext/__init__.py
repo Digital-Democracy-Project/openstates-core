@@ -15,6 +15,7 @@ from .common import (
     ExtractorFunc,
 )
 from .de import handle_delaware
+from .ms import handle_mississippi_html
 
 
 class DoNotDownload:
@@ -76,7 +77,8 @@ CONVERSION_FUNCTIONS = {
     "mo": {"application/pdf": extract_line_numbered_pdf},
     "mn": {"text/html": extractor_for_element_by_id("document")},
     "ms": {
-        "text/html": extractor_for_element_by_xpath('.//*[@class="WordSection1"]'),
+        # OPEN-950: struck-out words left out (see fulltext/ms.py).
+        "text/html": handle_mississippi_html,
         "application/pdf": extract_line_numbered_pdf,
     },
     "mt": {"application/pdf": extract_sometimes_numbered_pdf},
