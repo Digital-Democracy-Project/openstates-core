@@ -1185,6 +1185,21 @@ def test_note_stage_georgia_rules_do_not_widen(note):
         "Local Government Fiscal Note",
         "Auditor's Certification LC 56 0399S",
         "LC 56 0244 Auditor's Certification",
+        # OPEN-944: real 2025_26 notes the first pattern missed (53 documents on the Mac replica)
+        "Auditors Certification",
+        "Auditor's Certification",
+        "AM 56 0058 Auditor's Certification",
+        "Auditor's Certification LC 56 0504-EC",
+        "LC 56 0220 Auditors Certification",
+        "LC 56 0343S Auditors Certification",
+        "LC 50 1130S Fiscal Note",
+        "LC 33 9775S Fiscal Note",
+        "Fiscal Note LC 61 0012",
+        "Fiscal Note LC 50 1210S",
+        "Actuarial Investigation",
+        "Local Ads",
+        "HB 19 - withdrawn",
+        "HR 949 - withdrawn",
     ],
 )
 def test_is_bill_version_georgia_papers_are_not_versions(note):
@@ -1206,8 +1221,17 @@ def test_is_bill_version_georgia_papers_are_not_versions(note):
         "SCSFA to HB 61",
         "Read and adopted LC 112 4263",
         "HB 223/AP*",
+        # OPEN-944: whole substitute texts, left as versions until Ramon decides
+        "SCSFA to HB 36",
+        "SFA to SB 12",
+        "HB 5/SFA",
         # near misses stay versions
         "Local Ad Notice",
+        "Fiscal Note Summary",
+        "Actuarial Investigation Report",
+        "HB 19 - withdrawn by author",
+        "LC 47 4409S/hs",
+        "Sen Ctee Sub LC 49 2793",
         "Floor Amend 1 to the Senate substitute",
     ],
 )

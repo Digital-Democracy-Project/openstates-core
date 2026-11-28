@@ -68,12 +68,24 @@ def clean_text(
 # Read on the 2026 special session's own PDFs (public govbot copy) and the names of a 2025-26
 # sample from Georgia's web service (2026-11-16); no other state has a note of these shapes.
 # The real versions stay: "/a", "As introduced", the substitutes, "As Passed", "/AP".
+# OPEN-944: the regular session (2025_26) prints five more shapes the pattern missed, so 53 of its 9,121 documents
+# (Mac replica, 2026-11-27) were stored as bill versions (is_bill_version true) with no stored comparison: 16
+# auditor's certifications ("Auditors Certification", "AM 56 0058 Auditor's Certification", "Auditor's Certification LC
+# 56 0504-EC"), 12 fiscal notes with the LC number first or last ("LC 50 1130S Fiscal Note", "Fiscal Note LC 61
+# 0012"), 12 "Actuarial Investigation", 8 "Local Ads" (plural) and 5 "HB nnn - withdrawn" stubs (67 characters of
+# text). A fiscal note on HB 136, SB 52 and SB 129 and an auditor's certification on SB 285 and SB 261 could have been
+# shown as the bill's latest version. Deliberately NOT here: the 40 papers with SFA in the name ("SCSFA to HB nn",
+# "SFA to SB nn", "HB nn/SFA"; 17,422 characters on average, 37 with a stored comparison), which look like whole
+# substitute texts; marking them is Ramon's decision.
+_GA_LC_NUMBER = r"lc\s+\d+\s+\d+(?:-ec)?s?"
 PROCEDURAL_DOCUMENT_NOTE_PATTERN = re.compile(
     r"\A\s*(?:"
-    r"(?:[hs][br]\s+\d+(?:ex)?\s+)?local\s+ad"
+    r"(?:[hs][br]\s+\d+(?:ex)?\s+)?local\s+ads?"
     r"|(?:sen\s+)?floor\s+amend(?:ment)?(?:\s+[1-9]\d*[a-z]?)?(?:\s+am\s+\d+\s+\d+)?"
-    r"|(?:local\s+government\s+)?fiscal\s+note"
-    r"|auditor's\s+certification\s+lc\s+\d+\s+\d+s?|lc\s+\d+\s+\d+s?\s+auditor's\s+certification"
+    r"|(?:" + _GA_LC_NUMBER + r"\s+)?(?:local\s+government\s+)?fiscal\s+note(?:\s+" + _GA_LC_NUMBER + r")?"
+    r"|(?:(?:lc|am)\s+\d+\s+\d+(?:-ec)?s?\s+)?auditor'?s\s+certification(?:\s+" + _GA_LC_NUMBER + r")?"
+    r"|actuarial\s+investigation"
+    r"|[hs][br]\s+\d+\s+-\s+withdrawn"
     r")\s*\Z",
     re.IGNORECASE,
 )
