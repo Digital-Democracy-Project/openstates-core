@@ -74,9 +74,15 @@ def clean_text(
 # 56 0504-EC"), 12 fiscal notes with the LC number first or last ("LC 50 1130S Fiscal Note", "Fiscal Note LC 61
 # 0012"), 12 "Actuarial Investigation", 8 "Local Ads" (plural) and 5 "HB nnn - withdrawn" stubs (67 characters of
 # text). A fiscal note on HB 136, SB 52 and SB 129 and an auditor's certification on SB 285 and SB 261 could have been
-# shown as the bill's latest version. Deliberately NOT here: the 40 papers with SFA in the name ("SCSFA to HB nn",
-# "SFA to SB nn", "HB nn/SFA"; 17,422 characters on average, 37 with a stored comparison), which look like whole
-# substitute texts; marking them is Ramon's decision.
+# shown as the bill's latest version.
+# OPEN-959 (Ramon's decision, OPEN-587 comment 24285): of the 40 papers with SFA in the name, the 9 "SFA" ones are
+# floor-amendment fragments ("Amend the House substitute to SB 170 (LC 44 3197S) by inserting after ... on line 23"; SB
+# 170 is 624 characters), the same kind of paper as "Sen Floor Amend 1", so they are not versions: "SFA to HB 1283",
+# "SFA to SB 17", "HB 54/SFA", "SB 131/SFA". The 31 "SCSFA" ones ("SCSFA to HB 61", "SCSFA HB 1121", "HB 1193 SCSFA")
+# are the Senate committee substitute with the floor amendments written in, complete bill text, and stay versions: the
+# SFA alternative needs the "sfa" to start the word, so "scsfa" never matches. (SB 17 and SB 131's SFA replace the
+# whole bill, "by replacing lines 1 through the end", so for those two the SFA is the enacted text; see OPEN-959.)
+_GA_BILL_NUMBER = r"[hs][br]\s+\d+"
 _GA_LC_NUMBER = r"lc\s+\d+\s+\d+(?:-ec)?s?"
 PROCEDURAL_DOCUMENT_NOTE_PATTERN = re.compile(
     r"\A\s*(?:"
@@ -85,6 +91,7 @@ PROCEDURAL_DOCUMENT_NOTE_PATTERN = re.compile(
     r"|(?:" + _GA_LC_NUMBER + r"\s+)?(?:local\s+government\s+)?fiscal\s+note(?:\s+" + _GA_LC_NUMBER + r")?"
     r"|(?:(?:lc|am)\s+\d+\s+\d+(?:-ec)?s?\s+)?auditor'?s\s+certification(?:\s+" + _GA_LC_NUMBER + r")?"
     r"|actuarial\s+investigation"
+    r"|sfa\s+(?:to\s+)?" + _GA_BILL_NUMBER + r"|" + _GA_BILL_NUMBER + r"(?:/|\s+)sfa"
     r"|[hs][br]\s+\d+\s+-\s+withdrawn"
     r")\s*\Z",
     re.IGNORECASE,

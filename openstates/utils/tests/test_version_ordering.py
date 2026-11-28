@@ -1200,6 +1200,19 @@ def test_note_stage_georgia_rules_do_not_widen(note):
         "Local Ads",
         "HB 19 - withdrawn",
         "HR 949 - withdrawn",
+        # OPEN-959: the 9 Senate floor amendment fragments of 2025_26, as stored (Mac replica, 2026-11-28)
+        "SFA to HB 1283",
+        "SFA to HB 295",
+        "SFA to HB 308",
+        "HB 54/SFA",
+        "SFA to SB 17",
+        "SB 131/SFA",
+        "SFA to SB 170",
+        "SFA to SB 220",
+        "SFA to SB 293",
+        "sfa to hb 12",
+        "SFA HB 12",
+        "HB 12 SFA",
     ],
 )
 def test_is_bill_version_georgia_papers_are_not_versions(note):
@@ -1221,10 +1234,17 @@ def test_is_bill_version_georgia_papers_are_not_versions(note):
         "SCSFA to HB 61",
         "Read and adopted LC 112 4263",
         "HB 223/AP*",
-        # OPEN-944: whole substitute texts, left as versions until Ramon decides
+        # OPEN-944/959: the Senate committee substitute with the floor amendments written in is whole bill text
         "SCSFA to HB 36",
-        "SFA to SB 12",
-        "HB 5/SFA",
+        "SCSFA HB 1121",
+        "HB 1193 SCSFA",
+        "SCSFA to HR 1300",
+        "HB 5/SCSFA",
+        # a floor amendment written differently from "SFA" stays a version
+        "SFA to the House substitute",
+        "SFA to HB",
+        "SFA to HB 12 as amended",
+        "HB 5/SFA2",
         # near misses stay versions
         "Local Ad Notice",
         "Fiscal Note Summary",
@@ -1240,6 +1260,10 @@ def test_is_bill_version_georgia_real_versions_stay_in(note):
 
 
 def test_is_bill_version_georgia_entry_is_georgia_only():
+    # OPEN-959: the SFA shapes are Georgia's alone
+    for other in ("Alabama", "Virginia", "Florida"):
+        assert is_bill_version(other, "SFA to SB 17") is True
+        assert is_bill_version(other, "HB 54/SFA") is True
     assert is_bill_version("Alabama", "Local Ad") is True
     assert is_bill_version("Virginia", "Floor Amend 1 AM 47 0219") is True
 
