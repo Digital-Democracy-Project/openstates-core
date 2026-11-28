@@ -1245,6 +1245,8 @@ def test_is_bill_version_georgia_papers_are_not_versions(note):
         "SFA to HB",
         "SFA to HB 12 as amended",
         "HB 5/SFA2",
+        "SFA to HR 12",
+        "SR 10/SFA",
         # near misses stay versions
         "Local Ad Notice",
         "Fiscal Note Summary",
@@ -1983,3 +1985,57 @@ def test_hawaii_draft_rank_does_not_reach_other_states(note):
 )
 def test_note_stage_hawaii_draft_rule_does_not_widen(note):
     assert note_stage(note)[0] == STAGE_UNKNOWN
+
+
+# OPEN-959: the three bills whose latest "version" was an SFA fragment. Real notes and Georgia document numbers
+# (Mac replica, 2026-11-28), in the order the legislature lists them.
+_GA_SFA_LATEST = {
+    "HB 54": (
+        "House",
+        [
+            ("LC 52 0588/a", 229917),
+            ("LC 52 0773S/hs", 233762),
+            ("LC 52 0773S/hcs", 235554),
+            ("Sen Ctee Sub LC 52 0844S", 236827),
+            ("SCSFA to HB 54", 238883),
+            ("Floor Amendment AM 33 2112", 239197),
+            ("Sen Floor Amend 1A AM 49 0283", 242189),
+            ("HB 54/SFA", 242270),
+        ],
+        "SCSFA to HB 54",
+    ),
+    "SB 17": (
+        "Senate",
+        [
+            ("As introduced LC 49 2098", 230009),
+            ("Committee sub LC 49 2242S", 232554),
+            ("As Passed Senate", 235361),
+            ("LC 61 0233S/hss", 236446),
+            ("LC 49 2408S/hrcs", 238665),
+            ("Sen Floor Amend 1 AM 62 0068", 248628),
+            ("SFA to SB 17", 248635),
+        ],
+        "LC 49 2408S/hrcs",
+    ),
+    "SB 131": (
+        "Senate",
+        [
+            ("As introduced LC 52 0604", 231750),
+            ("Committee sub LC 55 0520S", 232862),
+            ("As Passed Senate", 234364),
+            ("LC 55 0607S/hss", 236338),
+            ("LC 33 9827ERS/hrcs", 238666),
+            ("Floor Amend 1 AM 44 0285", 248474),
+            ("SB 131/SFA", 248632),
+        ],
+        "LC 33 9827ERS/hrcs",
+    ),
+}
+
+
+@pytest.mark.parametrize("identifier", sorted(_GA_SFA_LATEST))
+def test_georgia_latest_version_is_the_last_full_paper_not_the_sfa_fragment(identifier):
+    _, notes, expected = _GA_SFA_LATEST[identifier]
+    versions = [(note, GA_DOC.format("20252026", number)) for note, number in notes if is_bill_version("Georgia", note)]
+    versions.sort(key=lambda v: version_sort_key(v[0], "", [v[1]], origin_chamber(identifier), "Georgia"))
+    assert versions[-1][0] == expected

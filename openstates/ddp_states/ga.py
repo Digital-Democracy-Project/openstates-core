@@ -82,7 +82,7 @@ def clean_text(
 # are the Senate committee substitute with the floor amendments written in, complete bill text, and stay versions: the
 # SFA alternative needs the "sfa" to start the word, so "scsfa" never matches. (SB 17 and SB 131's SFA replace the
 # whole bill, "by replacing lines 1 through the end", so for those two the SFA is the enacted text; see OPEN-959.)
-_GA_BILL_NUMBER = r"[hs][br]\s+\d+"
+_GA_BILL_NUMBER = r"[hs]b\s+\d+"  # bills only: no resolution has an SFA paper (the replica holds none)
 _GA_LC_NUMBER = r"lc\s+\d+\s+\d+(?:-ec)?s?"
 PROCEDURAL_DOCUMENT_NOTE_PATTERN = re.compile(
     r"\A\s*(?:"
